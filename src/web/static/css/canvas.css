@@ -1,0 +1,1207 @@
+/* ═══════════════════════════════════════════════════════════
+   LeDCSsim - SAMA/Simulink 风格画布样式
+   用于 IB/IL/L3 组态画布页面
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── 类别颜色变量 ──────────────────────────────────── */
+
+:root {
+  --cat-signal: #10b981;
+  --cat-arithmetic: #f59e0b;
+  --cat-compare: #06b6d4;
+  --cat-dynamic: #3b82f6;
+  --cat-control: #ef4444;
+  --cat-logic: #8b5cf6;
+  --cat-timer: #ec4899;
+  --cat-transfer: #64748b;
+  --cat-encapsulated: #7c3aed;
+
+  --port-input: #10b981;
+  --port-output: #3b82f6;
+  --conn-color: #64748b;
+  --conn-active: #3b82f6;
+  --node-bg: #ffffff;
+  --node-border: #cbd5e1;
+  --node-selected: #3b82f6;
+  --canvas-bg: #f8fafc;
+  --grid-color: #cbd5e1;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   1. 画布区域 - 背景网格、缩放指示
+   ═══════════════════════════════════════════════════════════ */
+
+.canvas-area {
+  position: relative;
+  background: var(--canvas-bg);
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
+.canvas-area.grid-dots {
+  background-image:
+    radial-gradient(circle, var(--grid-color) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.canvas-area.grid-lines {
+  background-image:
+    linear-gradient(var(--grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.canvas-area.grid-none {
+  background-image: none;
+}
+
+.canvas-area #drawflow {
+  width: 100%;
+  height: 100%;
+}
+
+/* 缩放指示器 */
+.zoom-indicator {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #e2e8f0;
+  font-size: 11px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  padding: 4px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+}
+
+/* 画布坐标指示 */
+.canvas-coords {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  color: #94a3b8;
+  font-size: 10px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   2. Drawflow 默认样式覆盖
+   ═══════════════════════════════════════════════════════════ */
+
+.drawflow {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.drawflow .drawflow-node {
+  border-radius: 3px;
+  border: 2px solid var(--node-border);
+  background: var(--node-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  min-width: 140px;
+  max-width: 220px;
+  cursor: move;
+  z-index: 2;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.drawflow .drawflow-node:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.drawflow .drawflow-node.selected {
+  border-color: var(--node-selected);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2),
+              0 2px 8px rgba(59, 130, 246, 0.15);
+  z-index: 3;
+}
+
+.drawflow .drawflow-node .drawflow_content_node {
+  padding: 0;
+  display: block;
+}
+
+/* 删除按钮 */
+.drawflow .drawflow-node .drawflow-delete {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  display: none;
+  z-index: 5;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.drawflow .drawflow-node.selected .drawflow-delete,
+.drawflow .drawflow-node:hover .drawflow-delete {
+  display: block;
+}
+
+/* 输入/输出端口 */
+.drawflow .drawflow-node .inputs,
+.drawflow .drawflow-node .outputs {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  pointer-events: none;
+}
+
+.drawflow .drawflow-node .inputs {
+  left: -10px;
+}
+
+.drawflow .drawflow-node .outputs {
+  right: -10px;
+}
+
+.drawflow .drawflow-node .input,
+.drawflow .drawflow-node .output {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  cursor: crosshair;
+  pointer-events: all;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+  transition: transform 0.12s ease;
+  position: relative;
+}
+
+.drawflow .drawflow-node .input {
+  background: var(--port-input);
+}
+
+.drawflow .drawflow-node .output {
+  background: var(--port-output);
+}
+
+.drawflow .drawflow-node .input:hover,
+.drawflow .drawflow-node .output:hover {
+  transform: scale(1.3);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   3. 连接线样式
+   ═══════════════════════════════════════════════════════════ */
+
+.drawflow .connection .main-path {
+  stroke: var(--conn-color);
+  stroke-width: 2;
+  fill: none;
+  transition: stroke 0.15s ease;
+}
+
+.drawflow .connection .main-path:hover {
+  stroke: var(--conn-active);
+  stroke-width: 3;
+}
+
+.drawflow .connection.selected .main-path {
+  stroke: var(--node-selected);
+  stroke-width: 2.5;
+}
+
+/* 连接删除按钮 */
+.drawflow .connection .point {
+  fill: var(--danger);
+  stroke: #fff;
+  stroke-width: 2;
+  cursor: pointer;
+}
+
+/* 拖拽中的连接线 */
+.drawflow > svg .connection .main-path.drag {
+  stroke: var(--conn-active);
+  stroke-dasharray: 6 3;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   4. 节点内部布局 - SAMA 风格
+   ═══════════════════════════════════════════════════════════ */
+
+/* SAMA 图标风格：简洁方块 + 短标签 */
+.sama-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  min-height: 36px;
+  padding: 4px 10px;
+  position: relative;
+  font-family: "Consolas", "SF Mono", monospace;
+}
+
+.sama-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #1e293b);
+  text-align: center;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+/* 监视模式数值显示 */
+.node-value {
+  font-size: 10px;
+  color: var(--primary-dark, #2563eb);
+  text-align: center;
+  font-family: monospace;
+  display: none;
+}
+.monitor-mode .node-value { display: block; }
+.node-value:empty { display: none; }
+
+
+/* ═══════════════════════════════════════════════════════════
+   5. 节点类别颜色
+   ═══════════════════════════════════════════════════════════ */
+
+.drawflow .drawflow-node.cat-signal {
+  --node-cat-color: var(--cat-signal);
+  border-left: 4px solid var(--cat-signal);
+}
+
+.drawflow .drawflow-node.cat-arithmetic {
+  --node-cat-color: var(--cat-arithmetic);
+  border-left: 4px solid var(--cat-arithmetic);
+}
+
+.drawflow .drawflow-node.cat-compare {
+  --node-cat-color: var(--cat-compare);
+  border-left: 4px solid var(--cat-compare);
+}
+
+.drawflow .drawflow-node.cat-dynamic {
+  --node-cat-color: var(--cat-dynamic);
+  border-left: 4px solid var(--cat-dynamic);
+}
+
+.drawflow .drawflow-node.cat-control {
+  --node-cat-color: var(--cat-control);
+  border-left: 4px solid var(--cat-control);
+}
+
+.drawflow .drawflow-node.cat-logic {
+  --node-cat-color: var(--cat-logic);
+  border-left: 4px solid var(--cat-logic);
+}
+
+.drawflow .drawflow-node.cat-timer {
+  --node-cat-color: var(--cat-timer);
+  border-left: 4px solid var(--cat-timer);
+}
+
+.drawflow .drawflow-node.cat-transfer {
+  --node-cat-color: var(--cat-transfer);
+  border-left: 4px solid var(--cat-transfer);
+}
+
+.drawflow .drawflow-node.cat-encapsulated {
+  --node-cat-color: var(--cat-encapsulated);
+  border-left: 4px solid var(--cat-encapsulated);
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+/* 封装块展开指示器 */
+.drawflow .drawflow-node.cat-encapsulated .expand-indicator {
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--cat-encapsulated);
+  color: #fff;
+  font-size: 10px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 5;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   6. 监视模式 - 实时值显示
+   ═══════════════════════════════════════════════════════════ */
+
+/* 监视模式下画布锁定 */
+.monitor-mode .drawflow .drawflow-node {
+  cursor: default;
+}
+
+.monitor-mode .drawflow .drawflow-node .drawflow-delete {
+  display: none !important;
+}
+
+/* 监视模式下端口不可交互 */
+.monitor-mode .drawflow .drawflow-node .input,
+.monitor-mode .drawflow .drawflow-node .output {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* 实时值覆盖层 */
+.node-value {
+  display: none;
+}
+
+.monitor-mode .node-value {
+  display: block;
+  padding: 4px 10px 6px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  border-top: 1px solid var(--border, #e2e8f0);
+  background: #f0fdf4;
+  color: #166534;
+  border-radius: 0 0 2px 2px;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* 值域颜色编码 */
+.monitor-mode .node-value.val-normal {
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.monitor-mode .node-value.val-warning {
+  background: #fefce8;
+  color: #854d0e;
+}
+
+.monitor-mode .node-value.val-alarm {
+  background: #fef2f2;
+  color: #991b1b;
+  animation: valueAlarm 1s ease-in-out infinite;
+}
+
+@keyframes valueAlarm {
+  0%, 100% { background: #fef2f2; }
+  50% { background: #fecaca; }
+}
+
+/* 监视模式下的连接线值标签 */
+.connection-value-label {
+  position: absolute;
+  background: rgba(15, 23, 42, 0.8);
+  color: #e2e8f0;
+  font-size: 10px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  padding: 2px 6px;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 4;
+  white-space: nowrap;
+}
+
+/* 监视模式下隐藏参数, 突出显示值 */
+.monitor-mode .node-params {
+  display: none;
+}
+
+.monitor-mode .sama-node .node-header {
+  border-bottom: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   7. 画布布局 - 三栏结构
+   ═══════════════════════════════════════════════════════════ */
+
+.canvas-layout, .canvas-body {
+  display: grid;
+  grid-template-columns: 210px 1fr 270px;
+  gap: 0;
+  height: calc(100vh - 110px);
+  overflow: hidden;
+}
+
+.canvas-layout.palette-collapsed {
+  grid-template-columns: 0 1fr 270px;
+}
+
+.canvas-layout.props-collapsed {
+  grid-template-columns: 210px 1fr 0;
+}
+
+.canvas-layout.palette-collapsed.props-collapsed {
+  grid-template-columns: 0 1fr 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   8. 功能块调色板 (左侧边栏)
+   ═══════════════════════════════════════════════════════════ */
+
+.block-palette {
+  background: var(--card-bg, #ffffff);
+  border-right: 1px solid var(--border, #e2e8f0);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.palette-search {
+  position: sticky;
+  top: 0;
+  background: var(--card-bg, #ffffff);
+  padding: 0 0 8px;
+  z-index: 5;
+}
+
+.palette-search input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  font-size: 12px;
+  background: #f8fafc;
+  color: var(--text, #1e293b);
+  transition: border-color 0.15s ease;
+}
+
+.palette-search input:focus {
+  outline: none;
+  border-color: var(--primary, #3b82f6);
+  background: #fff;
+}
+
+.palette-search::before {
+  content: "\26B2";
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  font-size: 12px;
+  color: var(--text-light, #94a3b8);
+  pointer-events: none;
+}
+
+.palette-category {
+  margin-bottom: 12px;
+}
+
+.palette-category-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-light, #94a3b8);
+  margin-bottom: 5px;
+  padding: 3px 4px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 3px;
+  transition: background 0.1s ease;
+}
+
+.palette-category-title:hover {
+  background: #f1f5f9;
+}
+
+.palette-category-title .cat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.palette-category-title .cat-arrow {
+  margin-left: auto;
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+
+.palette-category.collapsed .cat-arrow {
+  transform: rotate(-90deg);
+}
+
+.palette-category.collapsed .palette-blocks {
+  display: none;
+}
+
+.palette-block {
+  padding: 6px 10px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 5px;
+  margin-bottom: 3px;
+  font-size: 12px;
+  cursor: grab;
+  transition: all 0.12s ease;
+  background: #fff;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.palette-block:hover {
+  border-color: var(--primary, #3b82f6);
+  background: #eff6ff;
+  box-shadow: 0 1px 2px rgba(59, 130, 246, 0.1);
+}
+
+.palette-block:active {
+  cursor: grabbing;
+  opacity: 0.7;
+}
+
+.palette-block .block-icon {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.palette-block .block-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette-block .block-id {
+  font-size: 9px;
+  color: var(--text-light, #94a3b8);
+  font-family: "SF Mono", "Fira Code", monospace;
+  flex-shrink: 0;
+}
+
+/* 类别颜色图标 */
+.cat-signal .block-icon, .cat-signal .cat-dot { background: var(--cat-signal); }
+.cat-arithmetic .block-icon, .cat-arithmetic .cat-dot { background: var(--cat-arithmetic); }
+.cat-compare .block-icon, .cat-compare .cat-dot { background: var(--cat-compare); }
+.cat-dynamic .block-icon, .cat-dynamic .cat-dot { background: var(--cat-dynamic); }
+.cat-control .block-icon, .cat-control .cat-dot { background: var(--cat-control); }
+.cat-logic .block-icon, .cat-logic .cat-dot { background: var(--cat-logic); }
+.cat-timer .block-icon, .cat-timer .cat-dot { background: var(--cat-timer); }
+.cat-transfer .block-icon, .cat-transfer .cat-dot { background: var(--cat-transfer); }
+.cat-encapsulated .block-icon, .cat-encapsulated .cat-dot { background: var(--cat-encapsulated); }
+
+
+/* ═══════════════════════════════════════════════════════════
+   9. 属性面板 (右侧边栏)
+   ═══════════════════════════════════════════════════════════ */
+
+.properties-panel {
+  background: var(--card-bg, #ffffff);
+  border-left: 1px solid var(--border, #e2e8f0);
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.properties-panel .props-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.properties-panel .props-header h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+.properties-panel .props-body {
+  padding: 12px 16px;
+  flex: 1;
+}
+
+.prop-empty {
+  color: var(--text-light, #94a3b8);
+  font-size: 12px;
+  text-align: center;
+  padding: 40px 10px;
+}
+
+.prop-section {
+  margin-bottom: 16px;
+}
+
+.prop-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-light, #94a3b8);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.prop-row label {
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.prop-row input,
+.prop-row select {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text, #1e293b);
+  background: #fff;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  transition: border-color 0.15s ease;
+}
+
+.prop-row input:focus,
+.prop-row select:focus {
+  outline: none;
+  border-color: var(--primary, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.prop-row input[readonly] {
+  background: #f8fafc;
+  color: var(--text-secondary, #64748b);
+}
+
+.prop-node-id {
+  font-size: 11px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  color: var(--text-light, #94a3b8);
+  margin-top: -4px;
+  margin-bottom: 12px;
+}
+
+/* 信号选择器按钮 */
+.prop-signal-btn {
+  padding: 5px 8px;
+  font-size: 11px;
+  background: var(--primary-light, #dbeafe);
+  color: var(--primary-dark, #2563eb);
+  border: 1px solid var(--primary, #3b82f6);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+
+.prop-signal-btn:hover {
+  background: #bfdbfe;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   10. 工具栏
+   ═══════════════════════════════════════════════════════════ */
+
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: var(--card-bg, #ffffff);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  flex-shrink: 0;
+  overflow-x: auto;
+  min-height: 38px;
+}
+
+.canvas-toolbar .tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.1s ease;
+  user-select: none;
+  height: 28px;
+}
+
+.canvas-toolbar .tb-btn:hover {
+  background: #f1f5f9;
+  color: var(--text, #1e293b);
+}
+
+.canvas-toolbar .tb-btn:active {
+  background: #e2e8f0;
+}
+
+.canvas-toolbar .tb-btn.active {
+  background: var(--primary-light, #dbeafe);
+  color: var(--primary-dark, #2563eb);
+  border-color: var(--primary, #3b82f6);
+}
+
+.canvas-toolbar .tb-btn .tb-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.canvas-toolbar .tb-btn .tb-label {
+  font-size: 11px;
+}
+
+.canvas-toolbar .tb-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border, #e2e8f0);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.canvas-toolbar .tb-spacer {
+  flex: 1;
+}
+
+/* 模式指示器 */
+.canvas-toolbar .mode-indicator {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 10px;
+  user-select: none;
+}
+
+.canvas-toolbar .mode-indicator.mode-config {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.canvas-toolbar .mode-indicator.mode-monitor {
+  background: #d1fae5;
+  color: #065f46;
+  animation: monitorPulse 2s ease-in-out infinite;
+}
+
+@keyframes monitorPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   11. 模态框 (信号选择器等)
+   ═══════════════════════════════════════════════════════════ */
+
+.canvas-modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.5);
+  z-index: 500;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(3px);
+}
+
+.canvas-modal-overlay.active {
+  display: flex;
+}
+
+.canvas-modal {
+  background: var(--card-bg, #ffffff);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  width: 560px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.canvas-modal .cm-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.canvas-modal .cm-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.canvas-modal .cm-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: var(--text-light, #94a3b8);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.canvas-modal .cm-close:hover {
+  background: #f1f5f9;
+  color: var(--text, #1e293b);
+}
+
+.canvas-modal .cm-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.canvas-modal .cm-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 信号选择器列表 */
+.signal-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+}
+
+.signal-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  cursor: pointer;
+  transition: background 0.1s ease;
+  font-size: 12px;
+}
+
+.signal-item:last-child {
+  border-bottom: none;
+}
+
+.signal-item:hover {
+  background: #f8fafc;
+}
+
+.signal-item.selected {
+  background: #eff6ff;
+}
+
+.signal-item .signal-name {
+  font-weight: 500;
+  color: var(--text, #1e293b);
+}
+
+.signal-item .signal-addr {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 10px;
+  color: var(--text-light, #94a3b8);
+  margin-left: auto;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   12. 响应式布局
+   ═══════════════════════════════════════════════════════════ */
+
+@media (max-width: 1200px) {
+  .canvas-layout {
+    grid-template-columns: 180px 1fr 240px;
+  }
+}
+
+@media (max-width: 960px) {
+  .canvas-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .block-palette {
+    display: none;
+  }
+
+  .properties-panel {
+    display: none;
+  }
+
+  .canvas-area {
+    height: 60vh;
+    min-height: 400px;
+  }
+}
+
+/* ── 全屏画布模式 ──────────────────────────────────── */
+
+.canvas-layout.fullscreen {
+  grid-template-columns: 1fr;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100vh;
+  z-index: 150;
+}
+
+.canvas-layout.fullscreen .block-palette,
+.canvas-layout.fullscreen .properties-panel {
+  display: none;
+}
+
+.canvas-layout.fullscreen .canvas-area {
+  height: 100%;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   13. 实用类
+   ═══════════════════════════════════════════════════════════ */
+
+/* 拖拽占位符 */
+.drag-ghost {
+  opacity: 0.6;
+  border: 2px dashed var(--primary, #3b82f6);
+  background: var(--primary-light, #dbeafe);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* 只读模式 */
+.canvas-readonly .drawflow .drawflow-node {
+  cursor: default;
+}
+
+.canvas-readonly .drawflow .drawflow-node .drawflow-delete {
+  display: none !important;
+}
+
+/* 撤销/重做按钮禁用态 */
+.canvas-toolbar .tb-btn.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* 画布加载遮罩 */
+.canvas-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(248, 250, 252, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+}
+
+.canvas-loading .spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border, #e2e8f0);
+  border-top-color: var(--primary, #3b82f6);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   兼容: HTML 模板中使用的类名映射
+   ═══════════════════════════════════════════════════════════ */
+
+/* canvas-page 全屏布局 */
+.canvas-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+}
+
+/* 工具栏按钮 - 模板使用 .toolbar-btn */
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  height: 28px;
+}
+.toolbar-btn:hover { background: #f1f5f9; color: var(--text, #1e293b); }
+.toolbar-btn:active { background: #e2e8f0; }
+
+.toolbar-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text, #1e293b);
+  white-space: nowrap;
+}
+
+.toolbar-input {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  width: 120px;
+}
+
+.toolbar-left { display: flex; align-items: center; gap: 4px; flex: 1; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; }
+.toolbar-sep { width: 1px; height: 20px; background: var(--border, #e2e8f0); margin: 0 4px; }
+
+/* 模式切换按钮组 */
+.mode-toggle { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.mode-btn {
+  padding: 4px 12px; font-size: 12px; border: none; cursor: pointer;
+  background: transparent; color: var(--text-secondary);
+}
+.mode-btn.active { background: var(--primary, #3b82f6); color: white; }
+.mode-btn:hover:not(.active) { background: #f1f5f9; }
+
+.zoom-indicator {
+  font-size: 11px; font-family: monospace;
+  color: var(--text-light, #94a3b8);
+  padding: 2px 6px; background: #f1f5f9; border-radius: 3px;
+}
+
+/* 属性面板 - 模板兼容 */
+.props-header {
+  font-weight: 600; font-size: 13px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.props-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
+.props-footer {
+  padding: 12px 16px; border-top: 1px solid var(--border, #e2e8f0);
+  margin-top: auto;
+}
+.props-empty { color: var(--text-light); font-size: 12px; text-align: center; padding: 20px 0; }
+.props-section-title { font-size: 11px; font-weight: 600; color: var(--text-light); margin: 8px 0 4px; }
+.props-link {
+  display: block; font-size: 12px; padding: 4px 0;
+  color: var(--primary); text-decoration: none;
+}
+.props-link:hover { text-decoration: underline; }
+.props-block-header { padding: 8px 12px; margin-bottom: 8px; }
+.props-block-id { font-family: monospace; font-weight: 700; font-size: 16px; }
+.props-block-name { font-size: 13px; }
+.props-block-desc { font-size: 11px; color: var(--text-light); margin-top: 2px; }
+.props-node-id { font-size: 11px; color: var(--text-light); margin-bottom: 8px; }
+.props-no-params { font-size: 12px; color: var(--text-light); }
+.props-param { margin-bottom: 8px; }
+.props-param label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 2px; }
+
+/* 信号选择弹窗 */
+.picker-item {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  margin-bottom: 4px; cursor: pointer;
+}
+.picker-item:hover { border-color: var(--primary); background: var(--primary-light, #dbeafe); }
+
+/* 面板搜索区 */
+.palette-search { padding: 8px; border-bottom: 1px solid var(--border, #e2e8f0); }
+.palette-content { overflow-y: auto; flex: 1; padding: 4px 8px; }
+.palette-category-title {
+  font-size: 12px; font-weight: 600; padding: 6px 4px; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 4px;
+}
+.palette-arrow { font-size: 8px; transition: transform .2s; }
+.palette-category.collapsed .palette-items { display: none; }
+.palette-category.collapsed .palette-arrow { transform: rotate(-90deg); }
+.palette-count { font-size: 10px; color: var(--text-light); margin-left: auto; }
+.palette-items { padding-left: 4px; }
+.palette-block {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 4px; cursor: grab; font-size: 12px;
+  margin-bottom: 2px;
+}
+.palette-block:hover { background: #f1f5f9; }
+.palette-block-id { font-family: monospace; font-weight: 700; font-size: 11px; min-width: 32px; }
+.palette-block-name { color: var(--text-secondary); font-size: 11px; }
+
+/* 仿真运行面板（底部） */
+.sim-panel {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px; background: var(--card-bg, #fff);
+  border-top: 1px solid var(--border, #e2e8f0);
+  font-size: 12px;
+}
+.sim-panel .sim-status {
+  display: flex; align-items: center; gap: 6px;
+}
+.sim-panel .sim-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #94a3b8;
+}
+.sim-panel .sim-dot.running { background: #10b981; animation: monitorPulse 1s infinite; }
+.sim-info { color: var(--text-secondary); font-family: monospace; }

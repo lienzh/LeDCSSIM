@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% set active_page = "l3" %}
+{% block title %}L3 层 - 封装库 - LeDCSsim{% endblock %}
+
+{% block content %}
+<div class="canvas-page">
+  <div class="canvas-toolbar">
+    <div class="toolbar-left">
+      <span class="toolbar-title">L3 层 - 封装库</span>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="createNewBlock()">&#10010; 新建</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.undo()">&#8630;</button>
+      <button class="toolbar-btn" onclick="engine.redo()">&#8631;</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.zoomIn()">&#43;</button>
+      <button class="toolbar-btn" onclick="engine.zoomOut()">&#8722;</button>
+      <button class="toolbar-btn" onclick="engine.zoomReset()">1:1</button>
+    </div>
+    <div class="toolbar-right">
+      <button class="toolbar-btn" onclick="saveCurrentBlock()">&#128190; 保存</button>
+      <span class="zoom-indicator" id="zoomLabel">100%</span>
+    </div>
+  </div>
+
+  <div class="canvas-body">
+    <!-- 封装库列表 -->
+    <div class="block-palette" id="palette" style="width:200px;">
+      <div class="palette-search" style="padding:12px;">
+        <strong style="font-size:13px;">封装块列表</strong>
+        <button class="btn btn-primary btn-sm" style="width:100%;margin-top:8px;" onclick="createNewBlock()">新建封装块</button>
+      </div>
+      <div class="palette-content" id="libList" style="padding:4px 8px;">加载中...</div>
+    </div>
+
+    <!-- 画布区 -->
+    <div class="canvas-area grid-dots" id="canvasArea">
+      <div id="drawflow"></div>
+    </div>
+
+    <!-- 基础块面板 + 信息 -->
+    <div class="properties-panel" id="propsPanel" style="width:260px;">
+      <div class="props-header" id="editorTitle">选择封装块</div>
+      <div class="props-body">
+        <!-- 基础块拖放 -->
+        <div class="props-section-title">基础块</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;">
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'port_in')" title="输入端口">IN</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'port_out')" title="输出端口">OUT</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'G')" title="增益">G</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'ADD')" title="加法">ADD</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'SUB')" title="减法">SUB</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'ML')" title="乘法">ML</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'DIV')" title="除法">DIV</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'CON')" title="常数">CON</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'I')" title="积分器">I</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'FLT')" title="滤波">FLT</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'LDL')" title="超前滞后">LDL</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'LIM')" title="限幅">LIM</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'HS')" title="高选">HS</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'LS')" title="低选">LS</div>
+          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'ASW')" title="模拟开关">ASW</div>
+        </div>
+
+        <!-- 封装块信息 -->
+        <div id="blockInfo">
+          <p style="color:var(--text-light);font-size:12px;">从左侧选择封装块，或新建一个。</p>
+        </div>
+      </div>
+      <div class="props-footer">
+        <div class="props-section-title">层间跳转</div>
+        <a href="/ib" class="props-link">IB 层 - 使用封装块</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let engine = null;
+let currentBlockName = '';
+
+// L3 基础块定义
+const l3Blocks = {
+  port_in:  {id:'port_in',  name:'输入端口', category:'signal',     inputs:0, outputs:1, params:[{key:'name',label:'端口名',type:'string',default:''},{key:'unit',label:'单位',type:'string',default:''}]},
+  port_out: {id:'port_out', name:'输出端口', category:'signal',     inputs:1, outputs:0, params:[{key:'name',label:'端口名',type:'string',default:''},{key:'unit',label:'单位',type:'string',default:''}]},
+  G:        {id:'G',    name:'增益',     category:'dynamic',    inputs:1, outputs:1, params:[{key:'K',label:'增益K',type:'number',default:1.0}]},
+  ADD:      {id:'ADD',  name:'加法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
+  SUB:      {id:'SUB',  name:'减法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
+  ML:       {id:'ML',   name:'乘法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
+  DIV:      {id:'DIV',  name:'除法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
+  CON:      {id:'CON',  name:'常数',     category:'signal',     inputs:0, outputs:1, params:[{key:'value',label:'常数值',type:'number',default:0}]},
+  I:        {id:'I',    name:'积分器',   category:'dynamic',    inputs:1, outputs:1, params:[{key:'K',label:'增益K',type:'number',default:1.0},{key:'low',label:'下限',type:'number',default:-1e6},{key:'high',label:'上限',type:'number',default:1e6}]},
+  FLT:      {id:'FLT',  name:'滤波',     category:'dynamic',    inputs:1, outputs:1, params:[{key:'K',label:'增益K',type:'number',default:1.0},{key:'T',label:'时间常数T(s)',type:'number',default:10}]},
+  LDL:      {id:'LDL',  name:'超前滞后', category:'dynamic',    inputs:1, outputs:1, params:[{key:'T1',label:'T1(s)',type:'number',default:1},{key:'T2',label:'T2(s)',type:'number',default:1}]},
+  LIM:      {id:'LIM',  name:'限幅',     category:'dynamic',    inputs:1, outputs:1, params:[{key:'low',label:'下限',type:'number',default:0},{key:'high',label:'上限',type:'number',default:100}]},
+  HS:       {id:'HS',   name:'高选',     category:'compare',    inputs:2, outputs:1, params:[]},
+  LS:       {id:'LS',   name:'低选',     category:'compare',    inputs:2, outputs:1, params:[]},
+  ASW:      {id:'ASW',  name:'模拟开关', category:'logic',      inputs:2, outputs:1, params:[{key:'threshold',label:'阈值',type:'number',default:0.5}]},
+};
+
+document.addEventListener('DOMContentLoaded', async () => {
+  engine = new CanvasEngine('drawflow', { grid: 'dots', mode: 'config' });
+  Object.values(l3Blocks).forEach(b => engine.registerBlock(b));
+
+  const canvas = document.getElementById('canvasArea');
+  canvas.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    const bid = ev.dataTransfer.getData('blockId');
+    if (!bid) return;
+    const rect = document.getElementById('drawflow').getBoundingClientRect();
+    engine.addBlock(bid, ev.clientX - rect.left, ev.clientY - rect.top);
+  });
+  canvas.addEventListener('dragover', e => e.preventDefault());
+
+  await loadLibrary();
+  await loadPresets();
+});
+
+function drag(ev, id) { ev.dataTransfer.setData('blockId', id); }
+
+// ── 封装库管理 ──
+let libData = [];
+async function loadLibrary() {
+  try {
+    const models = await api('/api/model/list');
+    libData = models.filter(m => m.name.startsWith('L3_'));
+    renderLibList();
+  } catch(e) {}
+}
+
+function renderLibList() {
+  const el = document.getElementById('libList');
+  if (libData.length === 0) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text-light);text-align:center;font-size:12px;">暂无封装块</div>';
+    return;
+  }
+  el.innerHTML = libData.map(m => {
+    const name = m.name.replace('L3_', '');
+    const active = m.name === currentBlockName ? ' active' : '';
+    return `<div class="lib-item${active}" onclick="selectBlock('${m.name}')">
+      <div style="font-weight:600;font-size:13px;">${name}</div>
+      <div style="font-size:10px;color:var(--text-light);">封装模型</div>
+    </div>`;
+  }).join('');
+}
+
+async function selectBlock(name) {
+  currentBlockName = name;
+  renderLibList();
+  try {
+    const d = await api(`/api/model/load/${name}`);
+    if (d.drawflow) engine.importJSON(d.drawflow);
+    document.getElementById('editorTitle').textContent = name.replace('L3_', '');
+    updateBlockInfo(d);
+  } catch(e) {}
+}
+
+function updateBlockInfo(data) {
+  const exported = engine.exportJSON();
+  const nodes = exported?.drawflow?.Home?.data || {};
+  const inputs = [], outputs = [];
+  Object.values(nodes).forEach(n => {
+    if (n.name === 'port_in')  inputs.push(n.data?.name || '?');
+    if (n.name === 'port_out') outputs.push(n.data?.name || '?');
+  });
+  document.getElementById('blockInfo').innerHTML = `
+    <div class="props-section-title">接口端口</div>
+    ${inputs.map(n => `<div style="font-size:12px;"><span style="color:#10b981;">&#9654;</span> IN: ${n}</div>`).join('')}
+    ${outputs.map(n => `<div style="font-size:12px;"><span style="color:#3b82f6;">&#9654;</span> OUT: ${n}</div>`).join('')}
+    ${(!inputs.length && !outputs.length) ? '<div style="font-size:11px;color:var(--text-light);">拖入 IN/OUT 端口定义接口</div>' : ''}
+    <div class="form-group" style="margin-top:12px;">
+      <label style="font-size:11px;">描述</label>
+      <textarea class="form-control" id="blockDesc" rows="2" style="font-size:12px;">${data.description || ''}</textarea>
+    </div>
+  `;
+}
+
+async function saveCurrentBlock() {
+  if (!currentBlockName) { showToast('请先选择或新建', 'error'); return; }
+  const desc = document.getElementById('blockDesc')?.value || '';
+  await api('/api/model/save', { method:'POST', body:{
+    name: currentBlockName, drawflow: engine.exportJSON(), layer:'L3', description: desc
+  }});
+  showToast('已保存', 'success');
+}
+
+function createNewBlock() {
+  const name = prompt('封装块名称（英文）：');
+  if (!name) return;
+  const fullName = 'L3_' + name.replace(/^L3_/, '');
+  currentBlockName = fullName;
+  engine._editor.clear();
+  document.getElementById('editorTitle').textContent = name;
+  document.getElementById('blockInfo').innerHTML = `
+    <div style="font-size:11px;color:var(--text-light);">
+      拖入 IN/OUT 端口定义接口，用基础块构建内部逻辑。
+    </div>
+    <div class="form-group" style="margin-top:8px;">
+      <label style="font-size:11px;">描述</label>
+      <textarea class="form-control" id="blockDesc" rows="2" style="font-size:12px;"></textarea>
+    </div>
+  `;
+  libData.push({name: fullName});
+  renderLibList();
+}
+
+// ── 预置封装块 ──
+async function loadPresets() {
+  try {
+    const models = await api('/api/model/list');
+    const names = models.map(m => m.name);
+    if (!names.includes('L3_boiler_thermal') || !names.includes('L3_turbine_power')) {
+      // 预置块在首次创建后已存在，无需重建
+    }
+    await loadLibrary();
+  } catch(e) {}
+}
+</script>
+
+<style>
+.lib-item {
+  padding:10px 12px; border:1px solid var(--border); border-radius:6px;
+  margin-bottom:6px; cursor:pointer; transition:.15s;
+}
+.lib-item:hover { border-color:var(--primary); background:var(--primary-light); }
+.lib-item.active { border-color:var(--primary); background:var(--primary-light); font-weight:600; }
+.palette-block-mini {
+  padding:4px 8px; background:var(--card-bg); border:1px solid var(--border);
+  border-radius:4px; font-size:11px; font-weight:600; cursor:grab;
+  font-family:monospace; text-align:center; min-width:36px;
+}
+.palette-block-mini:hover { border-color:var(--primary); background:var(--primary-light); }
+</style>
+{% endblock %}

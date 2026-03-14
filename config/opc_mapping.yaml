@@ -1,0 +1,116 @@
+server: opc.tcp://localhost:9440
+dpu: DPU3013
+
+signals:
+  # ═══ 模型输出 → 写入 AI 通道 ═══
+
+  - name: main_steam_pressure
+    direction: output
+    channel: AI010601
+    type: AI
+    description: 主蒸汽压力1
+    unit: MPa
+    range_low: 0
+    range_high: 30
+
+  - name: unit_power
+    direction: output
+    channel: AI010605
+    type: AI
+    description: 发电机功率1
+    unit: MW
+    range_low: 0
+    range_high: 990
+
+  - name: main_steam_pressure_2
+    direction: output
+    channel: AI020402
+    type: AI
+    description: 主蒸汽压力2
+    unit: MPa
+    range_low: 0
+    range_high: 30
+
+  - name: unit_power_2
+    direction: output
+    channel: AI020405
+    type: AI
+    description: 发电机功率2
+    unit: MW
+    range_low: 0
+    range_high: 990
+
+  - name: main_steam_pressure_3
+    direction: output
+    channel: AI020501
+    type: AI
+    description: 主蒸汽压力3
+    unit: MPa
+    range_low: 0
+    range_high: 30
+
+  - name: unit_power_3
+    direction: output
+    channel: AI030306
+    type: AI
+    description: 发电机功率3
+    unit: MW
+    range_low: 0
+    range_high: 100
+
+  # ═══ 模型输入 ← 从 DCS 读取 ═══
+
+  - name: coal_flow
+    direction: input
+    node: DPU3013.SH0098.PROFCF.IN
+    type: block
+    description: 经过BTU修正后煤量
+    unit: t/h
+
+  - name: ccs_load_setpoint_1
+    direction: input
+    node: DPU3013.SH0150.AOUT37410.PV
+    type: block
+    description: 协调控制负荷设定#1
+    unit: MW
+
+  - name: ccs_load_setpoint_2
+    direction: input
+    node: DPU3013.SH0150.AOUT04429.PV
+    type: block
+    description: 协调控制负荷设定#2
+    unit: MW
+
+  - name: ccs_load_setpoint_3
+    direction: input
+    node: DPU3013.SH0150.AOUT76009.PV
+    type: block
+    description: 协调控制负荷设定#3
+    unit: MW
+
+  - name: generator_power
+    direction: input
+    node: DPU3013.SH0021.PROMW.IN
+    type: block
+    description: 发电机有功功率
+    unit: MW
+
+  - name: steam_pressure_feedback
+    direction: input
+    node: DPU3013.SH0031.PRO1.IN
+    type: block
+    description: 主蒸汽压力
+    unit: MPa
+
+# ═══ 冗余通道 ═══
+redundancy:
+  main_steam_pressure:
+    - channel: AI020402
+    - channel: AI020501
+  unit_power:
+    - channel: AI020405
+    - channel: AI030306
+
+# ═══ 模型 IO 绑定 ═══
+# 模型变量名 → OPC信号名（不配则按同名查找）
+model_bindings: {}

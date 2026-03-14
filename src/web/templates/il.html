@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% set active_page = "il" %}
+{% block title %}IL 层 - 预处理 - LeDCSsim{% endblock %}
+
+{% block content %}
+<div class="canvas-page">
+  <div class="canvas-toolbar" id="toolbar">
+    <div class="toolbar-left">
+      <span class="toolbar-title">IL 层 - 信号预处理</span>
+      <div class="toolbar-sep"></div>
+      <input type="text" class="toolbar-input" id="modelName" value="IL_preprocess" placeholder="配置名称">
+      <button class="toolbar-btn" onclick="saveModel()">&#128190; 保存</button>
+      <button class="toolbar-btn" onclick="loadModel()">&#128194; 加载</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.undo()">&#8630;</button>
+      <button class="toolbar-btn" onclick="engine.redo()">&#8631;</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.zoomIn()">&#43;</button>
+      <button class="toolbar-btn" onclick="engine.zoomOut()">&#8722;</button>
+      <button class="toolbar-btn" onclick="engine.zoomReset()">1:1</button>
+    </div>
+    <div class="toolbar-right">
+      <span class="zoom-indicator" id="zoomLabel">100%</span>
+    </div>
+  </div>
+
+  <div class="canvas-body">
+    <div class="block-palette" id="palette">
+      <div class="palette-search">
+        <input type="text" class="form-control" placeholder="搜索..." oninput="filterBlocks(this.value)">
+      </div>
+      <div class="palette-content" id="paletteContent">
+        <div class="palette-category">
+          <div class="palette-category-title"><span style="color:#10b981">&#9632;</span> IO 信号接入</div>
+          <div class="palette-items">
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'io_input')" data-search="io input 输入">
+              <span class="palette-block-id" style="color:#10b981">IN</span><span class="palette-block-name">IO 输入</span>
+            </div>
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'il_output')" data-search="il output 输出">
+              <span class="palette-block-id" style="color:#3b82f6">OUT</span><span class="palette-block-name">IL 输出 (至IB层)</span>
+            </div>
+          </div>
+        </div>
+        <div class="palette-category">
+          <div class="palette-category-title"><span style="color:#3b82f6">&#9632;</span> 预处理</div>
+          <div class="palette-items">
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'SC')" data-search="SC 量程缩放 scale">
+              <span class="palette-block-id" style="color:#3b82f6">SC</span><span class="palette-block-name">量程缩放</span>
+            </div>
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'FLT')" data-search="FLT 滤波 filter">
+              <span class="palette-block-id" style="color:#3b82f6">FLT</span><span class="palette-block-name">一阶滤波</span>
+            </div>
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'LIM')" data-search="LIM 限幅 limiter">
+              <span class="palette-block-id" style="color:#8b5cf6">LIM</span><span class="palette-block-name">限幅保护</span>
+            </div>
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'DB')" data-search="DB 死区 deadzone">
+              <span class="palette-block-id" style="color:#3b82f6">DB</span><span class="palette-block-name">死区</span>
+            </div>
+          </div>
+        </div>
+        <div class="palette-category">
+          <div class="palette-category-title"><span style="color:#06b6d4">&#9632;</span> 冗余选择</div>
+          <div class="palette-items">
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'NTH')" data-search="NTH 三取中">
+              <span class="palette-block-id" style="color:#06b6d4">NTH</span><span class="palette-block-name">三取中</span>
+            </div>
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'AVE')" data-search="AVE 均值 average">
+              <span class="palette-block-id" style="color:#f59e0b">AVE</span><span class="palette-block-name">均值</span>
+            </div>
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'ASW')" data-search="ASW 切换 switch">
+              <span class="palette-block-id" style="color:#06b6d4">ASW</span><span class="palette-block-name">模拟切换</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="canvas-area grid-dots" id="canvasArea">
+      <div id="drawflow"></div>
+    </div>
+
+    <div class="properties-panel" id="propsPanel">
+      <div class="props-header">IL 层说明</div>
+      <div class="props-body" id="propsContent">
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.8;">
+          <p><strong>功能：</strong>IO 层原始信号在进入 IB 层之前的预处理。</p>
+          <p><strong>典型操作：</strong></p>
+          <ul style="padding-left:16px;margin:8px 0;">
+            <li>量程缩放 (SC)</li>
+            <li>一阶滤波 (FLT)</li>
+            <li>限幅保护 (LIM)</li>
+            <li>三取中 / 均值 (NTH/AVE)</li>
+          </ul>
+          <div style="text-align:center;padding:8px;background:#f8fafc;border-radius:6px;font-size:11px;margin-top:8px;">
+            IO层 &rarr; <strong style="color:var(--primary);">IL层</strong> &rarr; IB层
+          </div>
+        </div>
+      </div>
+      <div class="props-footer">
+        <div class="props-section-title">层间跳转</div>
+        <a href="/io" class="props-link">IO 层 - 硬件通道</a>
+        <a href="/ib" class="props-link">IB 层 - 逻辑组态</a>
+        <a href="/l3" class="props-link">L3 层 - 封装库</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let engine = null;
+
+document.addEventListener('DOMContentLoaded', async () => {
+  engine = new CanvasEngine('drawflow', { grid: 'dots', mode: 'config' });
+
+  // 注册 IL 层常用块
+  const ilBlocks = [
+    {id:'io_input',  name:'IO 输入',   category:'signal',  inputs:0, outputs:1, params:[{key:'tag',label:'信号名',type:'string',default:''}]},
+    {id:'il_output', name:'IL 输出',   category:'signal',  inputs:1, outputs:0, params:[{key:'tag',label:'信号名',type:'string',default:''}]},
+    {id:'SC',  name:'量程缩放', category:'dynamic', inputs:1, outputs:1, params:[{key:'in_low',label:'输入下限',type:'number',default:0},{key:'in_high',label:'输入上限',type:'number',default:100},{key:'out_low',label:'输出下限',type:'number',default:0},{key:'out_high',label:'输出上限',type:'number',default:100}]},
+    {id:'FLT', name:'一阶滤波', category:'dynamic', inputs:1, outputs:1, params:[{key:'T',label:'时间常数(s)',type:'number',default:1.0}]},
+    {id:'LIM', name:'限幅',     category:'dynamic', inputs:1, outputs:1, params:[{key:'low',label:'下限',type:'number',default:0},{key:'high',label:'上限',type:'number',default:100}]},
+    {id:'DB',  name:'死区',     category:'dynamic', inputs:1, outputs:1, params:[{key:'zone',label:'死区半宽',type:'number',default:0.5}]},
+    {id:'NTH', name:'三取中',   category:'compare', inputs:3, outputs:1, params:[]},
+    {id:'AVE', name:'均值',     category:'arithmetic', inputs:2, outputs:1, params:[]},
+    {id:'ASW', name:'模拟切换', category:'logic',   inputs:2, outputs:1, params:[{key:'threshold',label:'阈值',type:'number',default:0.5}]},
+  ];
+  ilBlocks.forEach(b => engine.registerBlock(b));
+
+  // 自动加载
+  try {
+    const d = await api('/api/model/load/IL_preprocess');
+    if (d.drawflow) engine.importJSON(d.drawflow);
+  } catch(e) {}
+
+  const canvas = document.getElementById('canvasArea');
+  canvas.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    const blockId = ev.dataTransfer.getData('blockId');
+    if (!blockId) return;
+    const rect = document.getElementById('drawflow').getBoundingClientRect();
+    engine.addBlock(blockId, ev.clientX - rect.left, ev.clientY - rect.top);
+  });
+  canvas.addEventListener('dragover', (e) => e.preventDefault());
+});
+
+function dragBlock(ev, id) { ev.dataTransfer.setData('blockId', id); }
+function filterBlocks(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('.palette-block').forEach(el => {
+    el.style.display = (!q || (el.dataset.search||'').toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+
+async function saveModel() {
+  const name = document.getElementById('modelName').value.trim() || 'IL_preprocess';
+  await api('/api/model/save', { method:'POST', body:{ name, drawflow: engine.exportJSON(), layer:'IL' }});
+  showToast(`"${name}" 已保存`, 'success');
+}
+async function loadModel() {
+  const name = document.getElementById('modelName').value.trim() || 'IL_preprocess';
+  try {
+    const d = await api(`/api/model/load/${name}`);
+    if (d.drawflow) { engine.importJSON(d.drawflow); showToast('已加载', 'success'); }
+  } catch(e) { showToast('未找到', 'info'); }
+}
+</script>
+{% endblock %}

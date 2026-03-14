@@ -1,0 +1,24 @@
+# 仿真运行设置
+
+# 仿真引擎
+engine:
+  step_size: 0.2          # 仿真步长, 秒 (200ms)
+  log_interval: 10.0      # 状态日志输出间隔, 秒
+
+# OPC UA 连接
+opc:
+  url: "opc.tcp://localhost:9440"
+  timeout: 10.0           # 会话超时, 秒
+  retry_count: 10         # 连接重试次数
+  retry_interval: 3.0     # 重试间隔, 秒
+
+# 数据记录
+recorder:
+  auto_save: true         # 仿真结束自动保存
+  output_dir: "data/"     # 数据输出目录
+  max_rows: 0             # 最大记录行数, 0=不限
+
+# 初始工况（稳态起始点）
+initial_conditions:
+  valve_position: 50.0    # 调节阀开度, %
+  unit_power: 500.0       # 机组功率, MW

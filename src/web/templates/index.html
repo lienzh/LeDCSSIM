@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% set active_page = "index" %}
+{% block title %}LeDCSsim - 首页{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h2>DCS 协调控制仿真验证平台</h2>
+    <div class="desc">Python 仿真模型 + OPC UA + 科远 NTVDPU 闭环运行</div>
+  </div>
+</div>
+
+<div class="page-body">
+  <!-- 架构图 -->
+  <div class="card" style="margin-bottom:20px;">
+    <div class="card-body" style="padding:20px 24px;">
+      <div style="display:flex; align-items:center; justify-content:center; gap:12px; font-size:13px; flex-wrap:wrap;">
+        <a href="/io" style="text-decoration:none;">
+          <div style="padding:12px 20px; background:#f0fdf4; border:2px solid #86efac; border-radius:8px; text-align:center; min-width:100px;">
+            <div style="font-weight:700; color:#166534;">IO 层</div>
+            <div style="font-size:11px; color:#4ade80;">硬件通道</div>
+          </div>
+        </a>
+        <div style="color:var(--text-light); font-size:18px;">&rarr;</div>
+        <a href="/il" style="text-decoration:none;">
+          <div style="padding:12px 20px; background:#eff6ff; border:2px solid #93c5fd; border-radius:8px; text-align:center; min-width:100px;">
+            <div style="font-weight:700; color:#1e40af;">IL 层</div>
+            <div style="font-size:11px; color:#60a5fa;">预处理</div>
+          </div>
+        </a>
+        <div style="color:var(--text-light); font-size:18px;">&rarr;</div>
+        <a href="/ib" style="text-decoration:none;">
+          <div style="padding:12px 20px; background:#fef3c7; border:2px solid #fcd34d; border-radius:8px; text-align:center; min-width:100px;">
+            <div style="font-weight:700; color:#92400e;">IB 层</div>
+            <div style="font-size:11px; color:#f59e0b;">逻辑组态</div>
+          </div>
+        </a>
+        <div style="color:var(--text-light); font-size:18px;">&rarr;</div>
+        <a href="/run" style="text-decoration:none;">
+          <div style="padding:12px 20px; background:#fce7f3; border:2px solid #f9a8d4; border-radius:8px; text-align:center; min-width:100px;">
+            <div style="font-weight:700; color:#9d174d;">运行</div>
+            <div style="font-size:11px; color:#ec4899;">仿真闭环</div>
+          </div>
+        </a>
+      </div>
+      <div style="text-align:center; margin-top:8px;">
+        <a href="/l3" style="font-size:11px; color:var(--text-light); text-decoration:none;">
+          L3 层 (封装实现) &mdash; IL/IB 中复合块的内部逻辑展开
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="dashboard-grid">
+    <a href="/io" class="card feature-card">
+      <div class="feature-icon" style="background:#d1fae5;"><span style="font-size:20px; color:#059669; font-weight:700;">IO</span></div>
+      <h3>IO 层</h3>
+      <p>OPC UA 硬件通道配置，AI/DI 信号映射</p>
+    </a>
+    <a href="/il" class="card feature-card">
+      <div class="feature-icon" style="background:#dbeafe;"><span style="font-size:20px; color:#2563eb; font-weight:700;">IL</span></div>
+      <h3>IL 预处理层</h3>
+      <p>信号缩放、滤波、有效性判断、冗余选择</p>
+    </a>
+    <a href="/ib" class="card feature-card">
+      <div class="feature-icon" style="background:#fef3c7;"><span style="font-size:20px; color:#d97706; font-weight:700;">IB</span></div>
+      <h3>IB 逻辑组态层</h3>
+      <p>SAMA 图组态，CCS 控制模型搭建</p>
+    </a>
+    <a href="/l3" class="card feature-card">
+      <div class="feature-icon" style="background:#f3e8ff;"><span style="font-size:20px; color:#7c3aed; font-weight:700;">L3</span></div>
+      <h3>L3 封装实现层</h3>
+      <p>复合功能块内部逻辑展开与编辑</p>
+    </a>
+    <a href="/run" class="card feature-card">
+      <div class="feature-icon" style="background:#fce7f3;"><span style="font-size:18px; color:#db2777;">&#9654;</span></div>
+      <h3>仿真运行</h3>
+      <p>在线/离线仿真，实时趋势曲线</p>
+    </a>
+  </div>
+
+  <div class="card" style="margin-top: 24px;">
+    <div class="card-header">
+      <h3>快速状态</h3>
+    </div>
+    <div class="card-body">
+      <div id="quick-status" style="color: var(--text-secondary); font-size: 13px;">
+        正在加载...
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function loadStatus() {
+    try {
+      const signals = await api('/api/signals');
+      const models = await api('/api/model/list');
+      const sim = await api('/api/sim/status');
+
+      const el = document.getElementById('quick-status');
+      el.innerHTML = `
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+          <div>
+            <div style="font-size: 28px; font-weight: 700; color: var(--primary);">
+              ${signals.signals.length}
+            </div>
+            <div>已配置信号数</div>
+          </div>
+          <div>
+            <div style="font-size: 28px; font-weight: 700; color: var(--success);">
+              ${models.length}
+            </div>
+            <div>已保存模型数</div>
+          </div>
+          <div>
+            <div style="font-size: 28px; font-weight: 700; color: ${sim.running ? 'var(--warning)' : 'var(--text-light)'};">
+              ${sim.running ? '运行中' : '已停止'}
+            </div>
+            <div>仿真状态</div>
+          </div>
+        </div>
+      `;
+    } catch (e) {
+      document.getElementById('quick-status').textContent = '加载失败';
+    }
+  }
+  loadStatus();
+</script>
+{% endblock %}

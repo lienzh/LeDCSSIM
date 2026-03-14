@@ -1,0 +1,1440 @@
+# R600C DCS 宏指令功能块库定义
+# 用于 Web 组态界面的功能块拖拽面板
+# py_class 为 null 表示尚未在 Python 中实现
+
+categories:
+  - id: signal
+    name: 信号
+    color: "#10b981"
+  - id: arithmetic
+    name: 算术运算
+    color: "#f59e0b"
+  - id: compare
+    name: 比较选择
+    color: "#8b5cf6"
+  - id: dynamic
+    name: 动态环节
+    color: "#3b82f6"
+  - id: control
+    name: 控制
+    color: "#ef4444"
+  - id: logic
+    name: 逻辑
+    color: "#06b6d4"
+  - id: timer
+    name: 定时计数
+    color: "#ec4899"
+  - id: transfer
+    name: 信号传输
+    color: "#64748b"
+
+blocks:
+
+  # ============================================================
+  # 信号 (signal)
+  # ============================================================
+  - id: input
+    name: 输入端子
+    category: signal
+    description: 模型外部输入信号接入点（UI 专用）
+    inputs: 0
+    outputs: 1
+    params:
+      - key: tag
+        label: 标签名
+        type: string
+        default: ""
+      - key: unit
+        label: 单位
+        type: string
+        default: ""
+    py_class: null
+
+  - id: output
+    name: 输出端子
+    category: signal
+    description: 模型输出信号送出点（UI 专用）
+    inputs: 1
+    outputs: 0
+    params:
+      - key: tag
+        label: 标签名
+        type: string
+        default: ""
+      - key: unit
+        label: 单位
+        type: string
+        default: ""
+    py_class: null
+
+  - id: constant
+    name: 常数
+    category: signal
+    description: 输出固定常数值（UI 专用）
+    inputs: 0
+    outputs: 1
+    params:
+      - key: value
+        label: 常数值
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: CON
+    name: 常数发生器
+    category: signal
+    description: 输出一个可设定的常数值
+    inputs: 0
+    outputs: 1
+    params:
+      - key: value
+        label: 常数值
+        type: number
+        default: 0.0
+    py_class: null
+
+  # ============================================================
+  # 算术运算 (arithmetic)
+  # ============================================================
+  - id: ADD
+    name: 加法
+    category: arithmetic
+    description: 两路信号相加，OUT = IN1 + IN2
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: SUB
+    name: 减法
+    category: arithmetic
+    description: 两路信号相减，OUT = IN1 - IN2
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: MLT
+    name: 乘法
+    category: arithmetic
+    description: 两路信号相乘，OUT = IN1 * IN2
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: ML
+    name: 乘法
+    category: arithmetic
+    description: 两路信号相乘（MLT 别名），OUT = IN1 * IN2
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: DIV
+    name: 除法
+    category: arithmetic
+    description: 两路信号相除，OUT = IN1 / IN2（除零保护）
+    inputs: 2
+    outputs: 1
+    params:
+      - key: zero_out
+        label: 除零输出值
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: ABS
+    name: 绝对值
+    category: arithmetic
+    description: 输出输入信号的绝对值，OUT = |IN|
+    inputs: 1
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: POW
+    name: 乘方
+    category: arithmetic
+    description: 乘方运算，OUT = IN1 ^ IN2
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: SUM
+    name: 多路求和
+    category: arithmetic
+    description: 多路信号带系数求和，OUT = K1*IN1 + K2*IN2 + ... + Kn*INn
+    inputs: 4
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 4
+      - key: K1
+        label: 系数1
+        type: number
+        default: 1.0
+      - key: K2
+        label: 系数2
+        type: number
+        default: 1.0
+      - key: K3
+        label: 系数3
+        type: number
+        default: 1.0
+      - key: K4
+        label: 系数4
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: AVE
+    name: 平均值
+    category: arithmetic
+    description: 多路信号取平均值，OUT = (IN1 + IN2 + ... + INn) / n
+    inputs: 4
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 4
+    py_class: null
+
+  # ============================================================
+  # 比较选择 (compare)
+  # ============================================================
+  - id: CMP
+    name: 比较器
+    category: compare
+    description: 比较两路信号大小，IN1 > IN2 时输出1，否则输出0
+    inputs: 2
+    outputs: 1
+    params:
+      - key: db
+        label: 比较死区
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: AC
+    name: 模拟比较器
+    category: compare
+    description: 模拟量比较，可设定回差，IN > SP+DB 输出1，IN < SP-DB 输出0
+    inputs: 2
+    outputs: 1
+    params:
+      - key: db
+        label: 回差
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: AC1
+    name: 模拟比较器1
+    category: compare
+    description: 带多种比较模式的模拟量比较器
+    inputs: 2
+    outputs: 1
+    params:
+      - key: mode
+        label: 比较模式
+        type: number
+        default: 0
+      - key: db
+        label: 回差
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: HS
+    name: 高选
+    category: compare
+    description: 多路信号取最大值，OUT = MAX(IN1, IN2, ..., INn)
+    inputs: 2
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 2
+    py_class: HighSelect
+
+  - id: LS
+    name: 低选
+    category: compare
+    description: 多路信号取最小值，OUT = MIN(IN1, IN2, ..., INn)
+    inputs: 2
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 2
+    py_class: LowSelect
+
+  - id: HSG
+    name: 高信号门
+    category: compare
+    description: 高信号选通门，输入高于设定值时输出有效
+    inputs: 2
+    outputs: 1
+    params:
+      - key: threshold
+        label: 门限值
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: LSG
+    name: 低信号门
+    category: compare
+    description: 低信号选通门，输入低于设定值时输出有效
+    inputs: 2
+    outputs: 1
+    params:
+      - key: threshold
+        label: 门限值
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: SEL
+    name: 多路选择器
+    category: compare
+    description: 根据选择信号从多路输入中选择一路输出
+    inputs: 4
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 4
+    py_class: null
+
+  - id: NTH
+    name: 第N值选择
+    category: compare
+    description: 从多路输入中选择排序后第N大的值输出
+    inputs: 4
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 4
+      - key: nth
+        label: 第N值
+        type: number
+        default: 2
+    py_class: null
+
+  - id: HHV
+    name: 高高值报警
+    category: compare
+    description: 信号超过高高限时输出报警，带回差
+    inputs: 1
+    outputs: 1
+    params:
+      - key: hh
+        label: 高高限
+        type: number
+        default: 100.0
+      - key: db
+        label: 回差
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: VHV
+    name: 极高值报警
+    category: compare
+    description: 信号超过极高限时输出报警，用于安全联锁
+    inputs: 1
+    outputs: 1
+    params:
+      - key: vhv
+        label: 极高限
+        type: number
+        default: 110.0
+      - key: db
+        label: 回差
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: WCM
+    name: 窗口比较器
+    category: compare
+    description: 信号在上下限窗口内时输出1，否则输出0
+    inputs: 1
+    outputs: 1
+    params:
+      - key: hi
+        label: 上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 下限
+        type: number
+        default: 0.0
+      - key: db
+        label: 回差
+        type: number
+        default: 0.0
+    py_class: null
+
+  # ============================================================
+  # 动态环节 (dynamic)
+  # ============================================================
+  - id: G
+    name: 增益
+    category: dynamic
+    description: 纯增益环节，OUT = K * IN
+    inputs: 1
+    outputs: 1
+    params:
+      - key: K
+        label: 增益
+        type: number
+        default: 1.0
+    py_class: Inertia  # 使用 Inertia(K=K, T=0) 实现纯增益
+
+  - id: I
+    name: 积分器
+    category: dynamic
+    description: 积分环节，OUT = (1/Ti) * ∫IN dt
+    inputs: 1
+    outputs: 1
+    params:
+      - key: Ti
+        label: 积分时间(秒)
+        type: number
+        default: 10.0
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: Integrator
+
+  - id: LDL
+    name: 超前滞后
+    category: dynamic
+    description: 超前滞后环节，G(s) = K * (T1s+1)/(T2s+1)
+    inputs: 1
+    outputs: 1
+    params:
+      - key: K
+        label: 增益
+        type: number
+        default: 1.0
+      - key: T1
+        label: 超前时间常数(秒)
+        type: number
+        default: 1.0
+      - key: T2
+        label: 滞后时间常数(秒)
+        type: number
+        default: 1.0
+    py_class: LeadLag
+
+  - id: DF
+    name: 微分滤波
+    category: dynamic
+    description: 带滤波的微分环节，G(s) = Td*s/(Tf*s+1)
+    inputs: 1
+    outputs: 1
+    params:
+      - key: Td
+        label: 微分时间(秒)
+        type: number
+        default: 1.0
+      - key: Tf
+        label: 滤波时间(秒)
+        type: number
+        default: 0.1
+    py_class: null
+
+  - id: FLT
+    name: 一阶滤波
+    category: dynamic
+    description: 一阶惯性滤波，G(s) = 1/(Ts+1)
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 滤波时间常数(秒)
+        type: number
+        default: 1.0
+    py_class: Inertia  # 使用 Inertia(K=1, T=T) 实现
+
+  - id: DB
+    name: 死区
+    category: dynamic
+    description: 输入在死区范围内时输出为0，超出死区后线性输出
+    inputs: 1
+    outputs: 1
+    params:
+      - key: db
+        label: 死区宽度
+        type: number
+        default: 0.5
+    py_class: DeadZone
+
+  - id: LIM
+    name: 限幅器
+    category: dynamic
+    description: 输出限制在上下限范围内
+    inputs: 1
+    outputs: 1
+    params:
+      - key: hi
+        label: 上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 下限
+        type: number
+        default: 0.0
+    py_class: Limiter
+
+  - id: RL
+    name: 速率限制
+    category: dynamic
+    description: 限制输出变化速率，防止突变
+    inputs: 1
+    outputs: 1
+    params:
+      - key: rate_up
+        label: 上升速率限制(/秒)
+        type: number
+        default: 10.0
+      - key: rate_dn
+        label: 下降速率限制(/秒)
+        type: number
+        default: 10.0
+    py_class: RateLimiter
+
+  - id: RLH
+    name: 速率限制保持
+    category: dynamic
+    description: 带保持功能的速率限制器，可冻结输出
+    inputs: 2
+    outputs: 1
+    params:
+      - key: rate_up
+        label: 上升速率限制(/秒)
+        type: number
+        default: 10.0
+      - key: rate_dn
+        label: 下降速率限制(/秒)
+        type: number
+        default: 10.0
+    py_class: null
+
+  - id: GRD
+    name: 梯度计算
+    category: dynamic
+    description: 计算输入信号的变化梯度（变化率）
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 计算周期(秒)
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: HLD
+    name: 采样保持
+    category: dynamic
+    description: 触发信号有效时采样输入并保持输出
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: SC
+    name: 量程变换
+    category: dynamic
+    description: 线性量程变换，OUT = (IN-IL)/(IH-IL)*(OH-OL)+OL
+    inputs: 1
+    outputs: 1
+    params:
+      - key: IH
+        label: 输入上限
+        type: number
+        default: 100.0
+      - key: IL
+        label: 输入下限
+        type: number
+        default: 0.0
+      - key: OH
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: OL
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: BCG
+    name: 偏置增益
+    category: dynamic
+    description: 偏置加增益，OUT = K * IN + B
+    inputs: 1
+    outputs: 1
+    params:
+      - key: K
+        label: 增益
+        type: number
+        default: 1.0
+      - key: B
+        label: 偏置
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: GAP
+    name: 间隙控制
+    category: dynamic
+    description: 带间隙的控制器，偏差在间隙范围内时输出不变
+    inputs: 1
+    outputs: 1
+    params:
+      - key: gap
+        label: 间隙宽度
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: DV
+    name: 偏差计算
+    category: dynamic
+    description: 计算两路信号的偏差，OUT = IN1 - IN2
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: LIN
+    name: 线性化
+    category: dynamic
+    description: 信号线性化处理，用于补偿传感器非线性
+    inputs: 1
+    outputs: 1
+    params:
+      - key: type
+        label: 线性化类型
+        type: number
+        default: 0
+    py_class: null
+
+  - id: FG
+    name: 折线函数
+    category: dynamic
+    description: 折线插值函数发生器，根据断点表做线性插值
+    inputs: 1
+    outputs: 1
+    params:
+      - key: n
+        label: 断点数
+        type: number
+        default: 5
+      - key: points
+        label: 断点表(x,y)
+        type: string
+        default: "0,0;25,25;50,50;75,75;100,100"
+    py_class: LinearInterp
+
+  - id: FGC
+    name: 折线函数(标定)
+    category: dynamic
+    description: 带标定功能的折线函数发生器
+    inputs: 1
+    outputs: 1
+    params:
+      - key: n
+        label: 断点数
+        type: number
+        default: 5
+      - key: points
+        label: 断点表(x,y)
+        type: string
+        default: "0,0;25,25;50,50;75,75;100,100"
+    py_class: null
+
+  - id: SF
+    name: 信号函数
+    category: dynamic
+    description: 可配置的信号处理函数（开方、对数等）
+    inputs: 1
+    outputs: 1
+    params:
+      - key: func
+        label: 函数类型
+        type: number
+        default: 0
+    py_class: null
+
+  - id: LMS
+    name: 最小均方
+    category: dynamic
+    description: 最小均方自适应滤波器
+    inputs: 2
+    outputs: 1
+    params:
+      - key: order
+        label: 阶数
+        type: number
+        default: 4
+      - key: mu
+        label: 步长因子
+        type: number
+        default: 0.01
+    py_class: null
+
+  - id: LSQ
+    name: 最小二乘
+    category: dynamic
+    description: 最小二乘拟合
+    inputs: 2
+    outputs: 1
+    params:
+      - key: order
+        label: 阶数
+        type: number
+        default: 2
+      - key: window
+        label: 数据窗口长度
+        type: number
+        default: 100
+    py_class: null
+
+  # ============================================================
+  # 控制 (control)
+  # ============================================================
+  - id: PI
+    name: 比例积分
+    category: control
+    description: PI 控制器，OUT = Kp*(e + 1/Ti*∫e dt)
+    inputs: 2
+    outputs: 1
+    params:
+      - key: Kp
+        label: 比例增益
+        type: number
+        default: 1.0
+      - key: Ti
+        label: 积分时间(秒)
+        type: number
+        default: 60.0
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: PIF
+    name: 比例积分带滤波
+    category: control
+    description: 带输入滤波的 PI 控制器
+    inputs: 2
+    outputs: 1
+    params:
+      - key: Kp
+        label: 比例增益
+        type: number
+        default: 1.0
+      - key: Ti
+        label: 积分时间(秒)
+        type: number
+        default: 60.0
+      - key: Tf
+        label: 滤波时间(秒)
+        type: number
+        default: 1.0
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: PIV
+    name: 比例积分变增益
+    category: control
+    description: 带变增益的 PI 控制器，增益随工况变化
+    inputs: 3
+    outputs: 1
+    params:
+      - key: Kp
+        label: 基础比例增益
+        type: number
+        default: 1.0
+      - key: Ti
+        label: 积分时间(秒)
+        type: number
+        default: 60.0
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: PD
+    name: 比例微分
+    category: control
+    description: PD 控制器，OUT = Kp*(e + Td*de/dt)
+    inputs: 2
+    outputs: 1
+    params:
+      - key: Kp
+        label: 比例增益
+        type: number
+        default: 1.0
+      - key: Td
+        label: 微分时间(秒)
+        type: number
+        default: 5.0
+    py_class: null
+
+  - id: PDD
+    name: 比例微分带微分滤波
+    category: control
+    description: 带微分滤波的 PD 控制器，抑制微分噪声
+    inputs: 2
+    outputs: 1
+    params:
+      - key: Kp
+        label: 比例增益
+        type: number
+        default: 1.0
+      - key: Td
+        label: 微分时间(秒)
+        type: number
+        default: 5.0
+      - key: Tf
+        label: 微分滤波时间(秒)
+        type: number
+        default: 0.5
+    py_class: null
+
+  - id: PDF
+    name: 比例微分带滤波
+    category: control
+    description: 带输入滤波的 PD 控制器
+    inputs: 2
+    outputs: 1
+    params:
+      - key: Kp
+        label: 比例增益
+        type: number
+        default: 1.0
+      - key: Td
+        label: 微分时间(秒)
+        type: number
+        default: 5.0
+      - key: Tf
+        label: 滤波时间(秒)
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: FTR
+    name: 滤波传递
+    category: control
+    description: 滤波传递函数，用于控制回路信号处理
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 滤波时间(秒)
+        type: number
+        default: 1.0
+      - key: K
+        label: 增益
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: AM
+    name: 自动/手动站
+    category: control
+    description: 自动/手动操作站，支持无扰切换
+    inputs: 2
+    outputs: 1
+    params:
+      - key: init
+        label: 初始输出
+        type: number
+        default: 0.0
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: MODE
+    name: 模式控制
+    category: control
+    description: 多模式控制器，根据工况切换控制策略
+    inputs: 4
+    outputs: 1
+    params:
+      - key: n
+        label: 模式数
+        type: number
+        default: 2
+    py_class: null
+
+  - id: MJL
+    name: 主回路
+    category: control
+    description: 串级控制主回路，带跟踪和无扰切换
+    inputs: 3
+    outputs: 1
+    params:
+      - key: Kp
+        label: 比例增益
+        type: number
+        default: 1.0
+      - key: Ti
+        label: 积分时间(秒)
+        type: number
+        default: 60.0
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: BMP
+    name: 无扰切换
+    category: control
+    description: 无扰动切换模块，保证手自动切换时输出无阶跃
+    inputs: 3
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: TSP
+    name: 跟踪设定值
+    category: control
+    description: 跟踪设定值模块，自动跟踪实际值作为设定值
+    inputs: 2
+    outputs: 1
+    params:
+      - key: rate
+        label: 跟踪速率(/秒)
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: PST
+    name: 位置控制
+    category: control
+    description: 位置型控制输出，直接输出阀位指令
+    inputs: 2
+    outputs: 1
+    params:
+      - key: hi
+        label: 输出上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 输出下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: VCL
+    name: 速度控制
+    category: control
+    description: 速度型控制输出，输出阀位变化增量
+    inputs: 2
+    outputs: 1
+    params:
+      - key: rate
+        label: 最大速率(/秒)
+        type: number
+        default: 5.0
+    py_class: null
+
+  - id: MR
+    name: 手动复位
+    category: control
+    description: 手动复位模块，操作员手动设定控制器输出
+    inputs: 1
+    outputs: 1
+    params:
+      - key: init
+        label: 初始值
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: PTN
+    name: 模式切换
+    category: control
+    description: 控制模式模式切换逻辑
+    inputs: 2
+    outputs: 1
+    params:
+      - key: n
+        label: 模式数
+        type: number
+        default: 2
+    py_class: null
+
+  # ============================================================
+  # 逻辑 (logic)
+  # ============================================================
+  - id: A
+    name: 与门
+    category: logic
+    description: 逻辑与运算，所有输入为1时输出为1
+    inputs: 2
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 2
+    py_class: null
+
+  - id: OR
+    name: 或门
+    category: logic
+    description: 逻辑或运算，任一输入为1时输出为1
+    inputs: 2
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 2
+    py_class: null
+
+  - id: NOT
+    name: 非门
+    category: logic
+    description: 逻辑非运算，输入取反输出
+    inputs: 1
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: EOR
+    name: 异或门
+    category: logic
+    description: 逻辑异或运算，两输入不同时输出为1
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: LG
+    name: 可配置逻辑门
+    category: logic
+    description: 可配置逻辑门，支持与、或、异或等多种组合
+    inputs: 4
+    outputs: 1
+    params:
+      - key: n
+        label: 输入数
+        type: number
+        default: 4
+      - key: logic
+        label: 逻辑类型(0=与,1=或,2=异或)
+        type: number
+        default: 0
+    py_class: null
+
+  - id: FFR
+    name: RS触发器(复位优先)
+    category: logic
+    description: RS 触发器，复位优先，R=1时输出强制为0
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: FFS
+    name: RS触发器(置位优先)
+    category: logic
+    description: RS 触发器，置位优先，S=1时输出强制为1
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: LCK
+    name: 闭锁
+    category: logic
+    description: 闭锁/联锁模块，条件满足时锁定输出状态
+    inputs: 3
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: UCK
+    name: 解锁
+    category: logic
+    description: 解锁模块，解除闭锁状态
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: DSW
+    name: 数字开关
+    category: logic
+    description: 数字量二选一开关，根据切换信号选择输出
+    inputs: 3
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: ASW
+    name: 模拟开关
+    category: logic
+    description: 模拟量二选一开关，根据切换信号选择一路模拟量输出
+    inputs: 3
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: ASWW
+    name: 模拟开关(带窗口)
+    category: logic
+    description: 带窗口限制的模拟量开关
+    inputs: 3
+    outputs: 1
+    params:
+      - key: window
+        label: 窗口宽度
+        type: number
+        default: 5.0
+    py_class: null
+
+  # ============================================================
+  # 定时计数 (timer)
+  # ============================================================
+  - id: TB
+    name: 通延时
+    category: timer
+    description: 接通延时定时器，输入持续为1达到设定时间后输出为1
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 延时时间(秒)
+        type: number
+        default: 5.0
+    py_class: null
+
+  - id: TBD
+    name: 断延时
+    category: timer
+    description: 断开延时定时器，输入变为0后延时设定时间输出才变0
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 延时时间(秒)
+        type: number
+        default: 5.0
+    py_class: null
+
+  - id: TD
+    name: 延时
+    category: timer
+    description: 信号延时模块，输出为延时后的输入信号
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 延时时间(秒)
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: THF
+    name: 定时保持
+    category: timer
+    description: 定时保持功能，触发后保持输出设定时间
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 保持时间(秒)
+        type: number
+        default: 5.0
+    py_class: null
+
+  - id: TP
+    name: 脉冲定时
+    category: timer
+    description: 脉冲定时器，触发后输出固定宽度脉冲
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 脉冲宽度(秒)
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: TW
+    name: 看门狗定时
+    category: timer
+    description: 看门狗定时器，超时未刷新则输出报警
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 超时时间(秒)
+        type: number
+        default: 10.0
+    py_class: null
+
+  - id: TWF
+    name: 看门狗定时功能
+    category: timer
+    description: 带功能扩展的看门狗定时器
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 超时时间(秒)
+        type: number
+        default: 10.0
+    py_class: null
+
+  - id: TWO
+    name: 双位控制
+    category: timer
+    description: 双位式（开关式）控制器，带回差
+    inputs: 2
+    outputs: 1
+    params:
+      - key: db
+        label: 回差
+        type: number
+        default: 1.0
+    py_class: null
+
+  - id: RT
+    name: 斜坡定时
+    category: timer
+    description: 斜坡/定时器，输出按设定速率线性变化
+    inputs: 2
+    outputs: 1
+    params:
+      - key: rate
+        label: 变化速率(/秒)
+        type: number
+        default: 1.0
+      - key: hi
+        label: 上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: CNT
+    name: 计数器
+    category: timer
+    description: 脉冲计数器，对输入脉冲计数
+    inputs: 2
+    outputs: 1
+    params:
+      - key: preset
+        label: 预置值
+        type: number
+        default: 100
+      - key: dir
+        label: 计数方向(0=加,1=减)
+        type: number
+        default: 0
+    py_class: null
+
+  - id: FLK
+    name: 闪烁器
+    category: timer
+    description: 闪烁/脉冲发生器，按设定周期输出方波
+    inputs: 1
+    outputs: 1
+    params:
+      - key: Ton
+        label: 导通时间(秒)
+        type: number
+        default: 0.5
+      - key: Toff
+        label: 关断时间(秒)
+        type: number
+        default: 0.5
+    py_class: null
+
+  - id: AW
+    name: 报警看门狗
+    category: timer
+    description: 报警看门狗，监视信号并在超限时输出报警
+    inputs: 1
+    outputs: 1
+    params:
+      - key: T
+        label: 超时时间(秒)
+        type: number
+        default: 10.0
+      - key: hi
+        label: 报警上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 报警下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  # ============================================================
+  # 信号传输 (transfer)
+  # ============================================================
+  - id: CPL
+    name: 信号耦合
+    category: transfer
+    description: 信号耦合/分配，一路输入分配到多路输出
+    inputs: 1
+    outputs: 2
+    params:
+      - key: n
+        label: 输出数
+        type: number
+        default: 2
+    py_class: null
+
+  - id: BTR
+    name: 批量传送
+    category: transfer
+    description: 多路信号批量传送/数据块搬移
+    inputs: 4
+    outputs: 4
+    params:
+      - key: n
+        label: 传送数量
+        type: number
+        default: 4
+    py_class: null
+
+  - id: BP1
+    name: 旁路
+    category: transfer
+    description: 信号旁路模块，可在线切入/切出信号处理环节
+    inputs: 2
+    outputs: 1
+    params: []
+    py_class: null
+
+  - id: BHL
+    name: 高低带限
+    category: transfer
+    description: 带高低限的信号传输，超限时切换到备用信号
+    inputs: 2
+    outputs: 1
+    params:
+      - key: hi
+        label: 上限
+        type: number
+        default: 100.0
+      - key: lo
+        label: 下限
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: SG
+    name: 信号发生器
+    category: transfer
+    description: 测试信号发生器，可输出阶跃/斜坡/正弦等波形
+    inputs: 0
+    outputs: 1
+    params:
+      - key: type
+        label: 波形类型(0=阶跃,1=斜坡,2=正弦)
+        type: number
+        default: 0
+      - key: amp
+        label: 幅值
+        type: number
+        default: 1.0
+      - key: freq
+        label: 频率(Hz)
+        type: number
+        default: 1.0
+      - key: offset
+        label: 偏置
+        type: number
+        default: 0.0
+    py_class: null
+
+  - id: SGW
+    name: 信号门(带窗口)
+    category: transfer
+    description: 带窗口的信号选通门，窗口内有效
+    inputs: 2
+    outputs: 1
+    params:
+      - key: window
+        label: 窗口宽度
+        type: number
+        default: 5.0
+    py_class: null
+
+  - id: FS
+    name: 频率转信号
+    category: transfer
+    description: 频率/脉冲信号转换为模拟量信号
+    inputs: 1
+    outputs: 1
+    params:
+      - key: K
+        label: 转换系数
+        type: number
+        default: 1.0
+      - key: fmax
+        label: 最大频率(Hz)
+        type: number
+        default: 1000.0
+    py_class: null

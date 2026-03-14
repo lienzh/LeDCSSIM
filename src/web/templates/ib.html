@@ -1,0 +1,398 @@
+{% extends "base.html" %}
+{% set active_page = "ib" %}
+{% block title %}IB 层 - 逻辑组态 - LeDCSsim{% endblock %}
+
+{% block content %}
+<div class="canvas-page">
+  <!-- 工具栏 -->
+  <div class="canvas-toolbar">
+    <div class="toolbar-left">
+      <span class="toolbar-title">IB 逻辑组态</span>
+      <div class="toolbar-sep"></div>
+      <input type="text" class="toolbar-input" id="modelName" value="CCS_model" placeholder="模型名称">
+      <button class="toolbar-btn" onclick="saveModel()" title="保存 Ctrl+S">&#128190;</button>
+      <button class="toolbar-btn" onclick="loadModel()" title="加载">&#128194;</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.undo()" title="撤销 Ctrl+Z">&#8630;</button>
+      <button class="toolbar-btn" onclick="engine.redo()" title="重做 Ctrl+Y">&#8631;</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.zoomIn()">&#43;</button>
+      <button class="toolbar-btn" onclick="engine.zoomOut()">&#8722;</button>
+      <button class="toolbar-btn" onclick="engine.zoomReset()">1:1</button>
+      <div class="toolbar-sep"></div>
+      <button class="toolbar-btn" onclick="engine.toggleGrid()">&#9783;</button>
+    </div>
+    <div class="toolbar-right">
+      <!-- 仿真控制 -->
+      <select class="toolbar-input" id="simMode" style="width:auto;">
+        <option value="offline">离线</option>
+        <option value="online">在线</option>
+      </select>
+      <button class="toolbar-btn" id="btnRun" onclick="startSim()" style="color:#10b981;font-weight:700;">&#9654; 运行</button>
+      <button class="toolbar-btn" id="btnStop" onclick="stopSim()" style="color:#ef4444;display:none;">&#9632; 停止</button>
+      <span class="zoom-indicator" id="simInfo">已停止</span>
+    </div>
+  </div>
+
+  <div class="canvas-body">
+    <!-- 功能块面板 -->
+    <div class="block-palette" id="palette">
+      <div class="palette-search">
+        <input type="text" class="form-control" placeholder="搜索功能块..." oninput="filterBlocks(this.value)">
+      </div>
+      <div class="palette-content" id="paletteContent">加载中...</div>
+    </div>
+
+    <!-- 画布 -->
+    <div class="canvas-area grid-dots" id="canvasArea">
+      <div id="drawflow"></div>
+    </div>
+
+    <!-- 属性面板 -->
+    <div class="properties-panel" id="propsPanel">
+      <div class="props-header">属性</div>
+      <div class="props-body" id="propsContent">
+        <div class="props-empty">选中功能块查看参数</div>
+      </div>
+      <div class="props-footer">
+        <!-- 仿真工况 -->
+        <div class="props-section-title">开环工况</div>
+        <div class="props-param">
+          <label>调门开度</label>
+          <input type="number" class="form-control" id="cfgValve" value="0.7" step="0.05" min="0" max="1">
+        </div>
+        <div class="props-param">
+          <label>煤量 (t/h)</label>
+          <input type="number" class="form-control" id="cfgCoal" value="200" step="10">
+        </div>
+        <div class="props-param">
+          <label>运行时长 (s)</label>
+          <input type="number" class="form-control" id="cfgDuration" value="300">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部仿真状态栏 -->
+  <div class="sim-panel" id="simPanel" style="display:none;">
+    <div class="sim-status">
+      <span class="sim-dot running"></span>
+      <strong>运行中</strong>
+    </div>
+    <span class="sim-info" id="simTime">t=0.0s</span>
+    <span class="sim-info" id="simSteps">step=0</span>
+    <div style="flex:1;"></div>
+    <button class="toolbar-btn" onclick="stopSim()" style="color:#ef4444;">&#9632; 停止仿真</button>
+  </div>
+</div>
+
+<!-- 信号选择弹窗 -->
+<div class="modal-overlay" id="signalPicker">
+  <div class="modal" style="width:500px;">
+    <div class="modal-header">
+      <h3 id="pickerTitle">选择信号</h3>
+      <button class="modal-close" onclick="closePicker()">&times;</button>
+    </div>
+    <div class="modal-body" style="max-height:400px;overflow-y:auto;">
+      <input type="text" class="form-control" placeholder="搜索..." style="margin-bottom:10px;" oninput="filterPickerItems(this.value)">
+      <div id="pickerList"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let engine = null;
+let blockDefs = [];
+let categories = [];
+let ioSignals = [];
+let pendingDrop = null;
+let monitorTimer = null;
+let simRunning = false;
+
+// ── 初始化 ──
+document.addEventListener('DOMContentLoaded', async () => {
+  engine = new CanvasEngine('drawflow', { grid: 'dots', mode: 'config' });
+
+  try {
+    const [blocksData, catsData, sigsData] = await Promise.all([
+      api('/api/blocks'),
+      api('/api/blocks/categories'),
+      api('/api/signals'),
+    ]);
+    blockDefs = blocksData;
+    categories = catsData;
+    ioSignals = sigsData.signals || [];
+    blockDefs.forEach(b => engine.registerBlock(b));
+
+    // L3 封装块
+    try {
+      const models = await api('/api/model/list');
+      models.filter(m => m.name.startsWith('L3_')).forEach(m => {
+        const def = { id: m.name, name: m.name.replace('L3_',''), category: 'encapsulated', inputs: 2, outputs: 1, params: [], description: '封装模型' };
+        blockDefs.push(def);
+        engine.registerBlock(def);
+      });
+    } catch(e) {}
+
+    renderPalette();
+  } catch(e) { console.error('初始化失败:', e); }
+
+  engine.onNodeSelected(showProperties);
+  engine.onNodeDeselected(() => {
+    document.getElementById('propsContent').innerHTML = '<div class="props-empty">选中功能块查看参数</div>';
+  });
+
+  await autoLoadModel();
+
+  // 快捷键
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveModel(); }
+    if (e.ctrlKey && e.key === 'z') { e.preventDefault(); engine.undo(); }
+    if (e.ctrlKey && e.key === 'y') { e.preventDefault(); engine.redo(); }
+    if (e.key === 'Delete' && !simRunning) { engine.removeSelected(); }
+  });
+
+  // 拖放
+  const canvas = document.getElementById('canvasArea');
+  canvas.addEventListener('drop', handleDrop);
+  canvas.addEventListener('dragover', e => e.preventDefault());
+
+  // 检查是否有仿真在运行
+  checkSimStatus();
+});
+
+// ── 面板 ──
+function renderPalette() {
+  const grouped = {};
+  categories.forEach(c => { grouped[c.id] = { cat: c, blocks: [] }; });
+  blockDefs.forEach(b => {
+    const cid = b.category || 'signal';
+    if (!grouped[cid]) grouped[cid] = { cat: {id:cid,name:cid,color:'#64748b'}, blocks: [] };
+    grouped[cid].blocks.push(b);
+  });
+
+  document.getElementById('paletteContent').innerHTML = Object.entries(grouped)
+    .filter(([_,g]) => g.blocks.length > 0)
+    .map(([catId, g]) => `
+      <div class="palette-category">
+        <div class="palette-category-title" onclick="this.parentElement.classList.toggle('collapsed')">
+          <span class="palette-arrow">&#9660;</span>
+          <span style="color:${g.cat.color}">&#9632;</span> ${g.cat.name}
+          <span class="palette-count">${g.blocks.length}</span>
+        </div>
+        <div class="palette-items">
+          ${g.blocks.map(b => `
+            <div class="palette-block" draggable="true" ondragstart="dragBlock(event,'${b.id}')"
+                 title="${b.description||b.name}" data-search="${b.id} ${b.name} ${b.description||''}">
+              <span class="palette-block-id" style="color:${g.cat.color}">${b.id}</span>
+              <span class="palette-block-name">${b.name}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+}
+
+function filterBlocks(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('.palette-block').forEach(el => {
+    el.style.display = (!q || (el.dataset.search||'').toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+
+// ── 拖放 ──
+function dragBlock(ev, id) { ev.dataTransfer.setData('blockId', id); }
+
+function handleDrop(ev) {
+  ev.preventDefault();
+  if (simRunning) return; // 运行中不允许组态
+  const blockId = ev.dataTransfer.getData('blockId');
+  if (!blockId) return;
+  const rect = document.getElementById('drawflow').getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+
+  if (blockId === 'input' || blockId === 'output') {
+    pendingDrop = { blockId, x, y };
+    showSignalPicker(blockId === 'input' ? 'input' : 'output');
+    return;
+  }
+  engine.addBlock(blockId, x, y);
+}
+
+// ── 属性 ──
+function showProperties(nodeId) {
+  const data = engine.getNodeData(nodeId);
+  const blockId = engine.getNodeBlockId(nodeId);
+  const def = blockDefs.find(b => b.id === blockId);
+  if (!def) return;
+
+  const catColor = (categories.find(c => c.id === def.category)||{}).color || '#64748b';
+  const params = def.params || [];
+
+  let html = `<div class="props-block-header" style="border-left:4px solid ${catColor}">
+    <div class="props-block-id">${def.id}</div>
+    <div class="props-block-name">${def.name}</div>
+    <div class="props-block-desc">${def.description||''}</div>
+  </div>`;
+
+  if (params.length > 0) {
+    html += '<div class="props-section-title">参数</div>';
+    params.forEach(p => {
+      const val = data[p.key] !== undefined ? data[p.key] : p.default;
+      html += `<div class="props-param">
+        <label>${p.label||p.key}</label>
+        <input type="${p.type==='number'?'number':'text'}" class="form-control" value="${val}"
+               onchange="updateParam(${nodeId},'${p.key}',this)" ${simRunning?'disabled':''}>
+      </div>`;
+    });
+  }
+
+  if (!simRunning) {
+    html += `<div style="margin-top:12px;">
+      <button class="btn btn-danger btn-sm" style="width:100%;" onclick="engine.removeSelected()">删除</button>
+    </div>`;
+  }
+
+  document.getElementById('propsContent').innerHTML = html;
+}
+
+function updateParam(nodeId, key, input) {
+  let val = input.value;
+  if (input.type === 'number') val = parseFloat(val) || 0;
+  engine.setNodeData(nodeId, key, val);
+  engine.updateNodeDisplay(nodeId);
+}
+
+// ── 仿真控制（集成在IB层）──
+async function startSim() {
+  const mode = document.getElementById('simMode').value;
+  const valve = parseFloat(document.getElementById('cfgValve').value) || 0.7;
+  const coal = parseFloat(document.getElementById('cfgCoal').value) || 200;
+  const duration = parseFloat(document.getElementById('cfgDuration').value) || 300;
+
+  try {
+    await api('/api/sim/start', {
+      method: 'POST',
+      body: {
+        mode, duration, step_size: 0.2,
+        valve_position: valve,
+        coal_schedule: [{ time: 0, coal: coal }],
+      }
+    });
+    enterMonitorMode();
+    showToast('仿真已启动', 'success');
+  } catch(e) {}
+}
+
+async function stopSim() {
+  try {
+    await api('/api/sim/stop', { method: 'POST' });
+    showToast('仿真已停止', 'info');
+  } catch(e) {}
+  exitMonitorMode();
+}
+
+function enterMonitorMode() {
+  simRunning = true;
+  engine.setMode('monitor');
+  document.getElementById('btnRun').style.display = 'none';
+  document.getElementById('btnStop').style.display = '';
+  document.getElementById('simPanel').style.display = 'flex';
+  document.getElementById('simInfo').textContent = '运行中';
+  // 禁止拖放
+  document.getElementById('palette').style.pointerEvents = 'none';
+  document.getElementById('palette').style.opacity = '0.5';
+
+  // 开始轮询
+  monitorTimer = setInterval(async () => {
+    try {
+      const s = await api('/api/sim/status');
+      if (!s.running) {
+        exitMonitorMode();
+        showToast('仿真已完成', 'info');
+        return;
+      }
+      document.getElementById('simTime').textContent = `t=${(s.sim_time||0).toFixed(1)}s`;
+      document.getElementById('simSteps').textContent = `step=${s.step_count||0}`;
+
+      // 更新节点数值
+      if (s.latest) {
+        engine.updateMonitorValues(s.latest);
+      }
+    } catch(e) {}
+  }, 500);
+}
+
+function exitMonitorMode() {
+  simRunning = false;
+  engine.setMode('config');
+  if (monitorTimer) { clearInterval(monitorTimer); monitorTimer = null; }
+  document.getElementById('btnRun').style.display = '';
+  document.getElementById('btnStop').style.display = 'none';
+  document.getElementById('simPanel').style.display = 'none';
+  document.getElementById('simInfo').textContent = '已停止';
+  document.getElementById('palette').style.pointerEvents = '';
+  document.getElementById('palette').style.opacity = '';
+}
+
+async function checkSimStatus() {
+  try {
+    const s = await api('/api/sim/status');
+    if (s.running) enterMonitorMode();
+  } catch(e) {}
+}
+
+// ── 保存/加载 ──
+async function saveModel() {
+  const name = document.getElementById('modelName').value.trim() || 'CCS_model';
+  await api('/api/model/save', { method:'POST', body:{ name, drawflow: engine.exportJSON(), layer:'IB' }});
+  showToast(`"${name}" 已保存`, 'success');
+}
+
+async function loadModel() {
+  const name = document.getElementById('modelName').value.trim() || 'CCS_model';
+  try {
+    const d = await api(`/api/model/load/${name}`);
+    if (d.drawflow) { engine.importJSON(d.drawflow); showToast('已加载', 'success'); }
+  } catch(e) {
+    const models = await api('/api/model/list');
+    if (models.length > 0) showToast('可用: ' + models.map(m=>m.name).join(', '), 'info');
+  }
+}
+
+async function autoLoadModel() {
+  try {
+    const d = await api(`/api/model/load/${document.getElementById('modelName').value.trim()||'CCS_model'}`);
+    if (d.drawflow) engine.importJSON(d.drawflow);
+  } catch(e) {}
+}
+
+// ── 信号选择 ──
+function showSignalPicker(dir) {
+  document.getElementById('pickerTitle').textContent = dir==='input' ? '选择输入信号' : '选择输出信号';
+  const filtered = ioSignals.filter(s => s.direction === dir);
+  document.getElementById('pickerList').innerHTML = filtered.map(s =>
+    `<div class="picker-item" onclick="confirmPick('${s.name}','${s.description||''}')">
+      <strong>${s.name}</strong> <span style="font-size:11px;color:var(--text-light)">${s.description||''}</span>
+    </div>`
+  ).join('') || '<div style="padding:20px;text-align:center;color:var(--text-light)">无信号</div>';
+  document.getElementById('signalPicker').classList.add('active');
+}
+function confirmPick(name, desc) {
+  if (!pendingDrop) return;
+  engine.addBlock(pendingDrop.blockId, pendingDrop.x, pendingDrop.y, { tag: name });
+  closePicker();
+}
+function closePicker() {
+  document.getElementById('signalPicker').classList.remove('active');
+  pendingDrop = null;
+}
+function filterPickerItems(q) {
+  document.querySelectorAll('.picker-item').forEach(el => {
+    el.style.display = el.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}
