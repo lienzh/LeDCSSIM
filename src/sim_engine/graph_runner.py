@@ -3,7 +3,7 @@
 图执行引擎
 
 将 Drawflow 画布组态 JSON 转为可执行的仿真图。
-解析节点和连线 → IL-IB 层间对接 → L3 子块展开 → 拓扑排序 → 按步执行。
+解析节点和连线 → IL-IB 层间对接 → 拓扑排序 → 按步执行。
 
 数据流：IO输入 → IL预处理 → IB计算 → IL后处理 → IO输出
 
@@ -34,7 +34,6 @@ from ..blocks import (
 
 logger = logging.getLogger(__name__)
 
-# L3 模型文件目录
 _MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "config" / "models"
 
 
@@ -48,7 +47,7 @@ class GraphNode:
         self.input_connections: List[tuple] = []  # [(源节点id, 源输出端口号), ...]
         self.output_value: float = 0.0  # 当前输出值
         self.block: Optional[Block] = None  # 有状态的功能块实例
-        # 记录哪些下游节点从此节点取值（用于 L3 展开时重连）
+        # 记录哪些下游节点从此节点取值
         self.downstream: List[tuple] = []  # [(目标节点id, 目标输入端口索引), ...]
 
     @property
@@ -64,7 +63,7 @@ class GraphRunner:
     将 Drawflow JSON 转为可执行的仿真图
 
     核心流程：
-    1. load(): 解析 JSON → 创建 GraphNode → IL-IB 对接 → L3 展开 → 拓扑排序
+    1. load(): 解析 JSON → 创建 GraphNode → IL-IB 对接 → 拓扑排序
     2. step(): 按拓扑序逐节点执行 → 返回输出值
     3. reset(): 重置所有有状态功能块
     """
@@ -108,9 +107,6 @@ class GraphRunner:
                 page_name = il.get("name", f"il{i}")
                 self._parse_drawflow(il, prefix=f"IL_{page_name}_")
             self._connect_layers()
-
-        # L3 封装块展开
-        self._expand_l3_nodes()
 
         # 引入/引出点虚拟依赖（确保 ref_out 在 ref_in 之前执行）
         self._link_refs()
@@ -282,85 +278,6 @@ class GraphRunner:
         # 刷新外部端子列表（去掉已对接的节点）
         self._refresh_io_nodes()
 
-    # ── L3 封装块展开 ─────────────────────────────────────
-
-    def _expand_l3_nodes(self):
-        """
-        展开 IB 层中的 L3 封装块。
-
-        遇到 block_type 以 "L3_" 开头的节点时：
-        1. 加载对应的 L3 模型 JSON
-        2. 将内部节点解析进图中（带唯一前缀）
-        3. 将 L3 节点的输入连接 → 内部 input 节点
-        4. 将内部 output 节点 → L3 节点的下游连接
-        5. 删除 L3 占位节点
-        """
-        # 先建下游索引
-        self._build_downstream_index()
-
-        # 收集需要展开的 L3 节点
-        l3_nodes = [n for n in self._nodes.values()
-                    if n.block_type.startswith("L3_")]
-
-        for l3_node in l3_nodes:
-            model_name = l3_node.block_type  # 如 "L3_boiler"
-            model_path = _MODEL_DIR / f"{model_name}.json"
-
-            if not model_path.exists():
-                logger.warning(f"L3 模型文件不存在: {model_path}，跳过展开")
-                continue
-
-            with open(model_path, "r", encoding="utf-8") as f:
-                l3_json = json.load(f)
-
-            # 用唯一前缀解析 L3 内部节点
-            prefix = f"{l3_node.id}_"
-            self._parse_drawflow(l3_json, prefix=prefix)
-
-            # 找到内部的 input/output 节点
-            inner_inputs = [n for n in self._nodes.values()
-                           if n.id.startswith(prefix) and n.block_type == "input"]
-            inner_outputs = [n for n in self._nodes.values()
-                            if n.id.startswith(prefix) and n.block_type == "output"]
-
-            # 按端口顺序排列（按节点 ID 中的数字排序）
-            inner_inputs.sort(key=lambda n: n.id)
-            inner_outputs.sort(key=lambda n: n.id)
-
-            # 连接 L3 的输入 → 内部 input 节点
-            for port_idx, conn in enumerate(l3_node.input_connections):
-                if conn is not None and port_idx < len(inner_inputs):
-                    inner_in = inner_inputs[port_idx]
-                    # 内部 input 变成 relay，从 L3 的上游取值
-                    inner_in.block_type = "_relay"
-                    inner_in.input_connections = [conn]
-
-            # 连接内部 output 节点 → L3 的下游
-            for port_idx, inner_out in enumerate(inner_outputs):
-                # 找到引用 L3 节点第 port_idx 个输出的所有下游节点
-                for target_id, target_port_idx in l3_node.downstream:
-                    target_node = self._nodes.get(target_id)
-                    if target_node is None:
-                        continue
-                    # 检查这个下游连接是否指向 L3 的第 port_idx 个输出
-                    if target_port_idx < len(target_node.input_connections):
-                        conn = target_node.input_connections[target_port_idx]
-                        if conn is not None and conn[0] == l3_node.id and conn[1] == port_idx:
-                            # 重连：从内部 output 取值
-                            target_node.input_connections[target_port_idx] = (inner_out.id, 0)
-
-            # 内部 input/output 不应作为图的外部端子
-            self._input_nodes = [n for n in self._input_nodes if n.id != l3_node.id
-                                 and not n.id.startswith(prefix)]
-            self._output_nodes = [n for n in self._output_nodes if n.id != l3_node.id
-                                  and not n.id.startswith(prefix)]
-
-            # 删除 L3 占位节点
-            del self._nodes[l3_node.id]
-
-            logger.info(f"L3 展开: {model_name} → {len(inner_inputs)} 输入, "
-                        f"{len(inner_outputs)} 输出, "
-                        f"新增 {sum(1 for n in self._nodes if n.startswith(prefix))} 节点")
 
     def _build_downstream_index(self):
         """为每个节点建立下游索引"""
@@ -556,7 +473,7 @@ class GraphRunner:
                 node.output_value = self._ref_values.get(tag, 0.0)
 
             elif node.block_type == "_relay":
-                # 中继节点（IL-IB 对接或 L3 展开产生）
+                # 中继节点（IL-IB 对接产生）
                 node.output_value = self._get_input_value(node, 0)
 
             elif node.block_type in ("constant", "CON"):

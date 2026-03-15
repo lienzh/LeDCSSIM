@@ -20,7 +20,9 @@
       <div class="toolbar-sep"></div>
       <button class="toolbar-btn" onclick="engine.toggleGrid()">&#9783;</button>
       <div class="toolbar-sep"></div>
-      <button class="toolbar-btn" id="btnEncap" onclick="doEncapsulate()" title="封装选中块 (Shift框选)" style="display:none;">&#9744; 封装</button>
+      <button class="toolbar-btn" onclick="LogicChecker.runCheck(engine)" title="逻辑检查 Ctrl+Shift+C">&#128737; 检查</button>
+      <button class="toolbar-btn" onclick="CrossPageNav.openSearch()" title="搜索 Ctrl+K">&#128269; 搜索</button>
+      <div class="toolbar-sep"></div>
     </div>
     <div class="toolbar-right">
       <span id="opcDot" title="NTVDPU 通讯状态" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-right:4px;vertical-align:middle;"></span>
@@ -107,9 +109,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     ioSignals = sigsData.signals || [];
     blockDefs.forEach(b => engine.registerBlock(b));
 
-    // L3 封装块
-    await loadL3Blocks();
-
     renderPalette();
   } catch(e) { console.error('初始化失败:', e); }
 
@@ -124,6 +123,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await autoLoadModel();
 
+  // 初始化新模块
+  CrossPageNav.init(engine);
+  LogicChecker.init(engine);
+  ConnRecommend.init(engine);
+
   // 画布变更时更新标题栏脏标记
   engine._onCanvasChanged = () => updateDirtyIndicator();
 
@@ -132,6 +136,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveModel(); }
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); engine.undo(); updateDirtyIndicator(); }
     if (e.ctrlKey && e.key === 'y') { e.preventDefault(); engine.redo(); updateDirtyIndicator(); }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) { e.preventDefault(); LogicChecker.runCheck(engine); }
     if (e.key === 'Delete' && !simRunning) { engine.removeSelected(); }
   });
 
@@ -325,6 +330,8 @@ async function saveModel() {
   engine.markSaved();
   updateDirtyIndicator();
   showToast(`"${PAGE_ID}" 已保存`, 'success');
+  // 保存后静默检查
+  try { LogicChecker.runSilent(engine); } catch(e) {}
 }
 
 async function autoLoadModel() {
@@ -358,53 +365,6 @@ function filterPickerItems(q) {
   document.querySelectorAll('.picker-item').forEach(el => {
     el.style.display = el.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
   });
-}
-
-// ── L3 封装块加载 ──
-async function loadL3Blocks() {
-  try {
-    const models = await api('/api/model/list');
-    for (const m of models.filter(m => m.name.startsWith('L3_'))) {
-      let numIn = 2, numOut = 1;
-      try {
-        const data = await api(`/api/model/load/${m.name}`);
-        const df = data.drawflow;
-        if (df && df.drawflow && df.drawflow.drawflow) {
-          const nodes = df.drawflow.drawflow.Home ? df.drawflow.drawflow.Home.data : {};
-          numIn = Object.values(nodes).filter(n => n.name === 'input').length || 1;
-          numOut = Object.values(nodes).filter(n => n.name === 'output').length || 1;
-        }
-      } catch(e) {}
-      const def = { id: m.name, name: m.name.replace('L3_',''), category: 'encapsulated', inputs: numIn, outputs: numOut, params: [], description: '封装模型' };
-      blockDefs.push(def);
-      engine.registerBlock(def);
-    }
-  } catch(e) {}
-}
-
-// ── 封装操作 ──
-async function doEncapsulate() {
-  const name = prompt('封装名称（自动添加 L3_ 前缀）:');
-  if (!name || !name.trim()) return;
-  const result = engine.encapsulate(name.trim());
-  if (!result) { showToast('未选中任何块', 'error'); return; }
-
-  try {
-    await api('/api/model/save', {
-      method: 'POST',
-      body: { name: result.name, drawflow: result.drawflow, layer: 'L3' }
-    });
-
-    const def = { id: result.name, name: name.trim(), category: 'encapsulated', inputs: result.numInputs, outputs: result.numOutputs, params: [], description: '封装模型' };
-    blockDefs.push(def);
-    engine.registerBlock(def);
-    renderPalette();
-
-    engine.addBlock(result.name, 300, 200);
-
-    showToast(`已封装为 "${result.name}"`, 'success');
-    document.getElementById('btnEncap').style.display = 'none';
-  } catch(e) { showToast('封装保存失败', 'error'); }
 }
 </script>
 {% endblock %}

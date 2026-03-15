@@ -61,8 +61,6 @@ def _auto_generate_manifest():
         name = f.stem
         if name.startswith("IL_"):
             layer = "IL"
-        elif name.startswith("L3_"):
-            layer = "L3"
         else:
             layer = "IB"
         pages.append({"id": name, "layer": layer, "name": name, "order": len(pages)})
@@ -74,7 +72,7 @@ def _auto_generate_manifest():
 def _get_sidebar_tree():
     """为侧边栏构建页面树"""
     manifest = _load_manifest()
-    tree = {"IL": [], "IB": [], "L3": []}
+    tree = {"IL": [], "IB": []}
     for p in manifest.get("pages", []):
         layer = p.get("layer", "IB")
         if layer in tree:
@@ -155,10 +153,6 @@ def canvas_page(layer, page_id):
             break
     return render_template("canvas.html", layer=layer, page_id=page_id, page_name=page_name)
 
-
-@app.route("/l3")
-def l3_page():
-    return render_template("l3.html")
 
 
 @app.route("/run")
@@ -813,8 +807,6 @@ def api_save_model():
         layer = payload.get("layer", "IB")
         if name.startswith("IL_"):
             layer = "IL"
-        elif name.startswith("L3_"):
-            layer = "L3"
         manifest["pages"].append({
             "id": name, "layer": layer, "name": name,
             "order": len(manifest["pages"])
@@ -863,11 +855,9 @@ def api_create_page():
     if not name:
         return jsonify({"error": "名称不能为空"}), 400
 
-    # 生成 ID：IL/L3 层自动加前缀
+    # 生成 ID：IL 层自动加前缀
     if layer == "IL" and not name.startswith("IL_"):
         page_id = f"IL_{name}"
-    elif layer == "L3" and not name.startswith("L3_"):
-        page_id = f"L3_{name}"
     else:
         page_id = name.replace(" ", "_")
 
@@ -962,6 +952,92 @@ def api_get_page_refs():
         except Exception:
             continue
     return jsonify({"refs": refs})
+
+
+@app.route("/api/search", methods=["GET"])
+def api_search():
+    """全局搜索：遍历所有页面，搜索 tag、块名、块类型、页面名"""
+    q = request.args.get("q", "").strip().lower()
+    if not q:
+        return jsonify({"results": []})
+
+    manifest = _load_manifest()
+    results = []
+
+    for page in manifest.get("pages", []):
+        page_id = page["id"]
+        page_name = page.get("name", page_id)
+        layer = page.get("layer", "IB")
+
+        # 页面名匹配
+        if q in page_name.lower() or q in page_id.lower():
+            score = 10 if page_name.lower().startswith(q) else 5
+            results.append({
+                "type": "page",
+                "page_id": page_id,
+                "page_name": page_name,
+                "layer": layer,
+                "node_id": None,
+                "tag": "",
+                "label": page_name,
+                "score": score,
+            })
+
+        # 搜索页面内的节点
+        filepath = MODEL_DIR / f"{page_id}.json"
+        if not filepath.exists():
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                model = json.load(f)
+            drawflow_data = model.get("drawflow", {})
+            meta = {}
+            if isinstance(drawflow_data, dict):
+                meta = drawflow_data.get("meta", {})
+                if not meta and "drawflow" in drawflow_data:
+                    inner = drawflow_data["drawflow"]
+                    if isinstance(inner, dict):
+                        meta = inner.get("meta", {})
+            node_block_map = meta.get("nodeBlockMap", {})
+            node_data_map = meta.get("nodeDataMap", {})
+
+            for node_id, block_type in node_block_map.items():
+                data = node_data_map.get(node_id, {})
+                tag = data.get("tag", "")
+                block_name = data.get("_blockName", "")
+
+                # 匹配字段
+                searchable = f"{tag} {block_name} {block_type}".lower()
+                if q not in searchable:
+                    continue
+
+                score = 0
+                if tag and q in tag.lower():
+                    score += 8
+                    if tag.lower().startswith(q):
+                        score += 4
+                if block_name and q in block_name.lower():
+                    score += 5
+                if q in block_type.lower():
+                    score += 3
+
+                label = tag or block_name or block_type
+                results.append({
+                    "type": "node",
+                    "page_id": page_id,
+                    "page_name": page_name,
+                    "layer": layer,
+                    "node_id": node_id,
+                    "tag": tag,
+                    "label": label,
+                    "score": score,
+                })
+        except Exception:
+            continue
+
+    # 按分数降序排列，取前 20
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return jsonify({"results": results[:20]})
 
 
 @app.route("/api/graph/info", methods=["POST"])

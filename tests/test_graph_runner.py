@@ -6,7 +6,7 @@ GraphRunner 综合测试
 1. 基础功能（节点解析、拓扑排序、单步执行）
 2. CCS 被控对象模型（反馈环路、多步仿真）
 3. IL-IB 层间对接（tag 匹配）
-4. L3 封装块展开
+4. (已移除)
 """
 import json
 import math
@@ -458,89 +458,6 @@ def test_il_ib_bidirectional():
     print("  ✓ test_il_ib_bidirectional")
 
 
-# ═══════════════════════════════════════════════════════════
-# 4. L3 封装块展开测试
-# ═══════════════════════════════════════════════════════════
-
-def test_l3_expansion():
-    """
-    L3 子块：input → gain(K=5) → output
-    主图：input(tag=x) → L3_test_sub → output(tag=y)
-
-    预期: x=10 → L3内部 gain(K=5) → 50
-    """
-    # 创建临时 L3 模型文件
-    l3_model = make_drawflow(
-        (1, "input", {"tag": "in1"}, {}, {"output_1": out(2)}),
-        (2, "gain", {"K": 5.0}, {"input_1": inp(1)}, {"output_1": out(3)}),
-        (3, "output", {"tag": "out1"}, {"input_1": inp(2)}, {}),
-    )
-
-    # 保存到 config/models/L3_test_sub.json
-    model_dir = Path(__file__).resolve().parent.parent / "config" / "models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    l3_path = model_dir / "L3_test_sub.json"
-    with open(l3_path, "w", encoding="utf-8") as f:
-        json.dump(l3_model, f)
-
-    try:
-        # 主图：使用 L3_test_sub 块
-        main_model = make_drawflow(
-            (1, "input", {"tag": "x"}, {}, {"output_1": out(2)}),
-            (2, "L3_test_sub", {}, {"input_1": inp(1)}, {"output_1": out(3)}),
-            (3, "output", {"tag": "y"}, {"input_1": inp(2)}, {}),
-        )
-        runner = GraphRunner()
-        runner.load(main_model)
-
-        # L3 节点应被展开
-        assert runner.node_count > 3, f"L3 should expand, got {runner.node_count} nodes"
-
-        result = runner.step({"x": 10.0}, 0.1)
-        assert abs(result["y"] - 50.0) < 1e-9, f"Expected 50.0, got {result['y']}"
-        print("  ✓ test_l3_expansion")
-    finally:
-        l3_path.unlink(missing_ok=True)
-
-
-def test_l3_multi_io():
-    """
-    L3 子块有多个输入输出：
-    L3: input(a), input(b) → ADD → gain(K=2) → output(sum), output(double_sum)
-    主图: input(x), input(y) → L3 → output(result)
-    """
-    l3_model = make_drawflow(
-        (1, "input", {"tag": "a"}, {}, {"output_1": out(3)}),
-        (2, "input", {"tag": "b"}, {}, {"output_1": out(3, "input_2")}),
-        (3, "ADD", {}, {"input_1": inp(1), "input_2": inp(2)}, {"output_1": out(4)}),
-        (4, "gain", {"K": 2.0}, {"input_1": inp(3)}, {"output_1": out(5)}),
-        (5, "output", {"tag": "result"}, {"input_1": inp(4)}, {}),
-    )
-
-    model_dir = Path(__file__).resolve().parent.parent / "config" / "models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    l3_path = model_dir / "L3_adder.json"
-    with open(l3_path, "w", encoding="utf-8") as f:
-        json.dump(l3_model, f)
-
-    try:
-        main_model = make_drawflow(
-            (1, "input", {"tag": "x"}, {}, {"output_1": out(3)}),
-            (2, "input", {"tag": "y"}, {}, {"output_1": out(3, "input_2")}),
-            (3, "L3_adder", {}, {"input_1": inp(1), "input_2": inp(2)},
-             {"output_1": out(4)}),
-            (4, "output", {"tag": "result"}, {"input_1": inp(3)}, {}),
-        )
-        runner = GraphRunner()
-        runner.load(main_model)
-
-        result = runner.step({"x": 3.0, "y": 7.0}, 0.1)
-        # (3 + 7) * 2 = 20
-        assert abs(result["result"] - 20.0) < 1e-9, f"Expected 20.0, got {result['result']}"
-        print("  ✓ test_l3_multi_io")
-    finally:
-        l3_path.unlink(missing_ok=True)
-
 
 # ═══════════════════════════════════════════════════════════
 # 5. 边界与兼容性测试
@@ -622,9 +539,6 @@ if __name__ == "__main__":
         ("IL-IB 层间对接", [
             test_il_ib_connection, test_il_ib_reverse_connection,
             test_il_ib_bidirectional,
-        ]),
-        ("L3 封装块展开", [
-            test_l3_expansion, test_l3_multi_io,
         ]),
         ("边界与兼容性", [
             test_name_fallback, test_limiter_block, test_high_low_select,

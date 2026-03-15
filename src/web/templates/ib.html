@@ -22,7 +22,6 @@
       <div class="toolbar-sep"></div>
       <button class="toolbar-btn" onclick="engine.toggleGrid()">&#9783;</button>
       <div class="toolbar-sep"></div>
-      <button class="toolbar-btn" id="btnEncap" onclick="doEncapsulate()" title="封装选中块 (Shift框选)" style="display:none;">&#9744; 封装</button>
     </div>
     <div class="toolbar-right">
       <select class="toolbar-input" id="simMode" style="width:auto;">
@@ -104,9 +103,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     categories = catsData;
     ioSignals = sigsData.signals || [];
     blockDefs.forEach(b => engine.registerBlock(b));
-
-    // L3 封装块（从已保存模型中读取实际端口数）
-    await loadL3Blocks();
 
     renderPalette();
   } catch(e) { console.error('初始化失败:', e); }
@@ -305,54 +301,6 @@ function filterPickerItems(q) {
   });
 }
 
-// ── L3 封装块加载 ──
-async function loadL3Blocks() {
-  try {
-    const models = await api('/api/model/list');
-    for (const m of models.filter(m => m.name.startsWith('L3_'))) {
-      let numIn = 2, numOut = 1;
-      try {
-        const data = await api(`/api/model/load/${m.name}`);
-        const df = data.drawflow;
-        if (df && df.drawflow && df.drawflow.drawflow) {
-          const nodes = df.drawflow.drawflow.Home ? df.drawflow.drawflow.Home.data : {};
-          numIn = Object.values(nodes).filter(n => n.name === 'input').length || 1;
-          numOut = Object.values(nodes).filter(n => n.name === 'output').length || 1;
-        }
-      } catch(e) {}
-      const def = { id: m.name, name: m.name.replace('L3_',''), category: 'encapsulated', inputs: numIn, outputs: numOut, params: [], description: '封装模型' };
-      blockDefs.push(def);
-      engine.registerBlock(def);
-    }
-  } catch(e) {}
-}
 
-// ── 封装操作 ──
-async function doEncapsulate() {
-  const name = prompt('封装名称（自动添加 L3_ 前缀）:');
-  if (!name || !name.trim()) return;
-  const result = engine.encapsulate(name.trim());
-  if (!result) { showToast('未选中任何块', 'error'); return; }
-
-  // 保存封装模型
-  try {
-    await api('/api/model/save', {
-      method: 'POST',
-      body: { name: result.name, drawflow: result.drawflow, layer: 'L3' }
-    });
-
-    // 注册为可用块并刷新面板
-    const def = { id: result.name, name: name.trim(), category: 'encapsulated', inputs: result.numInputs, outputs: result.numOutputs, params: [], description: '封装模型' };
-    blockDefs.push(def);
-    engine.registerBlock(def);
-    renderPalette();
-
-    // 在原位放置一个封装块
-    engine.addBlock(result.name, 300, 200);
-
-    showToast(`已封装为 "${result.name}"`, 'success');
-    document.getElementById('btnEncap').style.display = 'none';
-  } catch(e) { showToast('封装保存失败', 'error'); }
-}
 </script>
 {% endblock %}

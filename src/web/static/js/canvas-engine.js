@@ -17,7 +17,6 @@
     logic:        { label: '逻辑',   color: '#8b5cf6' },
     timer:        { label: '定时',   color: '#ec4899' },
     transfer:     { label: '传输',   color: '#64748b' },
-    encapsulated: { label: '封装',   color: '#7c3aed' }
   };
 
   /* ── 开关量/逻辑块类型集合（连线虚线判断用） ── */
@@ -27,6 +26,111 @@
     TON: true, TOFF: true, TP: true, CTR: true,
     CMP: true, AC: true, AC1: true
   };
+
+  /* ── 端口类型推断 (Phase 0) ────────────────────────── */
+
+  /**
+   * PORT_TYPE_MAP: 按功能块类别和具体块 ID 推断端口 dataType
+   * 规则:
+   *   logic 类 (A, OR, NOT, EOR, FFR, FFS, LCK, UCK): 全 bool
+   *   compare 类 (CMP, AC, AC1, HHV, VHV, WCM): inputs=float, outputs=bool
+   *   timer 类 (TB, TBD, TD, THF, TP, TW, TWO, TWF, RT, FLK, AW): inputs=bool, outputs=bool
+   *   arithmetic/dynamic/control 类: 全 float
+   *   signal 类 (input, output, ref_in, ref_out, constant, CON): 'any'
+   *   混合端口块 (DSW: float,float,bool→float; ASW: float,float,bool→float;
+   *              HLD: float,bool→float; RLH: float,bool→float)
+   *   CNT: bool,bool→float
+   *   未知块: 默认 float
+   */
+  var PORT_TYPE_MAP = {
+    // logic 类 — 全 bool
+    A:    { inputs: 'bool', outputs: 'bool' },
+    OR:   { inputs: 'bool', outputs: 'bool' },
+    NOT:  { inputs: 'bool', outputs: 'bool' },
+    EOR:  { inputs: 'bool', outputs: 'bool' },
+    LG:   { inputs: 'bool', outputs: 'bool' },
+    FFR:  { inputs: 'bool', outputs: 'bool' },
+    FFS:  { inputs: 'bool', outputs: 'bool' },
+    LCK:  { inputs: 'bool', outputs: 'bool' },
+    UCK:  { inputs: 'bool', outputs: 'bool' },
+    // compare 类 — inputs=float, outputs=bool
+    CMP:  { inputs: 'float', outputs: 'bool' },
+    AC:   { inputs: 'float', outputs: 'bool' },
+    AC1:  { inputs: 'float', outputs: 'bool' },
+    HHV:  { inputs: 'float', outputs: 'bool' },
+    VHV:  { inputs: 'float', outputs: 'bool' },
+    WCM:  { inputs: 'float', outputs: 'bool' },
+    // timer 类 — inputs=bool, outputs=bool
+    TB:   { inputs: 'bool', outputs: 'bool' },
+    TBD:  { inputs: 'bool', outputs: 'bool' },
+    TD:   { inputs: 'bool', outputs: 'bool' },
+    THF:  { inputs: 'bool', outputs: 'bool' },
+    TP:   { inputs: 'bool', outputs: 'bool' },
+    TW:   { inputs: 'bool', outputs: 'bool' },
+    TWF:  { inputs: 'bool', outputs: 'bool' },
+    TWO:  { inputs: 'bool', outputs: 'bool' },
+    RT:   { inputs: 'bool', outputs: 'bool' },
+    FLK:  { inputs: 'bool', outputs: 'bool' },
+    AW:   { inputs: 'bool', outputs: 'bool' },
+    // signal 类 — 'any'
+    input:    { inputs: 'any', outputs: 'any' },
+    output:   { inputs: 'any', outputs: 'any' },
+    ref_in:   { inputs: 'any', outputs: 'any' },
+    ref_out:  { inputs: 'any', outputs: 'any' },
+    constant: { inputs: 'any', outputs: 'any' },
+    CON:      { inputs: 'any', outputs: 'any' },
+    // 混合端口块 — 按端口索引区分
+    DSW:  { inputs: ['float', 'float', 'bool'], outputs: 'float' },
+    ASW:  { inputs: ['float', 'float', 'bool'], outputs: 'float' },
+    ASWW: { inputs: ['float', 'float', 'bool'], outputs: 'float' },
+    HLD:  { inputs: ['float', 'bool'], outputs: 'float' },
+    RLH:  { inputs: ['float', 'bool'], outputs: 'float' },
+    CNT:  { inputs: ['bool', 'bool'], outputs: 'float' },
+    // HS/LS — float 选择
+    HS:   { inputs: 'float', outputs: 'float' },
+    LS:   { inputs: 'float', outputs: 'float' },
+    HSG:  { inputs: 'float', outputs: 'float' },
+    LSG:  { inputs: 'float', outputs: 'float' },
+    SEL:  { inputs: 'float', outputs: 'float' },
+    NTH:  { inputs: 'float', outputs: 'float' },
+    // BP1 — transfer
+    BP1:  { inputs: 'float', outputs: 'float' }
+  };
+
+  /**
+   * 获取端口类型
+   * @param {string|number} blockIdOrNodeId  块类型 ID 或 Drawflow 节点 ID
+   * @param {string} direction  'input' 或 'output'
+   * @param {number} portIndex  端口索引（0-based）
+   * @returns {string}  'float' | 'bool' | 'any'
+   */
+  function getPortType(blockIdOrNodeId, direction, portIndex) {
+    var blockId = blockIdOrNodeId;
+    // 如果传入的是数字（节点 ID），需要通过 engine 实例查找
+    // 但此函数是静态的，所以我们假设传入的是 blockId
+    var mapping = PORT_TYPE_MAP[blockId];
+    if (!mapping) return 'float'; // 默认 float
+
+    var key = direction === 'input' ? 'inputs' : 'outputs';
+    var typeDef = mapping[key];
+    if (Array.isArray(typeDef)) {
+      return typeDef[portIndex] || typeDef[typeDef.length - 1] || 'float';
+    }
+    return typeDef || 'float';
+  }
+
+  /**
+   * 检查两个端口类型是否兼容
+   * 规则：'any' 与任何类型兼容，否则必须同类型
+   */
+  function areTypesCompatible(srcType, dstType) {
+    if (srcType === 'any' || dstType === 'any') return true;
+    return srcType === dstType;
+  }
+
+  // 暴露为全局函数供其他模块使用
+  window.getPortType = getPortType;
+  window.areTypesCompatible = areTypesCompatible;
 
   /* ── 异常值集合（监视模式 ERR 判断用） ── */
   var ERROR_VALUES = { 'null': true, 'None': true, 'NaN': true, 'Infinity': true, '-Infinity': true };
@@ -869,6 +973,33 @@
   };
 
   /**
+   * 居中并高亮指定节点（用于跨页跳转、搜索定位、错误定位）
+   * @param {number|string} nodeId  Drawflow 节点 ID
+   */
+  CanvasEngine.prototype.centerOnNode = function (nodeId) {
+    nodeId = parseInt(nodeId, 10);
+    if (isNaN(nodeId)) return;
+    try {
+      var dfNode = this._editor.getNodeFromId(nodeId);
+      if (!dfNode) return;
+      var w = this._container.clientWidth;
+      var h = this._container.clientHeight;
+      var zoom = this._editor.zoom || 1;
+      // 居中到节点位置
+      this._editor.canvas_x = w / 2 - dfNode.pos_x * zoom - 40;
+      this._editor.canvas_y = h / 2 - dfNode.pos_y * zoom - 20;
+      var precanvas = this._container.querySelector('.drawflow');
+      if (precanvas) {
+        precanvas.style.transform =
+          'translate(' + this._editor.canvas_x + 'px, ' + this._editor.canvas_y + 'px) scale(' + zoom + ')';
+      }
+      this._updateZoomIndicator();
+    } catch (e) {
+      console.warn('centerOnNode failed:', e);
+    }
+  };
+
+  /**
    * 切换网格类型
    * @param {string} [type]  'dots'|'lines'|'none'，不传则循环切换
    */
@@ -1262,7 +1393,7 @@
     html += '<div class="palette-search"><input type="text" placeholder="搜索功能块..." id="palette-search-input" /></div>';
 
     // 按类别渲染
-    var catOrder = ['signal', 'arithmetic', 'compare', 'dynamic', 'control', 'logic', 'timer', 'transfer', 'encapsulated'];
+    var catOrder = ['signal', 'arithmetic', 'compare', 'dynamic', 'control', 'logic', 'timer', 'transfer'];
     catOrder.forEach(function (cat) {
       if (!groups[cat]) return;
       var meta = getCatMeta(cat);
@@ -1643,6 +1774,8 @@
     var html = '';
     html += '<div class="ce-side-header">' + form.header + '</div>';
     html += '<div class="ce-side-body">' + form.body + '</div>';
+    // 关联页面区域（由 CrossPageNav 异步填充）
+    html += '<div class="ce-nav-related" id="ce-nav-related" style="padding:6px 10px;border-top:1px solid #334155;font-size:11px;color:#94a3b8"></div>';
     html += '<div class="ce-side-footer">' + form.footer + '</div>';
 
     panel.innerHTML = html;
@@ -1684,6 +1817,32 @@
 
     var firstInput = panel.querySelector('.ce-side-body input');
     if (firstInput) setTimeout(function () { firstInput.focus(); firstInput.select(); }, 250);
+
+    // 异步填充关联页面
+    if (typeof CrossPageNav !== 'undefined' && CrossPageNav.getRelatedInfo) {
+      var relDiv = panel.querySelector('#ce-nav-related');
+      if (relDiv) {
+        CrossPageNav.getRelatedInfo(this, nodeId).then(function (result) {
+          if (!result || result.empty) {
+            relDiv.innerHTML = '<div style="color:#64748b">无跨页关联</div>';
+            return;
+          }
+          var items = result.items || [];
+          var h = '<div style="margin-bottom:3px;color:#cbd5e1;font-weight:bold">关联页面</div>';
+          items.forEach(function (item) {
+            h += '<a href="javascript:void(0)" class="ce-nav-link" data-page="' + item.pageId + '" data-layer="' + item.layer + '" data-node="' + (item.nodeId || '') + '" style="display:block;padding:2px 0;color:#60a5fa;cursor:pointer;text-decoration:none">';
+            h += item.label;
+            h += '</a>';
+          });
+          relDiv.innerHTML = h;
+          relDiv.querySelectorAll('.ce-nav-link').forEach(function (a) {
+            a.addEventListener('click', function () {
+              CrossPageNav.navigateToNode(a.dataset.page, a.dataset.layer, a.dataset.node || null);
+            });
+          });
+        });
+      }
+    }
   };
 
   /** 关闭侧边面板 */
@@ -1708,8 +1867,12 @@
     try {
       var outputNodeId = info.output_id;
       var blockId = this._nodeBlockMap[outputNodeId];
-      if (blockId && DIGITAL_TYPES[blockId]) {
-        // 查找对应的 SVG connection 元素
+      if (!blockId) return;
+      // 使用 getPortType 判断输出端口类型
+      var outClass = info.output_class || 'output_1';
+      var portIdx = parseInt((outClass.match(/\d+$/) || ['1'])[0], 10) - 1;
+      var pType = getPortType(blockId, 'output', portIdx);
+      if (pType === 'bool') {
         var selector = '.connection.node_out_node-' + outputNodeId;
         var conns = this._container.querySelectorAll(selector);
         conns.forEach(function (conn) {
@@ -2008,175 +2171,6 @@
     return this._selectedNodes || [];
   };
 
-  /**
-   * 将选中的节点封装为 L3 模型
-   * @param {string} name  封装名称（不含 L3_ 前缀）
-   * @returns {object}  { name, inputs, outputs, drawflow }
-   */
-  CanvasEngine.prototype.encapsulate = function (name) {
-    var selectedIds = this.getSelectedNodes();
-    if (selectedIds.length === 0) return null;
-
-    var fullExport = this._editor.export();
-    var allNodes = fullExport.drawflow.Home.data;
-    var selectedSet = {};
-    selectedIds.forEach(function (id) { selectedSet[id] = true; });
-
-    // 提取选中节点
-    var extractedNodes = {};
-    var minX = Infinity, minY = Infinity;
-    selectedIds.forEach(function (id) {
-      var node = allNodes[id];
-      if (!node) return;
-      extractedNodes[id] = deepClone(node);
-      if (node.pos_x < minX) minX = node.pos_x;
-      if (node.pos_y < minY) minY = node.pos_y;
-    });
-
-    // 相对坐标归零
-    Object.keys(extractedNodes).forEach(function (id) {
-      extractedNodes[id].pos_x -= minX;
-      extractedNodes[id].pos_y -= minY;
-    });
-
-    // 分析外部连接 → 生成 input/output 端子
-    var externalInputs = [];   // [{ nodeId, portName, fromNode, fromPort }]
-    var externalOutputs = [];  // [{ nodeId, portName, toNode, toPort }]
-    var inputIdx = 0, outputIdx = 0;
-
-    Object.keys(extractedNodes).forEach(function (id) {
-      var node = extractedNodes[id];
-
-      // 检查输入连接：来自外部的连接 → 需要 input 端子
-      Object.keys(node.inputs || {}).forEach(function (portName) {
-        var port = node.inputs[portName];
-        var newConns = [];
-        (port.connections || []).forEach(function (conn) {
-          if (!selectedSet[conn.node]) {
-            // 来自外部 → 创建 input 端子
-            externalInputs.push({
-              targetNode: id,
-              targetPort: portName,
-              fromNode: conn.node,
-              fromPort: conn.input
-            });
-          } else {
-            newConns.push(conn);
-          }
-        });
-        port.connections = newConns;
-      });
-
-      // 检查输出连接：到达外部的连接 → 需要 output 端子
-      Object.keys(node.outputs || {}).forEach(function (portName) {
-        var port = node.outputs[portName];
-        var newConns = [];
-        (port.connections || []).forEach(function (conn) {
-          if (!selectedSet[conn.node]) {
-            externalOutputs.push({
-              sourceNode: id,
-              sourcePort: portName,
-              toNode: conn.node,
-              toPort: conn.output
-            });
-          } else {
-            newConns.push(conn);
-          }
-        });
-        port.connections = newConns;
-      });
-    });
-
-    // 为外部输入创建 input 端子节点
-    var nextId = Math.max.apply(null, Object.keys(extractedNodes).map(Number)) + 1;
-    externalInputs.forEach(function (ext, i) {
-      var inId = nextId++;
-      var inNode = {
-        id: inId,
-        name: 'input',
-        data: { tag: 'in_' + i, _blockId: 'input', _blockName: '输入端子' },
-        class: 'cat-signal',
-        html: '<div class="sama-node"><div class="sama-label sama-io">in_' + i + '</div><div class="node-value" data-node-value></div></div>',
-        typenode: false,
-        inputs: {},
-        outputs: { output_1: { connections: [{ node: String(ext.targetNode), output: ext.targetPort }] } },
-        pos_x: -120,
-        pos_y: i * 60
-      };
-      extractedNodes[inId] = inNode;
-
-      // 在目标节点的输入端口添加来自此 input 端子的连接
-      var target = extractedNodes[ext.targetNode];
-      if (target && target.inputs[ext.targetPort]) {
-        target.inputs[ext.targetPort].connections.push({ node: String(inId), input: 'output_1' });
-      }
-    });
-
-    // 为外部输出创建 output 端子节点
-    externalOutputs.forEach(function (ext, i) {
-      var outId = nextId++;
-      var outNode = {
-        id: outId,
-        name: 'output',
-        data: { tag: 'out_' + i, _blockId: 'output', _blockName: '输出端子' },
-        class: 'cat-signal',
-        html: '<div class="sama-node"><div class="sama-label sama-io">out_' + i + '</div><div class="node-value" data-node-value></div></div>',
-        typenode: false,
-        inputs: { input_1: { connections: [{ node: String(ext.sourceNode), input: ext.sourcePort }] } },
-        outputs: {},
-        pos_x: 400,
-        pos_y: i * 60
-      };
-      extractedNodes[outId] = outNode;
-
-      // 在源节点的输出端口添加到此 output 端子的连接
-      var source = extractedNodes[ext.sourceNode];
-      if (source && source.outputs[ext.sourcePort]) {
-        source.outputs[ext.sourcePort].connections.push({ node: String(outId), output: 'input_1' });
-      }
-    });
-
-    // 构建封装模型 JSON
-    var modelName = 'L3_' + name;
-    var drawflowData = {
-      version: 1,
-      drawflow: { drawflow: { Home: { data: extractedNodes } } },
-      meta: {
-        nodeBlockMap: {},
-        nodeDataMap: {},
-        exportTime: new Date().toISOString()
-      }
-    };
-
-    // 填充 meta
-    var self = this;
-    Object.keys(extractedNodes).forEach(function (id) {
-      var node = extractedNodes[id];
-      if (self._nodeBlockMap[id]) drawflowData.meta.nodeBlockMap[id] = self._nodeBlockMap[id];
-      if (self._nodeDataMap[id]) drawflowData.meta.nodeDataMap[id] = deepClone(self._nodeDataMap[id]);
-      else drawflowData.meta.nodeDataMap[id] = deepClone(node.data);
-    });
-
-    var result = {
-      name: modelName,
-      numInputs: externalInputs.length || 1,
-      numOutputs: externalOutputs.length || 1,
-      drawflow: drawflowData
-    };
-
-    // 从画布上删除选中的节点
-    var self2 = this;
-    selectedIds.forEach(function (id) {
-      try {
-        self2._editor.removeNodeId('node-' + id);
-        delete self2._nodeBlockMap[id];
-        delete self2._nodeDataMap[id];
-      } catch (e) {}
-    });
-    this.clearSelection();
-
-    return result;
-  };
 
 
   /* ═══════════════════════════════════════════════════════════

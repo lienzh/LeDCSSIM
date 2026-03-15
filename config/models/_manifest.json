@@ -13,18 +13,6 @@
       "order": 1
     },
     {
-      "id": "L3_boiler_thermal",
-      "layer": "L3",
-      "name": "L3_boiler_thermal",
-      "order": 2
-    },
-    {
-      "id": "L3_turbine_power",
-      "layer": "L3",
-      "name": "L3_turbine_power",
-      "order": 3
-    },
-    {
       "id": "页间测试",
       "layer": "IB",
       "name": "页间测试",

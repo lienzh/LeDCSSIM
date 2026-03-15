@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════
    LeDCSsim - SAMA/Simulink 风格画布样式
-   用于 IB/IL/L3 组态画布页面
+   用于 IB/IL 组态画布页面
    ═══════════════════════════════════════════════════════════ */
 
 /* ── 类别颜色变量 ──────────────────────────────────── */
@@ -1702,3 +1702,49 @@
 }
 .sim-panel .sim-dot.running { background: #10b981; animation: monitorPulse 1s infinite; }
 .sim-info { color: var(--text-secondary); font-family: monospace; }
+
+
+/* ═══════════════════════════════════════════════════════════
+   14. 高亮闪烁动画（搜索定位 / 错误定位）
+   ═══════════════════════════════════════════════════════════ */
+
+/* 黄色高亮闪烁（搜索跳转用） */
+@keyframes ce-highlight-flash {
+  0%, 100% { box-shadow: 0 0 12px 4px #facc15; }
+  50% { box-shadow: 0 0 4px 1px #facc15; }
+}
+
+.ce-highlight-flash {
+  animation: ce-highlight-flash 0.6s ease-in-out 5;
+}
+
+/* 红色虚线闪烁（错误定位用） */
+@keyframes ce-error-blink {
+  0%, 100% { outline-color: #ef4444; }
+  50% { outline-color: transparent; }
+}
+
+.ce-error-flash {
+  outline: 3px dashed #ef4444 !important;
+  outline-offset: 4px;
+  animation: ce-error-blink 0.4s ease-in-out 3;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   15. 连线推荐端口高亮
+   ═══════════════════════════════════════════════════════════ */
+
+.ce-port-compatible {
+  box-shadow: 0 0 6px 2px #22c55e !important;
+}
+
+.ce-port-occupied {
+  opacity: 0.4 !important;
+  box-shadow: 0 0 4px 1px #64748b !important;
+}
+
+.ce-port-hover {
+  transform: scale(1.5) !important;
+  box-shadow: 0 0 8px 3px #3b82f6 !important;
+}
