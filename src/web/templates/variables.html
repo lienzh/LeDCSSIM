@@ -10,7 +10,7 @@
     <span style="color:#94a3b8; font-size:12px;" id="var-count"></span>
     <div style="flex:1;"></div>
     <input type="text" id="var-search" placeholder="搜索变量..." style="padding:5px 10px; border:1px solid #e2e8f0; border-radius:4px; font-size:12px; width:180px;">
-    <button onclick="syncFromGraph()" style="padding:5px 12px; border:1px solid #e2e8f0; border-radius:4px; font-size:12px; cursor:pointer; background:#fff;">同步仿真变量</button>
+    <button onclick="syncVariables()" style="padding:5px 12px; border:1px solid #e2e8f0; border-radius:4px; font-size:12px; cursor:pointer; background:#fff;">同步变量</button>
     <button onclick="showAddDialog()" style="padding:5px 12px; border:1px solid #1e293b; border-radius:4px; font-size:12px; cursor:pointer; background:#1e293b; color:#fff;">+ 添加变量</button>
   </div>
 
@@ -26,6 +26,7 @@
           <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-weight:600; width:50px;">单位</th>
           <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-weight:600;">OPC 节点</th>
           <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-weight:600;">描述</th>
+          <th style="padding:8px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-weight:600; width:100px;">来源页</th>
           <th style="padding:8px 12px; text-align:right; border-bottom:1px solid #e2e8f0; font-weight:600; width:80px;">当前值</th>
           <th style="padding:8px 12px; text-align:center; border-bottom:1px solid #e2e8f0; font-weight:600; width:60px;">操作</th>
         </tr>
@@ -108,7 +109,7 @@ function renderTable() {
   document.getElementById('var-count').textContent = `共 ${variables.length} 个变量`;
 
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="padding:40px; text-align:center; color:#94a3b8;">暂无变量</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="padding:40px; text-align:center; color:#94a3b8;">暂无变量</td></tr>';
     return;
   }
 
@@ -127,6 +128,7 @@ function renderTable() {
       <td style="padding:6px 12px; color:#64748b;">${esc(v.unit || '')}</td>
       <td style="padding:6px 12px; font-family:Consolas,monospace; font-size:11px; color:#64748b;">${esc(v.opc_node || '')}</td>
       <td style="padding:6px 12px; color:#64748b; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(v.description || '')}</td>
+      <td style="padding:6px 12px; font-size:11px; color:#64748b;">${esc(v.source_page || '')}</td>
       <td style="padding:6px 12px; text-align:right; font-family:Consolas,monospace;">${cv}</td>
       <td style="padding:6px 12px; text-align:center;">
         <button onclick="editVariable('${esc(v.tag)}')" style="border:none; background:none; cursor:pointer; font-size:12px; color:#3b82f6; padding:2px 4px;" title="编辑">&#9998;</button>
@@ -202,11 +204,11 @@ async function deleteVariable(tag) {
   } catch(e) {}
 }
 
-async function syncFromGraph() {
+async function syncVariables() {
   try {
-    const resp = await api('/api/variables/sync-graph', { method: 'POST' });
+    const resp = await api('/api/variables/sync', { method: 'POST' });
     if (resp.added && resp.added.length > 0) {
-      showToast(`同步了 ${resp.added.length} 个变量`);
+      showToast(`同步了 ${resp.added.length} 个变量: ${resp.added.join(', ')}`);
     } else {
       showToast('无新变量需要同步');
     }

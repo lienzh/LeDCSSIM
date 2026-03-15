@@ -63,11 +63,21 @@ OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型
 - 跨页变量：`ref_out`(A页) → `ref_in`(B页) 通过 tag 名匹配，支持跳转
 - 多页仿真：Run 页面可多选 IB/IL 页面组合运行
 
+**变量管理**：统一管理所有仿真变量（IO 通讯点 + 画布计算变量）
+- 变量来源：画布 JSON（output/ref_out/input 节点的 tag）+ `opc_mapping.yaml`（通讯信号）
+- 一键同步：`POST /api/variables/sync`，扫描画布和 OPC 映射自动导入，不需要仿真运行
+- 变量类型：按 OPC 映射的 `direction` 判断（input→AI，output→AO），纯画布变量→CALC
+- 来源页：仅 CALC 类型显示，取变量定义节点（output/ref_out/input）所在页面，非引用（ref_in）页面
+- 纯数字 ID 过滤：`get_all_node_values()` 和同步逻辑均跳过无 tag 的中间节点
+
 **路由结构**：
 - `/canvas/<layer>/<page_id>` — 统一画布（IL/IB）
 - `/il`, `/ib` — 重定向到该层第一个页面
+- `/variables` — 变量管理页面
 - `/api/pages` — 页面 CRUD
 - `/api/pages/refs` — 扫描所有页面的 ref_out 标签
+- `/api/variables` — 变量 CRUD（GET/POST/PUT/DELETE）
+- `/api/variables/sync` — 一键同步（画布 + OPC 映射 → 变量表）
 
 ### 模块说明
 
@@ -97,7 +107,8 @@ OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型
 
 ### 配置文件
 
-- `config/opc_mapping.yaml` — OPC UA 节点映射（模型变量名 ↔ 通道号，含 Server 地址）
+- `config/opc_mapping.yaml` — OPC UA 节点映射（模型变量名 ↔ 通道号，含 Server 地址、direction、冗余通道）
+- `config/variables.yaml` — 变量表（tag/name/type/unit/opc_node/description，由同步自动生成+手动编辑）
 - `config/models/_manifest.json` — 页面清单（自动生成，记录页面 id/layer/name/order）
 - `config/models/*.json` — 各页面的 Drawflow 画布组态数据
 - `config/model_params.yaml` — 仿真模型参数（待创建）
@@ -185,3 +196,19 @@ await client.write_ai_channel("ns=0;s=DPU3013.HW.AI010605", 600.0)
 - **在线组态**：CCMStudio 支持在线组态，一个控制周期内生效，不需要停控制器
 - **精度定位**：目标是逻辑正确性验证（控制方向、联锁动作、模式切换），不苛求绝对数值精度
 - **趋势监控**：使用科远 DCS 自带趋势软件，不需要自行开发
+
+## 待完善 / 已知问题
+
+### 变量管理
+- 变量同步后，mapping 中已有的变量如果用户手动修改了 type，再次同步会被覆盖回 AI/AO（同步逻辑以 mapping 为准）
+- 变量删除无级联：删除画布上的节点后，变量表中对应条目不会自动清理，需手动删除
+
+### 配置文件（待创建）
+- `config/model_params.yaml` — 仿真模型参数配置（功能块默认参数、工况参数等）
+- `config/sim_settings.yaml` — 运行设置（步长、时长、在线/离线默认配置等）
+
+### 功能模块（待开发）
+- **src/test_framework/** — 自动化测试框架（测试用例定义、批量执行、结果判定）
+- **tools/** — 辅助脚本（OPC 节点批量扫描、通道批量开通辅助等）
+- OPC 映射 UI 编辑（目前只能手动编辑 YAML）
+- DI 通道仿真切换（需 CCMStudio 组态层配合，非代码层面可解决）

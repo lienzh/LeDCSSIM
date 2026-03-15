@@ -193,6 +193,47 @@ def _save_variables(variables):
                   default_flow_style=False, sort_keys=False)
 
 
+def _scan_tag_sources() -> dict:
+    """扫描所有画布 JSON，建立 tag → 定义页面名 的映射（只取定义节点，不取引用节点）"""
+    # 定义节点：output、ref_out、input（这些是变量真正定义的地方）
+    # 引用节点：ref_in（只是引用别处的定义，不算来源）
+    _DEFINE_BLOCKS = {"output", "ref_out", "input"}
+    tag_sources = {}
+    try:
+        manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return tag_sources
+
+    for page in manifest.get("pages", []):
+        page_id = page.get("id", "")
+        page_name = page.get("name", page_id)
+        page_layer = page.get("layer", "")
+        label = f"{page_layer}/{page_name}" if page_layer else page_name
+        fpath = MODEL_DIR / f"{page_id}.json"
+        if not fpath.exists():
+            continue
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        meta = {}
+        df = data.get("drawflow", data)
+        if isinstance(df, dict):
+            meta = df.get("meta", {})
+            if not meta and "drawflow" in df:
+                inner = df["drawflow"]
+                if isinstance(inner, dict):
+                    meta = inner.get("meta", {})
+        node_block_map = meta.get("nodeBlockMap", {})
+        node_data_map = meta.get("nodeDataMap", {})
+        for nid, ndata in node_data_map.items():
+            tag = ndata.get("tag", "")
+            block_type = node_block_map.get(nid, "")
+            if tag and block_type in _DEFINE_BLOCKS:
+                tag_sources[tag] = label
+    return tag_sources
+
+
 @app.route("/api/variables", methods=["GET"])
 def api_get_variables():
     """获取全部变量"""
@@ -205,6 +246,13 @@ def api_get_variables():
             tag = v.get("tag", "")
             if tag in latest:
                 v["current_value"] = latest[tag]
+    # 附加来源页信息（仅 CALC 类型需要标注来源）
+    tag_sources = _scan_tag_sources()
+    for v in variables:
+        if v.get("type") not in ("AI", "AO", "DI", "DO"):
+            tag = v.get("tag", "")
+            if tag in tag_sources:
+                v["source_page"] = tag_sources[tag]
     return jsonify({"variables": variables})
 
 
@@ -246,31 +294,115 @@ def api_delete_variable(tag):
     return jsonify({"ok": True})
 
 
-@app.route("/api/variables/sync-graph", methods=["POST"])
-def api_sync_variables_from_graph():
-    """从当前运行的仿真图中同步所有中间变量到变量表"""
-    engine = _sim_state.get("engine")
-    if not engine:
-        return jsonify({"error": "仿真未运行，无法同步"}), 400
+@app.route("/api/variables/sync", methods=["POST"])
+def api_sync_variables():
+    """一键同步：从画布 JSON + opc_mapping.yaml 导入所有变量（不需要仿真运行）"""
+    import yaml
 
     variables = _load_variables()
     existing_tags = {v["tag"] for v in variables}
-
-    # 从 recorder 的列名获取所有变量
     added = []
-    for col in engine.recorder.columns:
-        if col not in existing_tags:
+    updated = False
+
+    # ── 1. 扫描画布 JSON 中的 tag ──
+    try:
+        manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        manifest = {"pages": []}
+
+    for page in manifest.get("pages", []):
+        page_id = page.get("id", "")
+        fpath = MODEL_DIR / f"{page_id}.json"
+        if not fpath.exists():
+            continue
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        # 提取 meta.nodeDataMap
+        meta = {}
+        df = data.get("drawflow", data)
+        if isinstance(df, dict):
+            meta = df.get("meta", {})
+            if not meta and "drawflow" in df:
+                inner = df["drawflow"]
+                if isinstance(inner, dict):
+                    meta = inner.get("meta", {})
+        node_data_map = meta.get("nodeDataMap", {})
+        for nid, ndata in node_data_map.items():
+            tag = ndata.get("tag", "").strip()
+            # 跳过无 tag、纯数字 ID、已存在的
+            if not tag or tag.isdigit() or tag in existing_tags:
+                continue
             variables.append({
-                "tag": col,
-                "name": col,
+                "tag": tag,
+                "name": tag,
                 "type": "CALC",
                 "unit": "",
-                "description": "仿真中间变量（自动同步）",
+                "description": "画布变量（自动同步）",
             })
-            added.append(col)
-            existing_tags.add(col)
+            added.append(tag)
+            existing_tags.add(tag)
 
-    if added:
+    # ── 2. 扫描 opc_mapping.yaml 中的通讯点 ──
+    # 已存在的变量也会被补全 OPC 信息（unit、opc_node、type、description）
+    if MAPPING_FILE.exists():
+        try:
+            with open(MAPPING_FILE, "r", encoding="utf-8") as f:
+                mapping_data = yaml.safe_load(f) or {}
+        except Exception:
+            mapping_data = {}
+
+        dpu = mapping_data.get("dpu", "DPU3013")
+        # 按 tag 索引已有变量，用于补全
+        var_by_tag = {v["tag"]: v for v in variables}
+
+        for sig in mapping_data.get("signals", []):
+            name = sig.get("name", "")
+            if not name:
+                continue
+            sig_type = sig.get("type", "").upper()
+            direction = sig.get("direction", "")
+            if sig_type == "AI":
+                channel = sig.get("channel", "")
+                opc_node = f"{dpu}.HW.{channel}.PV" if channel else ""
+            else:
+                opc_node = sig.get("node", "")
+            # 按方向决定变量类型：output→AO，input→AI
+            var_type = "AO" if direction == "output" else "AI"
+
+            if name in existing_tags:
+                # 已存在：补全空字段
+                existing = var_by_tag.get(name)
+                if existing:
+                    if not existing.get("opc_node"):
+                        existing["opc_node"] = opc_node
+                        updated = True
+                    if not existing.get("unit"):
+                        existing["unit"] = sig.get("unit", "")
+                        updated = True
+                    if not existing.get("description") or existing["description"].endswith("（自动同步）"):
+                        existing["description"] = sig.get("description", "")
+                        updated = True
+                    if existing.get("type") == "CALC":
+                        existing["type"] = var_type
+                        updated = True
+                    if not existing.get("name") or existing["name"] == name:
+                        existing["name"] = sig.get("description", name)
+                        updated = True
+            else:
+                variables.append({
+                    "tag": name,
+                    "name": sig.get("description", name),
+                    "type": var_type,
+                    "unit": sig.get("unit", ""),
+                    "opc_node": opc_node,
+                    "description": sig.get("description", ""),
+                })
+                added.append(name)
+                existing_tags.add(name)
+
+    if added or updated:
         _save_variables(variables)
     return jsonify({"ok": True, "added": added, "total": len(variables)})
 

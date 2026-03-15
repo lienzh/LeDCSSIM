@@ -629,18 +629,12 @@ class GraphRunner:
         return dict(self._latest_outputs)
 
     def get_all_node_values(self) -> Dict[str, float]:
-        """获取所有节点的当前输出值（用 tag 作为 key，无 tag 的用原始节点编号）"""
+        """获取所有节点的当前输出值（仅返回有意义 tag 的节点，跳过无 tag 的中间节点）"""
         result = {}
         for nid, node in self._nodes.items():
             tag = node.tag
             if tag:
                 result[tag] = node.output_value
-            else:
-                # 无 tag 的中间节点：提取末尾数字作为原始 Drawflow 节点 ID
-                # 前缀格式 "IB_CCS_model_3" → "3"
-                parts = nid.rsplit("_", 1)
-                bare_id = parts[-1] if len(parts) > 1 and parts[-1].isdigit() else nid
-                result[bare_id] = node.output_value
         return result
 
     def get_info(self) -> dict:
