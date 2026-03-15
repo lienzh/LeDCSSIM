@@ -6,7 +6,7 @@
 <div class="page-header">
   <div>
     <h2>仿真运行</h2>
-    <div class="desc">启动仿真循环，监测实时数据</div>
+    <div class="desc">执行画布组态逻辑，在线连接 OPC / 离线独立运行</div>
   </div>
   <div class="status-indicator">
     <span class="status-dot" id="statusDot"></span>
@@ -18,50 +18,21 @@
   <div class="run-grid">
     <!-- 左侧：控制面板 -->
     <div>
-      <!-- 工况输入 -->
+      <!-- 工程组态概览 -->
       <div class="card" style="margin-bottom:16px;">
-        <div class="card-header"><h3>工况输入（开环）</h3></div>
+        <div class="card-header"><h3>工程组态</h3></div>
         <div class="card-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>调门开度（固定）</label>
-              <input type="number" class="form-control" id="valvePos" value="0.7" step="0.05" min="0" max="1">
-            </div>
-            <div class="form-group">
-              <label>初始煤量 (t/h)</label>
-              <input type="number" class="form-control" id="initCoal" value="200" step="10">
-            </div>
-          </div>
+          <div id="projectPages" style="font-size:13px; color:var(--text-light);">加载中...</div>
+          <div id="graphInfo" style="font-size:12px; color:var(--text-light); margin-top:8px;"></div>
+        </div>
+      </div>
 
-          <div style="margin-top:8px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-              <label style="font-size:13px; font-weight:600;">煤量调度</label>
-              <button class="btn btn-outline btn-sm" onclick="addScheduleRow()">+ 添加</button>
-            </div>
-            <table style="width:100%; font-size:12px;" id="scheduleTable">
-              <thead>
-                <tr style="color:var(--text-light);">
-                  <th style="text-align:left; padding:4px;">时刻 (s)</th>
-                  <th style="text-align:left; padding:4px;">煤量 (t/h)</th>
-                  <th style="width:40px;"></th>
-                </tr>
-              </thead>
-              <tbody id="scheduleBody">
-                <tr>
-                  <td><input type="number" class="form-control sched-time" value="120" style="font-size:12px; padding:4px 8px;"></td>
-                  <td><input type="number" class="form-control sched-coal" value="240" style="font-size:12px; padding:4px 8px;"></td>
-                  <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()" style="padding:2px 6px; font-size:11px;">×</button></td>
-                </tr>
-                <tr>
-                  <td><input type="number" class="form-control sched-time" value="300" style="font-size:12px; padding:4px 8px;"></td>
-                  <td><input type="number" class="form-control sched-coal" value="200" style="font-size:12px; padding:4px 8px;"></td>
-                  <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()" style="padding:2px 6px; font-size:11px;">×</button></td>
-                </tr>
-              </tbody>
-            </table>
-            <div style="font-size:11px; color:var(--text-light); margin-top:4px;">
-              初始煤量从 0s 开始，调度表中为阶跃变化时刻
-            </div>
+      <!-- 初始输入值 -->
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-header"><h3>初始输入值</h3></div>
+        <div class="card-body">
+          <div id="inputFields" style="font-size:13px; color:var(--text-light);">
+            加载后自动显示输入信号
           </div>
         </div>
       </div>
@@ -70,16 +41,18 @@
         <div class="card-header"><h3>运行控制</h3></div>
         <div class="card-body">
           <div class="form-group">
-            <label>运行模式</label>
+            <label>运行模式
+              <span id="opcDot" title="NTVDPU 通讯状态" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-left:6px;vertical-align:middle;"></span>
+            </label>
             <select class="form-control" id="runMode">
-              <option value="offline">离线调试 (不连 OPC)</option>
-              <option value="online">在线闭环 (连接 NTVDPU)</option>
+              <option value="offline">离线运行（不连 OPC）</option>
+              <option value="online">在线闭环（连接 NTVDPU）</option>
             </select>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>运行时长 (秒)</label>
-              <input type="number" class="form-control" id="runDuration" value="480">
+              <input type="number" class="form-control" id="runDuration" value="60">
             </div>
             <div class="form-group">
               <label>仿真步长 (秒)</label>
@@ -144,12 +117,7 @@
       <div class="card">
         <div class="card-header">
           <h3>趋势曲线</h3>
-          <div class="btn-group">
-            <button class="btn btn-outline btn-sm" onclick="toggleChart('main_steam_pressure')">压力</button>
-            <button class="btn btn-outline btn-sm" onclick="toggleChart('unit_power')">功率</button>
-            <button class="btn btn-outline btn-sm" onclick="toggleChart('coal_flow')">煤量</button>
-            <button class="btn btn-outline btn-sm" onclick="toggleChart('unit_power_opc')">OPC读回</button>
-          </div>
+          <div class="btn-group" id="trendButtons"></div>
         </div>
         <div class="card-body">
           <canvas id="trendChart" height="250"></canvas>
@@ -165,70 +133,146 @@
 <script>
 let pollTimer = null;
 let trendChart = null;
-let chartSignals = ['unit_power', 'unit_power_opc'];
+let chartSignals = [];
 let wasRunning = false;
+let graphInputs = [];   // 图的输入信号列表
+let graphOutputs = [];  // 图的输出信号列表
 
-const chartColors = {
-  main_steam_pressure: '#3b82f6',
-  main_steam_pressure_opc: '#93c5fd',
-  unit_power: '#f59e0b',
-  unit_power_opc: '#ef4444',
-  coal_flow: '#10b981',
-  valve_position: '#8b5cf6',
-};
+const chartColors = ['#3b82f6','#f59e0b','#10b981','#ef4444','#8b5cf6','#ec4899','#06b6d4','#64748b'];
 
-const signalLabels = {
-  main_steam_pressure: '主汽压力 (MPa)',
-  main_steam_pressure_opc: '主汽压力-OPC读回 (MPa)',
-  unit_power: '模型功率 (MW)',
-  unit_power_opc: 'OPC读回功率 (MW)',
-  coal_flow: '煤量 (t/h)',
-  valve_position: '调门开度',
-};
+// ── 初始化 ──
+document.addEventListener('DOMContentLoaded', async () => {
+  initChart();
+  await loadModelList();
 
-// ── 煤量调度 ──
-function addScheduleRow() {
-  const tbody = document.getElementById('scheduleBody');
-  const tr = document.createElement('tr');
-  tr.innerHTML = `
-    <td><input type="number" class="form-control sched-time" value="0" style="font-size:12px; padding:4px 8px;"></td>
-    <td><input type="number" class="form-control sched-coal" value="200" style="font-size:12px; padding:4px 8px;"></td>
-    <td><button class="btn btn-outline btn-sm" onclick="this.closest('tr').remove()" style="padding:2px 6px; font-size:11px;">×</button></td>
-  `;
-  tbody.appendChild(tr);
+  // 检查是否已有仿真在运行
+  try {
+    const s = await api('/api/sim/status');
+    if (s.running) {
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = false;
+      wasRunning = true;
+      startPolling();
+    } else if (s.data_count > 0) {
+      if (s.latest) renderDataCards(s.latest);
+      updateChart();
+      document.getElementById('infoTime').textContent = `${(s.sim_time || 0).toFixed(1)}s`;
+      document.getElementById('infoSteps').textContent = s.step_count || 0;
+      document.getElementById('infoRows').textContent = s.data_count || 0;
+    }
+  } catch(e) {}
+
+  // OPC 通讯状态轮询
+  async function opcPing() {
+    const dot = document.getElementById('opcDot');
+    try {
+      const r = await api('/api/opc/ping');
+      dot.style.background = r.ok ? '#10b981' : '#ef4444';
+      dot.title = r.ok ? 'NTVDPU 通讯正常' : 'NTVDPU 通讯异常';
+    } catch(e) {
+      dot.style.background = '#ef4444';
+      dot.title = 'NTVDPU 通讯异常';
+    }
+  }
+  opcPing();
+  setInterval(opcPing, 5000);
+
+});
+
+// ── 工程页面概览 ──
+async function loadModelList() {
+  try {
+    const pages = await api('/api/pages');
+    const ibPages = pages.IB || [];
+    const ilPages = pages.IL || [];
+
+    const el = document.getElementById('projectPages');
+    let html = '';
+    html += '<div style="margin-bottom:4px;"><strong>IB 层</strong>: ';
+    html += ibPages.length > 0 ? ibPages.map(p => p.name).join(', ') : '<span style="color:var(--danger);">(无，请先组态)</span>';
+    html += '</div>';
+    html += '<div><strong>IL 层</strong>: ';
+    html += ilPages.length > 0 ? ilPages.map(p => p.name).join(', ') : '(无)';
+    html += '</div>';
+    el.innerHTML = html;
+
+    // 加载整个工程的图信息
+    await loadGraphInfo();
+  } catch(e) {
+    document.getElementById('projectPages').innerHTML = '<span style="color:var(--text-light);">(加载失败)</span>';
+  }
 }
 
-function getCoalSchedule() {
-  const initCoal = parseFloat(document.getElementById('initCoal').value) || 200;
-  const schedule = [{time: 0, coal: initCoal}];
-  document.querySelectorAll('#scheduleBody tr').forEach(tr => {
-    const t = parseFloat(tr.querySelector('.sched-time')?.value);
-    const c = parseFloat(tr.querySelector('.sched-coal')?.value);
-    if (!isNaN(t) && !isNaN(c)) {
-      schedule.push({time: t, coal: c});
-    }
+// ── 图信息 ──
+async function loadGraphInfo() {
+  try {
+    const info = await api('/api/graph/info', { method: 'POST', body: {} });
+    graphInputs = info.inputs || [];
+    graphOutputs = info.outputs || [];
+
+    document.getElementById('graphInfo').innerHTML =
+      `输入: ${graphInputs.map(i => i.tag || i.id).join(', ') || '(无)'}<br>` +
+      `输出: ${graphOutputs.map(o => o.tag || o.id).join(', ') || '(无)'}`;
+
+    renderInputFields();
+    updateTrendButtons();
+  } catch(e) {
+    document.getElementById('graphInfo').innerHTML = '<span style="color:var(--danger);">解析失败</span>';
+    graphInputs = [];
+    graphOutputs = [];
+  }
+}
+
+function renderInputFields() {
+  const el = document.getElementById('inputFields');
+  if (graphInputs.length === 0) {
+    el.innerHTML = '<span style="color:var(--text-light);">该模型无输入端子</span>';
+    return;
+  }
+  el.innerHTML = graphInputs.map(inp => {
+    const tag = inp.tag || inp.id;
+    const defVal = inp.default !== undefined ? inp.default : 0;
+    return `<div class="form-group" style="margin-bottom:6px;">
+      <label style="font-size:12px;">${tag}</label>
+      <input type="number" class="form-control input-val" data-tag="${tag}" value="${defVal}" step="any">
+    </div>`;
+  }).join('');
+}
+
+function getInitialInputs() {
+  const inputs = {};
+  document.querySelectorAll('.input-val').forEach(el => {
+    inputs[el.dataset.tag] = parseFloat(el.value) || 0;
   });
-  return schedule;
+  return inputs;
+}
+
+function updateTrendButtons() {
+  // 根据图的输入输出动态生成趋势按钮
+  const allSignals = [
+    ...graphInputs.map(i => i.tag || i.id),
+    ...graphOutputs.map(o => o.tag || o.id),
+  ];
+  chartSignals = allSignals.slice(0, 4); // 默认显示前4个
+  const btnContainer = document.getElementById('trendButtons');
+  btnContainer.innerHTML = allSignals.map(sig =>
+    `<button class="btn btn-outline btn-sm" onclick="toggleChart('${sig}')">${sig}</button>`
+  ).join('');
 }
 
 // ── 启动 / 停止 ──
 async function startSim() {
   const mode = document.getElementById('runMode').value;
-  const duration = parseFloat(document.getElementById('runDuration').value) || 480;
+  const duration = parseFloat(document.getElementById('runDuration').value) || 60;
   const step_size = parseFloat(document.getElementById('runStep').value) || 0.2;
-  const valve_position = parseFloat(document.getElementById('valvePos').value) || 0.7;
-  const coal_schedule = getCoalSchedule();
+  const initial_inputs = getInitialInputs();
 
   try {
     const result = await api('/api/sim/start', {
       method: 'POST',
-      body: { mode, duration, step_size, valve_position, coal_schedule }
+      body: { mode, duration, step_size, initial_inputs }
     });
-    let msg = '仿真已启动';
-    if (result.init_power) {
-      msg += ` (初始: ${result.init_power}MW, ${result.init_pressure}MPa)`;
-    }
-    showToast(msg, 'success');
+    showToast('仿真已启动', 'success');
     document.getElementById('btnStart').disabled = true;
     document.getElementById('btnStop').disabled = false;
     wasRunning = true;
@@ -257,7 +301,6 @@ async function pollStatus() {
   try {
     const s = await api('/api/sim/status');
 
-    // 状态指示
     const dot = document.getElementById('statusDot');
     const txt = document.getElementById('statusText');
     if (s.running) {
@@ -273,26 +316,21 @@ async function pollStatus() {
         wasRunning = false;
         await updateChart();
         stopPolling();
-        showToast('仿真已完成', 'info');
+        if (s.error) {
+          showToast('仿真异常: ' + s.error, 'error');
+        } else {
+          showToast('仿真已完成', 'info');
+        }
       }
     }
 
-    // 运行信息
     document.getElementById('infoTime').textContent = `${(s.sim_time || 0).toFixed(1)}s`;
     document.getElementById('infoSteps').textContent = s.step_count || 0;
     document.getElementById('infoRows').textContent = s.data_count || 0;
-    document.getElementById('infoMode').textContent = s.mode === 'online' ? '在线闭环' : '离线调试';
+    document.getElementById('infoMode').textContent = s.mode === 'online' ? '在线闭环' : '离线运行';
 
-    // 实时数据卡片
-    if (s.latest) {
-      renderDataCards(s.latest);
-    }
-
-    // 趋势图（运行中时每次轮询更新）
-    if (s.running) {
-      await updateChart();
-    }
-
+    if (s.latest) renderDataCards(s.latest);
+    if (s.running) await updateChart();
   } catch (e) {}
 }
 
@@ -300,18 +338,15 @@ function renderDataCards(latest) {
   const el = document.getElementById('dataCards');
   const keys = Object.keys(latest).filter(k => k !== 'time_s');
   if (keys.length === 0) return;
-  el.innerHTML = keys.map(k => {
+  el.innerHTML = keys.map((k, i) => {
     const val = latest[k];
-    const label = signalLabels[k] || k;
-    const color = chartColors[k] || 'var(--text)';
-    return `
-      <div class="data-card">
-        <div class="label">${label}</div>
-        <div class="value" style="color:${color};">
-          ${typeof val === 'number' ? val.toFixed(2) : val}
-        </div>
+    const color = chartColors[i % chartColors.length];
+    return `<div class="data-card">
+      <div class="label">${k}</div>
+      <div class="value" style="color:${color};">
+        ${typeof val === 'number' ? val.toFixed(2) : val}
       </div>
-    `;
+    </div>`;
   }).join('');
 }
 
@@ -334,9 +369,7 @@ function initChart() {
           title: { display: true, text: '时间 (s)', font: { size: 11 } },
           ticks: { font: { size: 10 }, maxTicksLimit: 15 },
         },
-        y: {
-          ticks: { font: { size: 10 } },
-        },
+        y: { ticks: { font: { size: 10 } } },
       },
       elements: {
         point: { radius: 0 },
@@ -353,12 +386,11 @@ async function updateChart() {
     if (!d.timestamps || d.timestamps.length === 0) return;
 
     const labels = d.timestamps.map(t => t.toFixed(1));
-    const datasets = chartSignals.filter(sig => d.columns.includes(sig)).map(sig => ({
-      label: signalLabels[sig] || sig,
+    const datasets = chartSignals.filter(sig => d.columns.includes(sig)).map((sig, i) => ({
+      label: sig,
       data: d.data.map(row => row[sig]),
-      borderColor: chartColors[sig] || '#64748b',
+      borderColor: chartColors[i % chartColors.length],
       backgroundColor: 'transparent',
-      borderDash: sig.endsWith('_opc') ? [5, 3] : [],
     }));
 
     trendChart.data.labels = labels;
@@ -376,25 +408,5 @@ function toggleChart(signal) {
   }
   updateChart();
 }
-
-// ── 初始化 ──
-document.addEventListener('DOMContentLoaded', () => {
-  initChart();
-  // 检查是否已有数据或正在运行
-  api('/api/sim/status').then(s => {
-    if (s.running) {
-      document.getElementById('btnStart').disabled = true;
-      document.getElementById('btnStop').disabled = false;
-      wasRunning = true;
-      startPolling();
-    } else if (s.data_count > 0) {
-      if (s.latest) renderDataCards(s.latest);
-      updateChart();
-      document.getElementById('infoTime').textContent = `${(s.sim_time || 0).toFixed(1)}s`;
-      document.getElementById('infoSteps').textContent = s.step_count || 0;
-      document.getElementById('infoRows').textContent = s.data_count || 0;
-    }
-  });
-});
 </script>
 {% endblock %}

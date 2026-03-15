@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}LeDCSsim{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/canvas.css') }}">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow@0.0.59/dist/drawflow.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}?v=7">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/canvas.css') }}?v=7">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -26,32 +26,70 @@
           <span>总览</span>
         </a>
 
-        <div style="padding:12px 20px 4px; font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#475569;">逻辑层级</div>
+        <div style="padding:12px 20px 4px; font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#475569;">组态</div>
 
         <a href="/io" class="nav-item {% if active_page == 'io' %}active{% endif %}">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M5.05 3.636a1 1 0 010 1.414 7 7 0 000 9.9 1 1 0 11-1.414 1.414 9 9 0 010-12.728 1 1 0 011.414 0zm9.9 0a9 9 0 010 12.728 1 1 0 11-1.414-1.414 7 7 0 000-9.9 1 1 0 011.414-1.414zM7.879 6.464a1 1 0 010 1.414 3 3 0 000 4.243 1 1 0 11-1.415 1.414 5 5 0 010-7.07 1 1 0 011.415 0zm4.242 0a5 5 0 010 7.072 1 1 0 01-1.415-1.415 3 3 0 000-4.242 1 1 0 011.415-1.415zM10 9a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/>
           </svg>
-          <span>IO 层</span>
+          <span>IO <small style="opacity:.5">硬件信号</small></span>
         </a>
-        <a href="/il" class="nav-item {% if active_page == 'il' %}active{% endif %}">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4zm14 4H2v6a2 2 0 002 2h12a2 2 0 002-2V8zm-7 2a1 1 0 10-2 0v2a1 1 0 102 0v-2z"/>
-          </svg>
-          <span>IL 层 <small style="opacity:.5">预处理</small></span>
-        </a>
-        <a href="/ib" class="nav-item {% if active_page == 'ib' %}active{% endif %}">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z"/>
-          </svg>
-          <span>IB 层 <small style="opacity:.5">逻辑组态</small></span>
-        </a>
-        <a href="/l3" class="nav-item {% if active_page == 'l3' %}active{% endif %}">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-          <span>L3 层 <small style="opacity:.5">封装实现</small></span>
-        </a>
+        <!-- IL 可展开分组 -->
+        <div class="nav-group">
+          <div class="nav-item nav-group-header {% if active_page == 'canvas_il' %}active{% endif %}" onclick="toggleSection(this)">
+            <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4zm14 4H2v6a2 2 0 002 2h12a2 2 0 002-2V8zm-7 2a1 1 0 10-2 0v2a1 1 0 102 0v-2z"/>
+            </svg>
+            <span>IL <small style="opacity:.5">信号预处理</small></span>
+            <span class="nav-arrow">&#9660;</span>
+          </div>
+          <div class="nav-children">
+            {% if sidebar_tree is defined and sidebar_tree.IL %}
+              {% for page in sidebar_tree.IL %}
+              <a href="/canvas/IL/{{ page.id }}" class="nav-item sub-item {% if active_page == 'canvas_il' and page_id is defined and page_id == page.id %}active{% endif %}" oncontextmenu="pageContextMenu(event,'{{ page.id }}','{{ page.name }}')">{{ page.name }}</a>
+              {% endfor %}
+            {% endif %}
+            <a class="nav-item sub-item nav-add" onclick="createPage('IL')">+ 新页面</a>
+          </div>
+        </div>
+
+        <!-- IB 可展开分组 -->
+        <div class="nav-group">
+          <div class="nav-item nav-group-header {% if active_page == 'canvas_ib' %}active{% endif %}" onclick="toggleSection(this)">
+            <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z"/>
+            </svg>
+            <span>IB <small style="opacity:.5">逻辑组态</small></span>
+            <span class="nav-arrow">&#9660;</span>
+          </div>
+          <div class="nav-children">
+            {% if sidebar_tree is defined and sidebar_tree.IB %}
+              {% for page in sidebar_tree.IB %}
+              <a href="/canvas/IB/{{ page.id }}" class="nav-item sub-item {% if active_page == 'canvas_ib' and page_id is defined and page_id == page.id %}active{% endif %}" oncontextmenu="pageContextMenu(event,'{{ page.id }}','{{ page.name }}')">{{ page.name }}</a>
+              {% endfor %}
+            {% endif %}
+            <a class="nav-item sub-item nav-add" onclick="createPage('IB')">+ 新页面</a>
+          </div>
+        </div>
+
+        <!-- L3 可展开分组 -->
+        <div class="nav-group">
+          <div class="nav-item nav-group-header {% if active_page == 'l3' %}active{% endif %}" onclick="toggleSection(this)">
+            <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px;">
+              <path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
+            </svg>
+            <span>L3 <small style="opacity:.5">封装子块</small></span>
+            <span class="nav-arrow">&#9660;</span>
+          </div>
+          <div class="nav-children">
+            {% if sidebar_tree is defined and sidebar_tree.L3 %}
+              {% for page in sidebar_tree.L3 %}
+              <a href="/l3?block={{ page.id }}" class="nav-item sub-item">{{ page.name }}</a>
+              {% endfor %}
+            {% endif %}
+            <a href="/l3" class="nav-item sub-item nav-add">+ 编辑封装块</a>
+          </div>
+        </div>
 
         <div style="padding:12px 20px 4px; font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#475569;">运行</div>
 
@@ -60,6 +98,21 @@
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
           </svg>
           <span>仿真运行</span>
+        </a>
+
+        <div style="padding:12px 20px 4px; font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#475569;">数据</div>
+
+        <a href="/variables" class="nav-item {% if active_page == 'variables' %}active{% endif %}">
+          <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"/>
+          </svg>
+          <span>变量管理</span>
+        </a>
+        <a href="/trend" class="nav-item {% if active_page == 'trend' %}active{% endif %}">
+          <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zm6-4a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zm6-3a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/>
+          </svg>
+          <span>曲线趋势</span>
         </a>
       </div>
 
@@ -77,7 +130,66 @@
   <!-- 通知容器 -->
   <div class="toast-container" id="toasts"></div>
 
+  <!-- 右键菜单 -->
+  <div class="ctx-menu" id="pageCtxMenu" style="display:none;">
+    <div class="ctx-item" onclick="renamePage()">重命名</div>
+    <div class="ctx-item ctx-danger" onclick="deletePage()">删除</div>
+  </div>
+
   <script>
+    // ── 侧边栏展开/折叠 ──
+    function toggleSection(el) {
+      el.parentElement.classList.toggle('collapsed');
+    }
+
+    // ── 页面操作 ──
+    async function createPage(layer) {
+      if (!(await window.beforeNavigate())) return;
+      const name = prompt('页面名称:');
+      if (!name || !name.trim()) return;
+      try {
+        const result = await fetch('/api/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ layer, name: name.trim() })
+        }).then(r => r.json());
+        if (result.error) { alert(result.error); return; }
+        window.location.href = `/canvas/${layer}/${result.id}`;
+      } catch(e) { alert('创建失败'); }
+    }
+
+    // 右键菜单
+    let _ctxPageId = '', _ctxPageName = '';
+    function pageContextMenu(ev, pageId, pageName) {
+      ev.preventDefault();
+      _ctxPageId = pageId;
+      _ctxPageName = pageName;
+      const menu = document.getElementById('pageCtxMenu');
+      menu.style.display = 'block';
+      menu.style.left = ev.clientX + 'px';
+      menu.style.top = ev.clientY + 'px';
+    }
+    document.addEventListener('click', () => {
+      document.getElementById('pageCtxMenu').style.display = 'none';
+    });
+
+    async function renamePage() {
+      const newName = prompt('新名称:', _ctxPageName);
+      if (!newName || !newName.trim()) return;
+      await fetch(`/api/pages/${_ctxPageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() })
+      });
+      location.reload();
+    }
+
+    async function deletePage() {
+      if (!confirm(`确认删除页面 "${_ctxPageName}"？此操作不可恢复。`)) return;
+      await fetch(`/api/pages/${_ctxPageId}`, { method: 'DELETE' });
+      location.reload();
+    }
+
     // 全局 toast 通知
     function showToast(msg, type = 'info') {
       const container = document.getElementById('toasts');
@@ -87,6 +199,10 @@
       container.appendChild(el);
       setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3000);
     }
+
+    // 全局导航守卫：画布页面可覆写此函数来拦截导航
+    // 返回 true 表示可以离开，false 表示取消
+    window.beforeNavigate = async function() { return true; };
 
     // 全局 API 请求封装
     async function api(url, options = {}) {
@@ -105,7 +221,7 @@
   </script>
 
   <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow@0.0.59/dist/drawflow.min.js"></script>
-  <script src="{{ url_for('static', filename='js/canvas-engine.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/canvas-engine.js') }}?v=7"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

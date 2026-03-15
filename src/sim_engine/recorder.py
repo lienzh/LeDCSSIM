@@ -124,6 +124,20 @@ class DataRecorder:
                 values.append(row[name])
         return times, values
 
+    def get_range(self, start: int, end: Optional[int] = None) -> tuple:
+        """
+        获取指定范围的数据
+
+        Args:
+            start: 起始索引
+            end: 结束索引（不含），None = 到末尾
+        Returns:
+            (timestamps, data_rows, columns)
+        """
+        ts = self._timestamps[start:end]
+        rows = self._data[start:end]
+        return ts, rows, list(self._columns)
+
     def get_latest(self) -> Optional[Dict[str, float]]:
         """获取最新一行数据（含时间戳）"""
         if not self._data:

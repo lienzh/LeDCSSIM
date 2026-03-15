@@ -20,6 +20,20 @@
     encapsulated: { label: '封装',   color: '#7c3aed' }
   };
 
+  /* ── 开关量/逻辑块类型集合（连线虚线判断用） ── */
+  var DIGITAL_TYPES = {
+    AND: true, OR: true, NOT: true, XOR: true,
+    SR: true, RS: true,
+    TON: true, TOFF: true, TP: true, CTR: true,
+    CMP: true, AC: true, AC1: true
+  };
+
+  /* ── 异常值集合（监视模式 ERR 判断用） ── */
+  var ERROR_VALUES = { 'null': true, 'None': true, 'NaN': true, 'Infinity': true, '-Infinity': true };
+
+  /* ── 类别元数据默认值 ── */
+  var DEFAULT_CAT_META = { color: '#64748b', label: '' };
+
   /* ── 工具函数 ──────────────────────────────────────── */
 
   /** 转义 HTML */
@@ -36,6 +50,78 @@
   function deepClone(obj) {
     try { return JSON.parse(JSON.stringify(obj)); }
     catch (e) { return obj; }
+  }
+
+  /** 安全解析数值 */
+  function parseNumSafe(val, fallback) {
+    var n = parseFloat(val);
+    return isNaN(n) ? (fallback !== undefined ? fallback : 0) : n;
+  }
+
+  /** 获取类别元数据（带默认值） */
+  function getCatMeta(category) {
+    return CATEGORY_META[category] || DEFAULT_CAT_META;
+  }
+
+  /**
+   * 生成参数编辑表单 HTML（_openSidePanel 和 _openParamModal 共用）
+   * @param {string} blockId   块类型 ID
+   * @param {object} blockDef  块定义
+   * @param {object} data      节点数据
+   * @param {number} nodeId    节点 ID
+   * @returns {{ header: string, body: string, footer: string }}
+   */
+  function buildParamFormHTML(blockId, blockDef, data, nodeId) {
+    var catMeta = blockDef ? getCatMeta(blockDef.category) : DEFAULT_CAT_META;
+    var params = (blockDef && blockDef.params) ? blockDef.params : [];
+
+    // 头部
+    var header = '';
+    header += '<div class="ce-modal-header-color" style="background:' + catMeta.color + '"></div>';
+    header += '<div class="ce-modal-header-text">';
+    header += '<strong>' + esc(blockDef ? blockDef.id : blockId) + '</strong>';
+    header += ' <span style="color:#64748b;font-size:13px">' + esc(blockDef ? blockDef.name : '') + '</span>';
+    header += '</div>';
+    header += '<button class="ce-modal-close" data-close>&times;</button>';
+
+    // 内容
+    var body = '';
+    if (blockId === 'input' || blockId === 'output') {
+      body += '<div class="ce-modal-field">';
+      body += '<label>信号标签 (tag)</label>';
+      body += '<input type="text" value="' + esc(data.tag || data.name || '') + '" data-key="tag" class="ce-field-primary">';
+      body += '</div>';
+      if (blockId === 'input') {
+        body += '<div class="ce-modal-field">';
+        body += '<label>默认值</label>';
+        body += '<input type="number" step="any" value="' + esc(String(data.default || 0)) + '" data-key="default">';
+        body += '</div>';
+      }
+    }
+    if (params.length > 0) {
+      body += '<div class="ce-modal-section-title">参数</div>';
+      params.forEach(function (p) {
+        var val = data[p.key] !== undefined ? data[p.key] : (p.default !== undefined ? p.default : '');
+        body += '<div class="ce-modal-field">';
+        body += '<label>' + esc(p.label || p.key) + '</label>';
+        body += '<input type="' + (p.type === 'number' ? 'number' : 'text') + '" ';
+        body += 'value="' + esc(String(val)) + '" data-key="' + esc(p.key) + '"';
+        if (p.type === 'number') body += ' step="any"';
+        body += '>';
+        body += '</div>';
+      });
+    }
+    if (blockDef && blockDef.description) {
+      body += '<div class="ce-modal-desc">' + esc(blockDef.description) + '</div>';
+    }
+
+    // 底部
+    var footer = '';
+    footer += '<span class="ce-modal-node-id">Node #' + nodeId + '</span>';
+    footer += '<button class="ce-modal-btn ce-btn-cancel" data-close>取消</button>';
+    footer += '<button class="ce-modal-btn ce-btn-ok" data-ok>确定</button>';
+
+    return { header: header, body: body, footer: footer };
   }
 
   /** 生成唯一 ID */
@@ -68,7 +154,13 @@
     this._editor.reroute = true;
     this._editor.reroute_fix_curvature = true;
     this._editor.force_first_input = false;
+    this._editor.curvature = 0;             // 关闭默认曲线
+    this._editor.reroute_curvature_start_end = 0;
+    this._editor.reroute_curvature = 0;
     this._editor.start();
+
+    // Manhattan 直角折线：覆写 Drawflow 的 createCurvature 方法
+    this._patchManhattanRouting();
 
     // 状态
     this._mode = options.mode || 'config';
@@ -80,6 +172,7 @@
     this._nodeBlockMap = {};      // drawflow nodeId -> blockDef.id
     this._nodeDataMap = {};       // drawflow nodeId -> user data
     this._monitorValues = {};     // nodeId -> { output: value }
+    this._savedSnapshot = null;   // 上次保存时的快照（用于脏检测）
     this._suppressHistory = false;
 
     // 回调
@@ -151,6 +244,31 @@
       });
     });
 
+    // Fix 6: 节点拖拽释放 → snap to 20px 网格
+    editor.on('nodeMoved', function (nodeId) {
+      try {
+        var dfNode = editor.getNodeFromId(nodeId);
+        if (!dfNode) return;
+        var sx = Math.round(dfNode.pos_x / 20) * 20;
+        var sy = Math.round(dfNode.pos_y / 20) * 20;
+        if (sx !== dfNode.pos_x || sy !== dfNode.pos_y) {
+          var el = self._container.querySelector('#node-' + nodeId);
+          if (el) {
+            el.style.left = sx + 'px';
+            el.style.top = sy + 'px';
+          }
+          dfNode.pos_x = sx;
+          dfNode.pos_y = sy;
+          editor.updateConnectionNodes('node-' + nodeId);
+        }
+      } catch (e) {}
+    });
+
+    // Fix 4: 连线创建时分类（开关量 → 虚线）
+    editor.on('connectionCreated', function (info) {
+      self._classifyConnection(info);
+    });
+
     // 缩放变化
     editor.on('zoom', function () {
       self._updateZoomIndicator();
@@ -158,7 +276,37 @@
 
     // 鼠标滚轮缩放 (Drawflow 内置支持，但需确保指示器同步)
     this._container.addEventListener('wheel', function () {
-      setTimeout(function () { self._updateZoomIndicator(); }, 0);
+      setTimeout(function () {
+        self._updateZoomIndicator();
+        self._updateGrid();
+      }, 0);
+    });
+
+    // 平移后更新网格
+    this._container.addEventListener('mouseup', function () {
+      setTimeout(function () { self._updateGrid(); }, 0);
+    });
+
+    // 双击 ref_in → 弹出引出点选择器（特殊处理）
+    this._container.addEventListener('dblclick', function (e) {
+      if (self._mode !== 'config') return;
+      var nodeEl = e.target.closest('.drawflow-node');
+      if (!nodeEl) return;
+      var nodeId = parseInt(nodeEl.id.replace('node-', ''), 10);
+      if (isNaN(nodeId)) return;
+      var blockId = self._nodeBlockMap[nodeId];
+      if (blockId === 'ref_in') {
+        e.preventDefault();
+        e.stopPropagation();
+        self._openRefPicker(nodeId);
+      }
+    });
+
+    // 点击画布空白区域 → 关闭侧边面板
+    this._container.addEventListener('click', function (e) {
+      if (!e.target.closest('.drawflow-node') && !e.target.closest('.ce-side-panel')) {
+        self._closeSidePanel();
+      }
     });
   };
 
@@ -190,6 +338,62 @@
     }
     this._suppressHistory = false;
     this._updateZoomIndicator();
+  };
+
+  /** 网格跟随缩放/平移 */
+  CanvasEngine.prototype._updateGrid = function () {
+    if (this._gridType === 'none') return;
+    var zoom = this._editor.zoom || 1;
+    var baseSize = 20;
+    var size = baseSize * zoom;
+    var cx = this._editor.canvas_x || 0;
+    var cy = this._editor.canvas_y || 0;
+    this._container.style.backgroundSize = size + 'px ' + size + 'px';
+    this._container.style.backgroundPosition = cx + 'px ' + cy + 'px';
+  };
+
+
+  /* ── Manhattan 直角折线路径 ─────────────────────────── */
+
+  /**
+   * 覆写 Drawflow 内部的 createCurvature 方法，
+   * 生成水平-垂直-水平（Z 形）Manhattan 路径。
+   *
+   * 参数: (startX, startY, endX, endY, curvature, type)
+   *   type: 'open'(输出端) / 'close'(输入端) / 'other'
+   * 返回: SVG path 的 d 属性字符串
+   */
+  CanvasEngine.prototype._patchManhattanRouting = function () {
+    this._editor.createCurvature = function (startX, startY, endX, endY /*, curvature, type*/) {
+      var dx = endX - startX;
+      var dy = endY - startY;
+
+      // 最小水平伸出量（确保线从端口水平出发）
+      var stub = 20;
+
+      // 正常情况：终点在起点右侧，Z 形折线
+      if (dx > stub * 2) {
+        var midX = startX + dx / 2;
+        return 'M ' + startX + ' ' + startY +
+               ' H ' + midX +
+               ' V ' + endY +
+               ' H ' + endX;
+      }
+
+      // 终点在起点左侧或很近 → U 形绕行
+      var offsetY = Math.max(Math.abs(dy) * 0.5, 40);
+      var dir = dy >= 0 ? 1 : -1;
+      var bypassY = (dy === 0) ? startY - offsetY : startY + dir * offsetY;
+      var sx = startX + stub;
+      var ex = endX - stub;
+
+      return 'M ' + startX + ' ' + startY +
+             ' H ' + sx +
+             ' V ' + bypassY +
+             ' H ' + ex +
+             ' V ' + endY +
+             ' H ' + endX;
+    };
   };
 
 
@@ -327,26 +531,153 @@
    * @param {object} data      节点数据
    * @returns {string}         HTML 字符串
    */
+  /* ── SAMA 标准图标符号映射 ─────────────────────────── */
+  var SAMA_SYMBOLS = {
+    // 运算
+    ADD: '\u03A3', SUM: '\u03A3', SUB: '\u0394',
+    MLT: '\u00D7', ML: '\u00D7', multiply: '\u00D7',
+    DIV: '\u00F7',
+    ABS: '|x|', POW: 'x\u207F', SQRT: '\u221A',
+    AVE: 'AVG',
+    G: '\u25B7', gain: '\u25B7',       // 三角形=增益
+    // 比较选择
+    HS: 'HS', LS: 'LS', CMP: '\u2265',
+    AC: '\u2265', AC1: '\u2265',
+    NTH: 'Nth', SEL: 'SEL',
+    ASW: 'SW', SW: 'SW',
+    // 动态
+    FLT: '1/Ts', Inertia: '1/Ts',
+    I: '\u222B', Integrator: '\u222B',
+    LDL: 'LD/LG', LeadLag: 'LD/LG',
+    SO: '2nd',
+    DB: 'DB', DeadZone: 'DB',
+    RL: 'R/L', RateLimiter: 'R/L',
+    LIM: '\u2534\u252C', Limiter: '\u2534\u252C',
+    // 控制
+    PI: 'PI', PID: 'PID', PD: 'PD',
+    // 逻辑
+    AND: '&', OR: '\u22651', NOT: '\u00AC', XOR: '\u2295',
+    SR: 'SR', RS: 'RS',
+    // 定时
+    TON: 'TON', TOFF: 'TOF', TP: 'TP', CTR: 'CTR',
+    // 信号处理
+    SH: 'S/H', RAMP: '/', GRAD: '\u2202',
+    SC: 'SC', BG: 'B+G', DEV: '\u0394',
+    // 常量
+    CON: 'K', constant: 'K',
+    // 传递
+    sum: '\u03A3',
+  };
+
+  /**
+   * 生成 SAMA 风格紧凑节点 HTML
+   * 功能块：仅显示符号
+   * 信号端子：显示 tag 名
+   */
+  var IO_TYPES = { input: true, output: true, ref_in: true, ref_out: true, io_input: true, il_output: true };
+
+  /**
+   * SAMA 图标风格节点渲染
+   *
+   * 功能块: ┌──ID──┐   IO端子: ┌─▷ tag ─┐  或  ┌─ tag ◁─┐
+   *         │ SYM  │          └────────┘      └────────┘
+   *         └──────┘
+   * 引用:   ┌╌╌tag╌╌┐ (虚线)
+   *         └╌╌╌╌╌╌╌┘
+   */
   CanvasEngine.prototype.renderNodeHTML = function (blockDef, data) {
     data = data || {};
     var typeId = blockDef.id || '';
-    var cat = blockDef.category || 'transfer';
-    var catMeta = CATEGORY_META[cat] || { color: '#64748b' };
-    var color = catMeta.color;
+    var isIO = !!IO_TYPES[typeId];
+    var isRef = (typeId === 'ref_in' || typeId === 'ref_out');
+    var isCon = (typeId === 'CON' || typeId === 'constant');
 
-    // SAMA 图标风格：简洁方块 + 名称
-    // 信号端子显示标签名
-    var label = typeId;
-    if ((typeId === 'input' || typeId === 'output') && data.tag) {
-      label = data.tag;
-    } else if (typeId === 'CON' && data.value !== undefined) {
-      label = String(data.value);
+    var html = '';
+
+    if (isIO) {
+      // IO 端子 / 引用点 — 单行标签块
+      var tag = data.tag || data.name || '';
+      var arrow = '';
+      if (typeId === 'input' || typeId === 'io_input' || typeId === 'ref_in') arrow = '\u25b7 ';   // ▷
+      if (typeId === 'output' || typeId === 'il_output' || typeId === 'ref_out') arrow = ' \u25c1'; // ◁
+
+      var cls = 'sama-node sama-io-block';
+      if (isRef) cls += ' sama-ref';
+
+      html = '<div class="' + cls + '">';
+      if (arrow && (typeId === 'input' || typeId === 'io_input' || typeId === 'ref_in')) {
+        html += '<span class="sama-arrow">' + arrow + '</span>';
+      }
+      html += '<span class="sama-tag">' + esc(tag || typeId) + '</span>';
+      if (arrow && (typeId === 'output' || typeId === 'il_output' || typeId === 'ref_out')) {
+        html += '<span class="sama-arrow">' + arrow + '</span>';
+      }
+      html += '<div class="node-value" data-node-value></div>';
+      html += '</div>';
+
+    } else if (isCon) {
+      // 常数块
+      html = '<div class="sama-node sama-func">';
+      html += '<div class="sama-sym">' + esc(String(data.value !== undefined ? data.value : 0)) + '</div>';
+      html += '<div class="node-value" data-node-value></div>';
+      html += '</div>';
+
+    } else {
+      // 功能块 — 紧凑黑白 SAMA 布局
+      var instanceName = data._blockName || data.name || blockDef.name || typeId;
+
+      // 端口名生成
+      var numIn = typeof blockDef.inputs === 'number' ? blockDef.inputs : (Array.isArray(blockDef.inputs) ? blockDef.inputs.length : 0);
+      var numOut = typeof blockDef.outputs === 'number' ? blockDef.outputs : (Array.isArray(blockDef.outputs) ? blockDef.outputs.length : 0);
+      var inNames = [];
+      var outNames = [];
+      if (Array.isArray(blockDef.inputs)) {
+        inNames = blockDef.inputs.map(function (p) { return typeof p === 'string' ? p : (p.name || ''); });
+      }
+      if (Array.isArray(blockDef.outputs)) {
+        outNames = blockDef.outputs.map(function (p) { return typeof p === 'string' ? p : (p.name || ''); });
+      }
+      for (var ii = inNames.length; ii < numIn; ii++) { inNames.push(numIn === 1 ? 'IN' : 'IN' + (ii + 1)); }
+      for (var oi = outNames.length; oi < numOut; oi++) { outNames.push(numOut === 1 ? 'OUT' : 'OUT' + (oi + 1)); }
+
+      // 关键参数（最多2个，紧凑显示）
+      var paramStrs = [];
+      if (blockDef.params && Array.isArray(blockDef.params)) {
+        blockDef.params.slice(0, 2).forEach(function (p) {
+          var v = data[p.key] !== undefined ? data[p.key] : p.default;
+          if (v !== undefined && v !== '') paramStrs.push(p.key + '=' + v);
+        });
+      }
+
+      html = '<div class="sama-node sama-func-full">';
+      html += '<div class="node-header">';
+      html += '<span class="node-instance">' + esc(instanceName) + '</span>';
+      html += '</div>';
+      html += '<div class="node-body">';
+
+      // 左侧端口名
+      html += '<div class="port-labels port-labels-in">';
+      inNames.forEach(function (n) { html += '<div class="port-label">' + esc(n) + '</div>'; });
+      html += '</div>';
+
+      // 中间内容
+      html += '<div class="node-center">';
+      if (paramStrs.length > 0) {
+        html += '<div class="node-params">' + esc(paramStrs.join(' ')) + '</div>';
+      }
+      html += '<div class="node-type">' + esc(typeId) + '</div>';
+      html += '</div>';
+
+      // 右侧端口名
+      html += '<div class="port-labels port-labels-out">';
+      outNames.forEach(function (n) { html += '<div class="port-label">' + esc(n) + '</div>'; });
+      html += '</div>';
+
+      html += '</div>'; // node-body
+      html += '<div class="node-value" data-node-value></div>';
+      html += '</div>'; // sama-func-full
     }
 
-    var html = '<div class="sama-node" style="border-left:4px solid ' + color + ';">';
-    html += '<div class="sama-label">' + esc(label) + '</div>';
-    html += '<div class="node-value" data-node-value></div>';
-    html += '</div>';
     return html;
   };
 
@@ -402,8 +733,47 @@
       console.error('CanvasEngine.importJSON: 导入失败', e);
     }
     this._suppressHistory = false;
+    // 重新渲染所有节点 HTML（保存的旧 HTML 可能不匹配当前渲染逻辑）
+    this._refreshAllNodeHTML();
     this._pushHistory();
     this._updateZoomIndicator();
+    // 导入后标记为干净状态
+    this.markSaved();
+  };
+
+  /**
+   * 标记当前画布为"已保存"（清除脏标记）
+   */
+  CanvasEngine.prototype.markSaved = function () {
+    this._savedSnapshot = JSON.stringify(this._editor.export());
+  };
+
+  /**
+   * 画布是否有未保存修改
+   * @returns {boolean}
+   */
+  CanvasEngine.prototype.isDirty = function () {
+    if (!this._savedSnapshot) return false;
+    return JSON.stringify(this._editor.export()) !== this._savedSnapshot;
+  };
+
+  /**
+   * 重新渲染所有节点的 HTML（导入后刷新用）
+   */
+  CanvasEngine.prototype._refreshAllNodeHTML = function () {
+    var self = this;
+    var nodeIds = Object.keys(this._nodeBlockMap);
+    nodeIds.forEach(function (nodeId) {
+      self.updateNodeDisplay(parseInt(nodeId, 10));
+    });
+    // 节点 HTML 变化后重新计算连线路径，延迟确保 DOM 已更新
+    requestAnimationFrame(function () {
+      nodeIds.forEach(function (nodeId) {
+        try {
+          self._editor.updateConnectionNodes('node-' + nodeId);
+        } catch (e) {}
+      });
+    });
   };
 
   /**
@@ -579,11 +949,21 @@
     var self = this;
     this._monitorValues = values || {};
 
-    Object.keys(values).forEach(function (nodeId) {
+    // 建立 tag → nodeId 反向映射（从 _nodeDataMap 提取）
+    var tagToNodeId = {};
+    Object.keys(this._nodeDataMap).forEach(function (nid) {
+      var d = self._nodeDataMap[nid];
+      var tag = d && (d.tag || d.name);
+      if (tag) tagToNodeId[tag] = nid;
+    });
+
+    Object.keys(values).forEach(function (key) {
+      // key 可能是 tag 名（如 "MWtest"）或节点 ID（如 "3"）
+      var nodeId = tagToNodeId[key] || key;
       var nodeEl = self._container.querySelector('#node-' + nodeId);
       if (!nodeEl) return;
 
-      var valObj = values[nodeId];
+      var valObj = values[key];
       var displayVal = '';
       if (typeof valObj === 'object' && valObj !== null) {
         displayVal = valObj.output !== undefined ? String(valObj.output) : JSON.stringify(valObj);
@@ -591,21 +971,22 @@
         displayVal = String(valObj);
       }
 
+      // 数值格式化：小数点后最多 2 位
+      var numVal = parseFloat(displayVal);
+      if (isFinite(numVal)) {
+        displayVal = numVal.toFixed(2);
+      }
+
       var valEl = nodeEl.querySelector('[data-node-value]');
       if (valEl) {
-        valEl.textContent = displayVal;
-
-        // 值域颜色判断
+        // Fix 5: NaN/Inf/null → 红色 ERR 闪烁
         valEl.classList.remove('val-normal', 'val-warning', 'val-alarm');
-        var numVal = parseFloat(displayVal);
-        if (!isNaN(numVal)) {
-          if (valObj.alarm) {
-            valEl.classList.add('val-alarm');
-          } else if (valObj.warning) {
-            valEl.classList.add('val-warning');
-          } else {
-            valEl.classList.add('val-normal');
-          }
+        if (ERROR_VALUES[displayVal] || !isFinite(numVal)) {
+          valEl.textContent = 'ERR';
+          valEl.classList.add('val-alarm');
+        } else {
+          valEl.textContent = displayVal;
+          valEl.classList.add('val-normal');
         }
       }
     });
@@ -884,7 +1265,7 @@
     var catOrder = ['signal', 'arithmetic', 'compare', 'dynamic', 'control', 'logic', 'timer', 'transfer', 'encapsulated'];
     catOrder.forEach(function (cat) {
       if (!groups[cat]) return;
-      var meta = CATEGORY_META[cat] || { label: cat, color: '#64748b' };
+      var meta = getCatMeta(cat);
 
       html += '<div class="palette-category cat-' + cat + '" data-category="' + cat + '">';
       html += '<div class="palette-category-title">';
@@ -1011,7 +1392,7 @@
 
       html += '<div class="prop-row">';
       html += '<label>类别</label>';
-      html += '<input type="text" value="' + esc((CATEGORY_META[blockDef.category] || {}).label || blockDef.category || '') + '" readonly />';
+      html += '<input type="text" value="' + esc(getCatMeta(blockDef.category).label || blockDef.category || '') + '" readonly />';
       html += '</div>';
     }
     html += '</div>';
@@ -1118,8 +1499,684 @@
     return this._editor;
   };
 
+  /**
+   * 获取节点对应的功能块 ID
+   * @param {number} nodeId
+   * @returns {string|null}
+   */
+  CanvasEngine.prototype.getNodeBlockId = function (nodeId) {
+    return this._nodeBlockMap[nodeId] || null;
+  };
+
   /** 获取类别元数据 */
   CanvasEngine.CATEGORIES = CATEGORY_META;
+
+
+  /* ═══════════════════════════════════════════════════════════
+     浮动调试小窗口 (Inspector)
+     选中节点时显示详细信息，可拖拽移动
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 启用浮动调试小窗口（选中节点时自动显示）
+   */
+  CanvasEngine.prototype.enableInspector = function () {
+    // 单击选中节点 → 打开侧边面板（替代旧的浮动 Inspector 小窗）
+    var self = this;
+    this.onNodeSelected(function (nodeId) {
+      if (self._mode === 'config') {
+        self._openSidePanel(nodeId);
+      }
+    });
+    this.onNodeDeselected(function () {
+      self._closeSidePanel();
+    });
+  };
+
+  /** 显示调试小窗 */
+  /* ═══════════════════════════════════════════════════════════
+     参数编辑弹窗（仅用于 ref_in 选择器等特殊场景）
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 打开参数编辑弹窗
+   * @param {number} nodeId
+   */
+  CanvasEngine.prototype._openParamModal = function (nodeId) {
+    var data = this.getNodeData(nodeId);
+    var blockId = this._nodeBlockMap[nodeId];
+    var blockDef = this._blockDefs[blockId];
+    if (!blockDef && !data) return;
+
+    var modal = document.getElementById('ce-param-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'ce-param-modal';
+      modal.className = 'ce-modal-overlay';
+      document.body.appendChild(modal);
+    }
+
+    var form = buildParamFormHTML(blockId, blockDef, data, nodeId);
+    var html = '<div class="ce-modal">';
+    html += '<div class="ce-modal-header">' + form.header + '</div>';
+    html += '<div class="ce-modal-body">' + form.body + '</div>';
+    html += '<div class="ce-modal-footer">' + form.footer + '</div>';
+    html += '</div>';
+
+    modal.innerHTML = html;
+    modal.classList.add('active');
+
+    var self = this;
+
+    modal.querySelectorAll('[data-close]').forEach(function (btn) {
+      btn.addEventListener('click', function () { self._closeParamModal(); });
+    });
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) self._closeParamModal();
+    });
+
+    modal.querySelector('[data-ok]').addEventListener('click', function () {
+      modal.querySelectorAll('[data-key]').forEach(function (input) {
+        var key = input.getAttribute('data-key');
+        var val = input.type === 'number' ? parseNumSafe(input.value) : input.value;
+        self.setNodeData(nodeId, key, val);
+      });
+      self.updateNodeDisplay(nodeId);
+      self._closeParamModal();
+      if (self._onNodeSelected) {
+        self._onNodeSelected(nodeId, self.getNodeData(nodeId));
+      }
+    });
+
+    modal.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+        modal.querySelector('[data-ok]').click();
+      }
+      if (e.key === 'Escape') {
+        self._closeParamModal();
+      }
+    });
+
+    var firstInput = modal.querySelector('.ce-modal-body input');
+    if (firstInput) setTimeout(function () { firstInput.focus(); firstInput.select(); }, 50);
+  };
+
+  /** 关闭参数编辑弹窗 */
+  CanvasEngine.prototype._closeParamModal = function () {
+    var modal = document.getElementById('ce-param-modal');
+    if (modal) modal.classList.remove('active');
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
+     Fix 3: 侧边滑出面板 — 替代双击弹窗
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 打开右侧参数编辑面板
+   * @param {number} nodeId
+   */
+  CanvasEngine.prototype._openSidePanel = function (nodeId) {
+    var data = this.getNodeData(nodeId);
+    var blockId = this._nodeBlockMap[nodeId];
+    var blockDef = this._blockDefs[blockId];
+    if (!blockDef && !data) return;
+
+    // 先清理旧的键盘监听器（防止重复打开时泄漏）
+    this._closeSidePanel();
+
+    // 获取或创建面板容器
+    var panel = document.getElementById('ce-side-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'ce-side-panel';
+      panel.className = 'ce-side-panel';
+      var canvasArea = this._container.closest('.canvas-area');
+      if (canvasArea) {
+        canvasArea.appendChild(panel);
+      } else {
+        this._container.parentElement.appendChild(panel);
+      }
+    }
+
+    var form = buildParamFormHTML(blockId, blockDef, data, nodeId);
+    var html = '';
+    html += '<div class="ce-side-header">' + form.header + '</div>';
+    html += '<div class="ce-side-body">' + form.body + '</div>';
+    html += '<div class="ce-side-footer">' + form.footer + '</div>';
+
+    panel.innerHTML = html;
+
+    // 展开面板
+    requestAnimationFrame(function () {
+      panel.classList.add('open');
+    });
+
+    var self = this;
+
+    panel.querySelectorAll('[data-close]').forEach(function (btn) {
+      btn.addEventListener('click', function () { self._closeSidePanel(); });
+    });
+
+    panel.querySelector('[data-ok]').addEventListener('click', function () {
+      panel.querySelectorAll('[data-key]').forEach(function (input) {
+        var key = input.getAttribute('data-key');
+        var val = input.type === 'number' ? parseNumSafe(input.value) : input.value;
+        self.setNodeData(nodeId, key, val);
+      });
+      self.updateNodeDisplay(nodeId);
+      self._closeSidePanel();
+      if (self._onNodeSelected) {
+        self._onNodeSelected(nodeId, self.getNodeData(nodeId));
+      }
+    });
+
+    // Enter 确认 / ESC 关闭
+    this._sidePanelKeyHandler = function (e) {
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+        panel.querySelector('[data-ok]').click();
+      }
+      if (e.key === 'Escape') {
+        self._closeSidePanel();
+      }
+    };
+    document.addEventListener('keydown', this._sidePanelKeyHandler);
+
+    var firstInput = panel.querySelector('.ce-side-body input');
+    if (firstInput) setTimeout(function () { firstInput.focus(); firstInput.select(); }, 250);
+  };
+
+  /** 关闭侧边面板 */
+  CanvasEngine.prototype._closeSidePanel = function () {
+    var panel = document.getElementById('ce-side-panel');
+    if (panel) panel.classList.remove('open');
+    if (this._sidePanelKeyHandler) {
+      document.removeEventListener('keydown', this._sidePanelKeyHandler);
+      this._sidePanelKeyHandler = null;
+    }
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
+     Fix 4: 连线分类 — 开关量虚线
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 判断连线源节点是否为开关量/逻辑类型，添加 CSS class
+   */
+  CanvasEngine.prototype._classifyConnection = function (info) {
+    try {
+      var outputNodeId = info.output_id;
+      var blockId = this._nodeBlockMap[outputNodeId];
+      if (blockId && DIGITAL_TYPES[blockId]) {
+        // 查找对应的 SVG connection 元素
+        var selector = '.connection.node_out_node-' + outputNodeId;
+        var conns = this._container.querySelectorAll(selector);
+        conns.forEach(function (conn) {
+          conn.classList.add('conn-digital');
+        });
+      }
+    } catch (e) {}
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
+     引入点/引出点选择器
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 获取画布上所有引出点（ref_out）的 tag 列表
+   */
+  CanvasEngine.prototype.getAllRefOuts = function () {
+    var results = [];
+    var self = this;
+    Object.keys(this._nodeBlockMap).forEach(function (id) {
+      if (self._nodeBlockMap[id] === 'ref_out') {
+        var data = self._nodeDataMap[id] || {};
+        var tag = data.tag || '';
+        if (tag) results.push({ nodeId: id, tag: tag });
+      }
+    });
+    return results;
+  };
+
+  /**
+   * 引入点双击 → 弹出引出点列表选择器
+   */
+  CanvasEngine.prototype._openRefPicker = function (nodeId) {
+    var self = this;
+    var localRefs = this.getAllRefOuts();
+    var currentData = self._nodeDataMap[nodeId] || {};
+    var currentTag = currentData.tag || '';
+    var currentSourcePage = currentData.source_page_id || '';
+
+    // 复用 ce-param-modal
+    var existingModal = document.getElementById('ce-param-modal');
+    if (existingModal) existingModal.remove();
+
+    var overlay = document.createElement('div');
+    overlay.className = 'ce-modal-overlay active';
+    overlay.id = 'ce-param-modal';
+
+    function buildModal(localRefs, remoteGroups) {
+      var html = '<div class="ce-modal">';
+      html += '<div class="ce-modal-header">';
+      html += '<div class="ce-modal-header-text">选择引出点</div>';
+      html += '<button class="ce-modal-close" data-close>&times;</button>';
+      html += '</div>';
+      html += '<div class="ce-modal-body" style="max-height:400px;overflow-y:auto;">';
+
+      var hasAny = false;
+
+      // 当前页
+      if (localRefs.length > 0) {
+        hasAny = true;
+        html += '<div style="padding:4px 8px;font-size:11px;color:#a8a29e;font-weight:600;">当前页</div>';
+        localRefs.forEach(function (r) {
+          var isCurrent = (r.tag === currentTag && !currentSourcePage);
+          html += '<div class="ce-ref-item' + (isCurrent ? ' ce-ref-active' : '') + '" data-tag="' + esc(r.tag) + '" data-source="">'
+            + esc(r.tag) + '</div>';
+        });
+      }
+
+      // 跨页分组
+      if (remoteGroups) {
+        Object.keys(remoteGroups).forEach(function (groupLabel) {
+          var items = remoteGroups[groupLabel];
+          if (items.length > 0) {
+            hasAny = true;
+            html += '<div style="padding:4px 8px;font-size:11px;color:#a8a29e;font-weight:600;margin-top:6px;">' + esc(groupLabel) + '</div>';
+            items.forEach(function (r) {
+              var isCurrent = (r.tag === currentTag && r.page_id === currentSourcePage);
+              html += '<div class="ce-ref-item' + (isCurrent ? ' ce-ref-active' : '') + '" data-tag="' + esc(r.tag) + '" data-source="' + esc(r.page_id) + '" data-layer="' + esc(r.layer) + '">'
+                + '<span style="flex:1;">' + esc(r.tag) + '</span>'
+                + '<span class="ce-ref-jump" data-jump-page="' + esc(r.page_id) + '" data-jump-layer="' + esc(r.layer) + '" title="跳转到引出页">&rarr;</span>'
+                + '</div>';
+            });
+          }
+        });
+      }
+
+      if (!hasAny) {
+        html += '<div style="padding:12px;text-align:center;color:#a8a29e;font-size:12px;">暂无引出点，请先添加引出点并设置变量名</div>';
+      }
+
+      // 底部：如果当前已绑定跨页引用，始终显示跳转按钮
+      if (currentTag && currentSourcePage) {
+        html += '<div style="border-top:1px solid #334155;margin-top:8px;padding-top:8px;">';
+        html += '<div class="ce-ref-item" data-action="jump" style="color:#60a5fa;">'
+          + '&rarr; 跳转到 ' + esc(currentTag) + ' 所在页 (' + esc(currentSourcePage) + ')</div>';
+        html += '</div>';
+      }
+
+      html += '</div></div>';
+      return html;
+    }
+
+    function applySelection(tag, sourcePageId, sourceLayer) {
+      // 更新引入点的 tag 和来源页
+      if (self._nodeDataMap[nodeId]) {
+        self._nodeDataMap[nodeId].tag = tag;
+        self._nodeDataMap[nodeId].source_page_id = sourcePageId;
+        self._nodeDataMap[nodeId].source_layer = sourceLayer;
+      }
+      var dfNode = self._editor.getNodeFromId(nodeId);
+      if (dfNode) {
+        dfNode.data.tag = tag;
+        dfNode.data.source_page_id = sourcePageId;
+        dfNode.data.source_layer = sourceLayer;
+        self._editor.updateNodeDataFromId(nodeId, dfNode.data);
+      }
+      var nodeEl = document.getElementById('node-' + nodeId);
+      if (nodeEl) {
+        var labelEl = nodeEl.querySelector('.sama-label');
+        if (labelEl) labelEl.textContent = tag;
+      }
+      self._pushHistory();
+    }
+
+    function attachEvents() {
+      // 跳转箭头按钮（不选择，仅跳转）
+      overlay.querySelectorAll('.ce-ref-jump').forEach(function (btn) {
+        btn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var layer = btn.dataset.jumpLayer || 'IB';
+          var pageId = btn.dataset.jumpPage;
+          window.location.href = '/canvas/' + layer + '/' + pageId;
+        });
+      });
+
+      // 点击条目 → 选择引出点
+      overlay.querySelectorAll('.ce-ref-item').forEach(function (el) {
+        el.addEventListener('click', function () {
+          if (el.dataset.action === 'jump') {
+            var layer = (self._nodeDataMap[nodeId] || {}).source_layer || 'IB';
+            window.location.href = '/canvas/' + layer + '/' + currentSourcePage;
+            return;
+          }
+          applySelection(el.dataset.tag, el.dataset.source || '', el.dataset.layer || '');
+          overlay.remove();
+        });
+      });
+
+      // 关闭
+      overlay.querySelector('[data-close]').addEventListener('click', function () {
+        overlay.remove();
+      });
+      overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) overlay.remove();
+      });
+    }
+
+    // 先显示本页的，同时异步加载跨页
+    overlay.innerHTML = buildModal(localRefs, null);
+    document.body.appendChild(overlay);
+    attachEvents();
+
+    // 异步加载跨页引出点
+    fetch('/api/pages/refs').then(function (r) { return r.json(); }).then(function (data) {
+      var refs = data.refs || [];
+      var localTags = {};
+      localRefs.forEach(function (r) { localTags[r.tag] = true; });
+      var groups = {};
+      refs.forEach(function (r) {
+        if (localTags[r.tag]) return;
+        var label = r.layer + ' - ' + r.page_name;
+        if (!groups[label]) groups[label] = [];
+        groups[label].push(r);
+      });
+      if (Object.keys(groups).length > 0) {
+        overlay.innerHTML = buildModal(localRefs, groups);
+        attachEvents();
+      }
+    }).catch(function () {});
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
+     框选 & 封装
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 启用框选功能（Shift+拖拽）
+   */
+  CanvasEngine.prototype.enableBoxSelect = function () {
+    var self = this;
+    this._selectedNodes = [];   // 多选节点 ID 列表
+    this._boxSelecting = false;
+
+    // 创建框选矩形
+    var box = document.createElement('div');
+    box.className = 'ce-select-box';
+    this._container.appendChild(box);
+    this._selectBox = box;
+
+    var startX, startY;
+
+    this._container.addEventListener('mousedown', function (e) {
+      if (!e.shiftKey || self._mode !== 'config') return;
+      // 不在节点上才开始框选
+      if (e.target.closest('.drawflow-node')) return;
+      e.preventDefault();
+      self._boxSelecting = true;
+      var rect = self._container.getBoundingClientRect();
+      startX = e.clientX - rect.left;
+      startY = e.clientY - rect.top;
+      box.style.left = startX + 'px';
+      box.style.top = startY + 'px';
+      box.style.width = '0';
+      box.style.height = '0';
+      box.style.display = 'block';
+    });
+
+    document.addEventListener('mousemove', function (e) {
+      if (!self._boxSelecting) return;
+      var rect = self._container.getBoundingClientRect();
+      var cx = e.clientX - rect.left;
+      var cy = e.clientY - rect.top;
+      box.style.left = Math.min(startX, cx) + 'px';
+      box.style.top = Math.min(startY, cy) + 'px';
+      box.style.width = Math.abs(cx - startX) + 'px';
+      box.style.height = Math.abs(cy - startY) + 'px';
+    });
+
+    document.addEventListener('mouseup', function (e) {
+      if (!self._boxSelecting) return;
+      self._boxSelecting = false;
+      box.style.display = 'none';
+
+      // 计算框选范围（相对容器）
+      var bx = parseInt(box.style.left);
+      var by = parseInt(box.style.top);
+      var bw = parseInt(box.style.width);
+      var bh = parseInt(box.style.height);
+      if (bw < 5 && bh < 5) { self.clearSelection(); return; }
+
+      var selRect = { left: bx, top: by, right: bx + bw, bottom: by + bh };
+      self._selectedNodes = [];
+
+      // 遍历所有节点
+      var nodes = self._container.querySelectorAll('.drawflow-node');
+      nodes.forEach(function (nodeEl) {
+        var nr = nodeEl.getBoundingClientRect();
+        var cr = self._container.getBoundingClientRect();
+        var nl = nr.left - cr.left;
+        var nt = nr.top - cr.top;
+        var nRect = { left: nl, top: nt, right: nl + nr.width, bottom: nt + nr.height };
+
+        // 相交判定
+        if (nRect.left < selRect.right && nRect.right > selRect.left &&
+            nRect.top < selRect.bottom && nRect.bottom > selRect.top) {
+          var nodeId = parseInt(nodeEl.id.replace('node-', ''), 10);
+          if (!isNaN(nodeId)) {
+            self._selectedNodes.push(nodeId);
+            nodeEl.classList.add('ce-selected');
+          }
+        }
+      });
+
+      // 触发回调
+      if (self._selectedNodes.length > 0 && self._onBoxSelected) {
+        self._onBoxSelected(self._selectedNodes);
+      }
+    });
+
+    // 点击空白区域清除多选
+    this._container.addEventListener('click', function (e) {
+      if (!e.target.closest('.drawflow-node') && !e.shiftKey) {
+        self.clearSelection();
+      }
+    });
+  };
+
+  /** 清除多选 */
+  CanvasEngine.prototype.clearSelection = function () {
+    this._selectedNodes = [];
+    this._container.querySelectorAll('.ce-selected').forEach(function (el) {
+      el.classList.remove('ce-selected');
+    });
+    if (this._onBoxSelected) this._onBoxSelected([]);
+  };
+
+  /** 框选回调 */
+  CanvasEngine.prototype.onBoxSelected = function (callback) {
+    this._onBoxSelected = callback;
+  };
+
+  /** 获取当前多选节点 */
+  CanvasEngine.prototype.getSelectedNodes = function () {
+    return this._selectedNodes || [];
+  };
+
+  /**
+   * 将选中的节点封装为 L3 模型
+   * @param {string} name  封装名称（不含 L3_ 前缀）
+   * @returns {object}  { name, inputs, outputs, drawflow }
+   */
+  CanvasEngine.prototype.encapsulate = function (name) {
+    var selectedIds = this.getSelectedNodes();
+    if (selectedIds.length === 0) return null;
+
+    var fullExport = this._editor.export();
+    var allNodes = fullExport.drawflow.Home.data;
+    var selectedSet = {};
+    selectedIds.forEach(function (id) { selectedSet[id] = true; });
+
+    // 提取选中节点
+    var extractedNodes = {};
+    var minX = Infinity, minY = Infinity;
+    selectedIds.forEach(function (id) {
+      var node = allNodes[id];
+      if (!node) return;
+      extractedNodes[id] = deepClone(node);
+      if (node.pos_x < minX) minX = node.pos_x;
+      if (node.pos_y < minY) minY = node.pos_y;
+    });
+
+    // 相对坐标归零
+    Object.keys(extractedNodes).forEach(function (id) {
+      extractedNodes[id].pos_x -= minX;
+      extractedNodes[id].pos_y -= minY;
+    });
+
+    // 分析外部连接 → 生成 input/output 端子
+    var externalInputs = [];   // [{ nodeId, portName, fromNode, fromPort }]
+    var externalOutputs = [];  // [{ nodeId, portName, toNode, toPort }]
+    var inputIdx = 0, outputIdx = 0;
+
+    Object.keys(extractedNodes).forEach(function (id) {
+      var node = extractedNodes[id];
+
+      // 检查输入连接：来自外部的连接 → 需要 input 端子
+      Object.keys(node.inputs || {}).forEach(function (portName) {
+        var port = node.inputs[portName];
+        var newConns = [];
+        (port.connections || []).forEach(function (conn) {
+          if (!selectedSet[conn.node]) {
+            // 来自外部 → 创建 input 端子
+            externalInputs.push({
+              targetNode: id,
+              targetPort: portName,
+              fromNode: conn.node,
+              fromPort: conn.input
+            });
+          } else {
+            newConns.push(conn);
+          }
+        });
+        port.connections = newConns;
+      });
+
+      // 检查输出连接：到达外部的连接 → 需要 output 端子
+      Object.keys(node.outputs || {}).forEach(function (portName) {
+        var port = node.outputs[portName];
+        var newConns = [];
+        (port.connections || []).forEach(function (conn) {
+          if (!selectedSet[conn.node]) {
+            externalOutputs.push({
+              sourceNode: id,
+              sourcePort: portName,
+              toNode: conn.node,
+              toPort: conn.output
+            });
+          } else {
+            newConns.push(conn);
+          }
+        });
+        port.connections = newConns;
+      });
+    });
+
+    // 为外部输入创建 input 端子节点
+    var nextId = Math.max.apply(null, Object.keys(extractedNodes).map(Number)) + 1;
+    externalInputs.forEach(function (ext, i) {
+      var inId = nextId++;
+      var inNode = {
+        id: inId,
+        name: 'input',
+        data: { tag: 'in_' + i, _blockId: 'input', _blockName: '输入端子' },
+        class: 'cat-signal',
+        html: '<div class="sama-node"><div class="sama-label sama-io">in_' + i + '</div><div class="node-value" data-node-value></div></div>',
+        typenode: false,
+        inputs: {},
+        outputs: { output_1: { connections: [{ node: String(ext.targetNode), output: ext.targetPort }] } },
+        pos_x: -120,
+        pos_y: i * 60
+      };
+      extractedNodes[inId] = inNode;
+
+      // 在目标节点的输入端口添加来自此 input 端子的连接
+      var target = extractedNodes[ext.targetNode];
+      if (target && target.inputs[ext.targetPort]) {
+        target.inputs[ext.targetPort].connections.push({ node: String(inId), input: 'output_1' });
+      }
+    });
+
+    // 为外部输出创建 output 端子节点
+    externalOutputs.forEach(function (ext, i) {
+      var outId = nextId++;
+      var outNode = {
+        id: outId,
+        name: 'output',
+        data: { tag: 'out_' + i, _blockId: 'output', _blockName: '输出端子' },
+        class: 'cat-signal',
+        html: '<div class="sama-node"><div class="sama-label sama-io">out_' + i + '</div><div class="node-value" data-node-value></div></div>',
+        typenode: false,
+        inputs: { input_1: { connections: [{ node: String(ext.sourceNode), input: ext.sourcePort }] } },
+        outputs: {},
+        pos_x: 400,
+        pos_y: i * 60
+      };
+      extractedNodes[outId] = outNode;
+
+      // 在源节点的输出端口添加到此 output 端子的连接
+      var source = extractedNodes[ext.sourceNode];
+      if (source && source.outputs[ext.sourcePort]) {
+        source.outputs[ext.sourcePort].connections.push({ node: String(outId), output: 'input_1' });
+      }
+    });
+
+    // 构建封装模型 JSON
+    var modelName = 'L3_' + name;
+    var drawflowData = {
+      version: 1,
+      drawflow: { drawflow: { Home: { data: extractedNodes } } },
+      meta: {
+        nodeBlockMap: {},
+        nodeDataMap: {},
+        exportTime: new Date().toISOString()
+      }
+    };
+
+    // 填充 meta
+    var self = this;
+    Object.keys(extractedNodes).forEach(function (id) {
+      var node = extractedNodes[id];
+      if (self._nodeBlockMap[id]) drawflowData.meta.nodeBlockMap[id] = self._nodeBlockMap[id];
+      if (self._nodeDataMap[id]) drawflowData.meta.nodeDataMap[id] = deepClone(self._nodeDataMap[id]);
+      else drawflowData.meta.nodeDataMap[id] = deepClone(node.data);
+    });
+
+    var result = {
+      name: modelName,
+      numInputs: externalInputs.length || 1,
+      numOutputs: externalOutputs.length || 1,
+      drawflow: drawflowData
+    };
+
+    // 从画布上删除选中的节点
+    var self2 = this;
+    selectedIds.forEach(function (id) {
+      try {
+        self2._editor.removeNodeId('node-' + id);
+        delete self2._nodeBlockMap[id];
+        delete self2._nodeDataMap[id];
+      } catch (e) {}
+    });
+    this.clearSelection();
+
+    return result;
+  };
 
 
   /* ═══════════════════════════════════════════════════════════

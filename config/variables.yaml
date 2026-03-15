@@ -1,0 +1,13 @@
+variables:
+- tag: MW
+  name: 机组实发功率
+  type: AI
+  unit: MW
+  description: 机组有功功率
+  opc_node: DPU3013.HW.AI010605.PV
+- tag: MWtest
+  name: ''
+  type: CALC
+  unit: ''
+  opc_node: ''
+  description: ''

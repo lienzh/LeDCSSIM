@@ -13,7 +13,7 @@ import logging
 import threading
 from pathlib import Path
 
-from flask import Flask, render_template, jsonify, request, send_file
+from flask import Flask, render_template, jsonify, request, send_file, redirect, url_for
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +22,73 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 MAPPING_FILE = CONFIG_DIR / "opc_mapping.yaml"
+VARIABLES_FILE = CONFIG_DIR / "variables.yaml"
 MODEL_DIR = CONFIG_DIR / "models"
+MANIFEST_FILE = MODEL_DIR / "_manifest.json"
 
 app = Flask(__name__,
             template_folder=str(Path(__file__).parent / "templates"),
             static_folder=str(Path(__file__).parent / "static"))
 app.config["JSON_AS_ASCII"] = False
+
+
+# ══════════════════════════════════════════════════════════
+#  页面清单 (Manifest) 管理
+# ══════════════════════════════════════════════════════════
+
+def _load_manifest():
+    """加载清单，若不存在则自动从现有文件生成"""
+    if MANIFEST_FILE.exists():
+        with open(MANIFEST_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return _auto_generate_manifest()
+
+
+def _save_manifest(data):
+    """保存清单"""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    with open(MANIFEST_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _auto_generate_manifest():
+    """扫描 MODEL_DIR/*.json，排除 _manifest.json，生成初始清单"""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    pages = []
+    for f in sorted(MODEL_DIR.glob("*.json")):
+        if f.name.startswith("_"):
+            continue
+        name = f.stem
+        if name.startswith("IL_"):
+            layer = "IL"
+        elif name.startswith("L3_"):
+            layer = "L3"
+        else:
+            layer = "IB"
+        pages.append({"id": name, "layer": layer, "name": name, "order": len(pages)})
+    manifest = {"pages": pages}
+    _save_manifest(manifest)
+    return manifest
+
+
+def _get_sidebar_tree():
+    """为侧边栏构建页面树"""
+    manifest = _load_manifest()
+    tree = {"IL": [], "IB": [], "L3": []}
+    for p in manifest.get("pages", []):
+        layer = p.get("layer", "IB")
+        if layer in tree:
+            tree[layer].append(p)
+    # 按 order 排序
+    for layer in tree:
+        tree[layer].sort(key=lambda p: p.get("order", 0))
+    return tree
+
+
+@app.context_processor
+def inject_sidebar():
+    """为所有模板注入侧边栏数据"""
+    return {"sidebar_tree": _get_sidebar_tree()}
 
 # ── 全局状态 ──────────────────────────────────────────────
 _sim_state = {
@@ -35,9 +96,7 @@ _sim_state = {
     "mode": "offline",
     "engine": None,
     "thread": None,
-    "sim_time": 0.0,
-    "step_count": 0,
-    "latest_data": {},
+    "error": None,
 }
 
 
@@ -51,20 +110,50 @@ def index():
 
 
 @app.route("/io")
-@app.route("/signals")  # 兼容旧路由
 def io_page():
     return render_template("io.html")
 
 
+def _redirect_to_first_page(layer: str, default_id: str, default_name: str):
+    """层入口：重定向到该层第一个页面，无页面则新建默认页"""
+    tree = _get_sidebar_tree()
+    if tree[layer]:
+        return redirect(f"/canvas/{layer}/{tree[layer][0]['id']}")
+    manifest = _load_manifest()
+    page = {"id": default_id, "layer": layer, "name": default_name, "order": 0}
+    manifest["pages"].append(page)
+    _save_manifest(manifest)
+    filepath = MODEL_DIR / f"{default_id}.json"
+    if not filepath.exists():
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump({"name": default_id, "layer": layer, "drawflow": {}}, f, ensure_ascii=False, indent=2)
+    return redirect(f"/canvas/{layer}/{default_id}")
+
+
 @app.route("/il")
 def il_page():
-    return render_template("il.html")
+    return _redirect_to_first_page("IL", "IL_preprocess", "信号预处理")
 
 
 @app.route("/ib")
-@app.route("/model")  # 兼容旧路由
 def ib_page():
-    return render_template("ib.html")
+    return _redirect_to_first_page("IB", "CCS_model", "CCS协调控制")
+
+
+@app.route("/canvas/<layer>/<page_id>")
+def canvas_page(layer, page_id):
+    """统一画布页面"""
+    layer = layer.upper()
+    if layer not in ("IL", "IB"):
+        return "无效的层: " + layer, 404
+    # 从 manifest 获取 page_name
+    manifest = _load_manifest()
+    page_name = page_id
+    for p in manifest.get("pages", []):
+        if p["id"] == page_id:
+            page_name = p.get("name", page_id)
+            break
+    return render_template("canvas.html", layer=layer, page_id=page_id, page_name=page_name)
 
 
 @app.route("/l3")
@@ -75,6 +164,156 @@ def l3_page():
 @app.route("/run")
 def run_page():
     return render_template("run.html")
+
+
+@app.route("/variables")
+def variables_page():
+    return render_template("variables.html")
+
+
+@app.route("/trend")
+def trend_page():
+    return render_template("trend.html")
+
+
+# ══════════════════════════════════════════════════════════
+#  变量管理 API
+# ══════════════════════════════════════════════════════════
+
+def _load_variables():
+    """加载变量表"""
+    import yaml
+    if not VARIABLES_FILE.exists():
+        return []
+    with open(VARIABLES_FILE, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("variables", [])
+
+
+def _save_variables(variables):
+    """保存变量表"""
+    import yaml
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(VARIABLES_FILE, "w", encoding="utf-8") as f:
+        yaml.dump({"variables": variables}, f, allow_unicode=True,
+                  default_flow_style=False, sort_keys=False)
+
+
+@app.route("/api/variables", methods=["GET"])
+def api_get_variables():
+    """获取全部变量"""
+    variables = _load_variables()
+    # 附加运行时值
+    engine = _sim_state.get("engine")
+    if engine and engine.recorder.count > 0:
+        latest = engine.recorder.get_latest() or {}
+        for v in variables:
+            tag = v.get("tag", "")
+            if tag in latest:
+                v["current_value"] = latest[tag]
+    return jsonify({"variables": variables})
+
+
+@app.route("/api/variables", methods=["POST"])
+def api_add_variable():
+    """添加变量"""
+    variables = _load_variables()
+    var = request.json
+    tag = var.get("tag", "").strip()
+    if not tag:
+        return jsonify({"error": "tag 不能为空"}), 400
+    for v in variables:
+        if v["tag"] == tag:
+            return jsonify({"error": f"变量 '{tag}' 已存在"}), 400
+    variables.append(var)
+    _save_variables(variables)
+    return jsonify({"ok": True, "count": len(variables)})
+
+
+@app.route("/api/variables/<tag>", methods=["PUT"])
+def api_update_variable(tag):
+    """更新变量"""
+    variables = _load_variables()
+    var = request.json
+    for i, v in enumerate(variables):
+        if v["tag"] == tag:
+            variables[i] = var
+            _save_variables(variables)
+            return jsonify({"ok": True})
+    return jsonify({"error": f"变量 '{tag}' 不存在"}), 404
+
+
+@app.route("/api/variables/<tag>", methods=["DELETE"])
+def api_delete_variable(tag):
+    """删除变量"""
+    variables = _load_variables()
+    variables = [v for v in variables if v.get("tag") != tag]
+    _save_variables(variables)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/variables/sync-graph", methods=["POST"])
+def api_sync_variables_from_graph():
+    """从当前运行的仿真图中同步所有中间变量到变量表"""
+    engine = _sim_state.get("engine")
+    if not engine:
+        return jsonify({"error": "仿真未运行，无法同步"}), 400
+
+    variables = _load_variables()
+    existing_tags = {v["tag"] for v in variables}
+
+    # 从 recorder 的列名获取所有变量
+    added = []
+    for col in engine.recorder.columns:
+        if col not in existing_tags:
+            variables.append({
+                "tag": col,
+                "name": col,
+                "type": "CALC",
+                "unit": "",
+                "description": "仿真中间变量（自动同步）",
+            })
+            added.append(col)
+            existing_tags.add(col)
+
+    if added:
+        _save_variables(variables)
+    return jsonify({"ok": True, "added": added, "total": len(variables)})
+
+
+# ══════════════════════════════════════════════════════════
+#  曲线数据 API
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/trend/data", methods=["GET"])
+def api_trend_data():
+    """获取曲线数据（指定变量 tag 列表）"""
+    engine = _sim_state.get("engine")
+    if not engine or engine.recorder.count == 0:
+        return jsonify({"timestamps": [], "series": {}, "running": False})
+
+    tags = request.args.get("tags", "").split(",")
+    tags = [t.strip() for t in tags if t.strip()]
+    n = request.args.get("n", 500, type=int)
+
+    recorder = engine.recorder
+    total = recorder.count
+    start = max(0, total - n)
+    timestamps, rows, columns = recorder.get_range(start)
+
+    series = {}
+    for tag in tags:
+        if tag in columns:
+            series[tag] = [row.get(tag) for row in rows]
+        else:
+            series[tag] = []
+
+    return jsonify({
+        "timestamps": timestamps,
+        "series": series,
+        "running": _sim_state["running"],
+        "sim_time": engine.sim_time,
+    })
 
 
 # ══════════════════════════════════════════════════════════
@@ -143,9 +382,11 @@ def _get_signal_addr(sig: dict) -> str:
 @app.route("/api/signals", methods=["GET"])
 def api_get_signals():
     data = _load_mapping_raw()
+    dpus = data.get("dpus") or ([data["dpu"]] if data.get("dpu") else [])
     return jsonify({
         "server": data.get("server", ""),
-        "dpu": data.get("dpu", ""),
+        "dpus": dpus,
+        "dpu": dpus[0] if dpus else "",  # 兼容旧前端
         "signals": data.get("signals", []),
         "redundancy": data.get("redundancy", {}),
     })
@@ -325,15 +566,23 @@ def api_update_redundancy():
 
 @app.route("/api/opc/config", methods=["GET", "POST"])
 def api_opc_config():
-    """读取/更新 OPC 连接配置"""
+    """读取/更新 OPC 连接配置（支持多 DPU）"""
     data = _load_mapping_raw()
     if request.method == "POST":
         body = request.json
         data["server"] = body.get("server", data.get("server"))
-        data["dpu"] = body.get("dpu", data.get("dpu"))
+        # 兼容旧格式 dpu 字符串 → dpus 列表
+        if "dpus" in body:
+            data["dpus"] = body["dpus"]
+            data.pop("dpu", None)
+        elif "dpu" in body:
+            data["dpus"] = [body["dpu"]] if body["dpu"] else []
+            data.pop("dpu", None)
         _save_mapping_raw(data)
         return jsonify({"ok": True})
-    return jsonify({"server": data.get("server", ""), "dpu": data.get("dpu", "")})
+    # 返回时统一为 dpus 列表
+    dpus = data.get("dpus") or ([data["dpu"]] if data.get("dpu") else [])
+    return jsonify({"server": data.get("server", ""), "dpus": dpus})
 
 
 @app.route("/api/opc/test", methods=["POST"])
@@ -362,6 +611,94 @@ def api_opc_test():
     return jsonify({"ok": ok, "message": msg})
 
 
+@app.route("/api/opc/ping", methods=["GET"])
+def api_opc_ping():
+    """轻量级 OPC 连通性检测（短超时，无重试）"""
+    import asyncio
+    data = _load_mapping_raw()
+    url = data.get("server", "opc.tcp://localhost:9440")
+
+    async def _ping():
+        from ..opc_client import OPCClient
+        client = OPCClient(url, timeout=2.0)
+        try:
+            await client.connect(retry_count=1, retry_interval=0)
+            await client.disconnect()
+            return True
+        except Exception:
+            return False
+
+    loop = asyncio.new_event_loop()
+    try:
+        ok = loop.run_until_complete(_ping())
+    finally:
+        loop.close()
+
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/opc/read-batch", methods=["POST"])
+def api_opc_read_batch():
+    """批量读取信号的 OPC 在线值"""
+    import asyncio
+    data = _load_mapping_raw()
+    url = data.get("server", "opc.tcp://localhost:9440")
+    dpus = data.get("dpus") or ([data["dpu"]] if data.get("dpu") else ["DPU3013"])
+    default_dpu = dpus[0] if dpus else "DPU3013"
+    signals = data.get("signals", [])
+
+    if not signals:
+        return jsonify({"values": {}})
+
+    # 构建每个信号的 OPC 节点 ID
+    sig_nodes = []  # [(signal_name, node_id)]
+    for sig in signals:
+        node_id = None
+        if sig.get("node"):
+            # block 类型：直接用 node 字段（可能需要加 ns=0;s= 前缀）
+            n = sig["node"]
+            if not n.startswith("ns="):
+                n = f"ns=0;s={n}"
+            node_id = n
+        elif sig.get("channel"):
+            # AI/DI 通道：构建 DPU.HW.CHANNEL.PV
+            ch = sig["channel"]
+            node_id = f"ns=0;s={default_dpu}.HW.{ch}.PV"
+        if node_id:
+            sig_nodes.append((sig["name"], node_id))
+
+    if not sig_nodes:
+        return jsonify({"values": {}})
+
+    async def _batch_read():
+        from ..opc_client import OPCClient
+        client = OPCClient(url, timeout=5.0)
+        result = {}
+        try:
+            await client.connect(retry_count=1, retry_interval=1.0)
+            node_ids = [nid for _, nid in sig_nodes]
+            values = await client.read_values(node_ids)
+            for (name, _), val in zip(sig_nodes, values):
+                if val is not None:
+                    result[name] = round(val, 4) if isinstance(val, float) else val
+                else:
+                    result[name] = None
+            await client.disconnect()
+        except Exception as e:
+            return {"error": str(e)}
+        return result
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(_batch_read())
+    finally:
+        loop.close()
+
+    if isinstance(result, dict) and "error" in result and len(result) == 1:
+        return jsonify(result), 500
+    return jsonify({"values": result})
+
+
 @app.route("/api/opc/browse", methods=["POST"])
 def api_opc_browse():
     """浏览 OPC 节点树（在线扫描）"""
@@ -369,7 +706,8 @@ def api_opc_browse():
     data = _load_mapping_raw()
     url = request.json.get("server", data.get("server", ""))
     parent_node = request.json.get("node", "")
-    dpu = data.get("dpu", "DPU3013")
+    dpus = data.get("dpus") or ([data["dpu"]] if data.get("dpu") else ["DPU3013"])
+    dpu = request.json.get("dpu", dpus[0] if dpus else "DPU3013")
 
     if not parent_node:
         parent_node = f"ns=0;s={dpu}"
@@ -457,13 +795,31 @@ def api_get_block(block_id):
 
 @app.route("/api/model/save", methods=["POST"])
 def api_save_model():
-    """保存模型组态"""
+    """保存模型组态，同步更新 manifest"""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     payload = request.json
     name = payload.get("name", "default")
     filepath = MODEL_DIR / f"{name}.json"
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    # 同步 manifest
+    manifest = _load_manifest()
+    found = False
+    for p in manifest["pages"]:
+        if p["id"] == name:
+            found = True
+            break
+    if not found and not name.startswith("_"):
+        layer = payload.get("layer", "IB")
+        if name.startswith("IL_"):
+            layer = "IL"
+        elif name.startswith("L3_"):
+            layer = "L3"
+        manifest["pages"].append({
+            "id": name, "layer": layer, "name": name,
+            "order": len(manifest["pages"])
+        })
+        _save_manifest(manifest)
     return jsonify({"ok": True, "path": str(filepath)})
 
 
@@ -489,43 +845,157 @@ def api_list_models():
 
 
 # ══════════════════════════════════════════════════════════
-#  模型 IO 绑定 API
-#  模型变量名 ↔ OPC信号名 的映射（model_bindings）
+#  页面管理 API
 # ══════════════════════════════════════════════════════════
 
-@app.route("/api/bindings", methods=["GET"])
-def api_get_bindings():
-    """获取模型绑定配置"""
-    data = _load_mapping_raw()
-    bindings = data.get("model_bindings", {})
-
-    # 获取当前模型的 IO 列表
-    from ..sim_engine import CCSPlantModel
-    model = CCSPlantModel("temp")
-    model_io = {
-        "inputs": [{"name": s.name, "description": s.description, "unit": s.unit,
-                     "default": s.default}
-                    for s in model._input_specs.values()],
-        "outputs": [{"name": s.name, "description": s.description, "unit": s.unit,
-                      "default": s.default}
-                     for s in model._output_specs.values()],
-    }
-
-    # 获取可绑定的 OPC 信号
-    signals = [{"name": s.get("name"), "description": s.get("description", ""),
-                "direction": s.get("direction", ""), "type": s.get("type", "")}
-               for s in data.get("signals", [])]
-
-    return jsonify({"bindings": bindings, "model_io": model_io, "signals": signals})
+@app.route("/api/pages", methods=["GET"])
+def api_get_pages():
+    """返回按层分组的页面列表"""
+    return jsonify(_get_sidebar_tree())
 
 
-@app.route("/api/bindings", methods=["POST"])
-def api_save_bindings():
-    """保存模型绑定"""
-    data = _load_mapping_raw()
-    data["model_bindings"] = request.json.get("bindings", {})
-    _save_mapping_raw(data)
+@app.route("/api/pages", methods=["POST"])
+def api_create_page():
+    """新建页面"""
+    data = request.json or {}
+    layer = data.get("layer", "IB").upper()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "名称不能为空"}), 400
+
+    # 生成 ID：IL/L3 层自动加前缀
+    if layer == "IL" and not name.startswith("IL_"):
+        page_id = f"IL_{name}"
+    elif layer == "L3" and not name.startswith("L3_"):
+        page_id = f"L3_{name}"
+    else:
+        page_id = name.replace(" ", "_")
+
+    # 检查重复
+    manifest = _load_manifest()
+    for p in manifest["pages"]:
+        if p["id"] == page_id:
+            return jsonify({"error": f"页面 '{page_id}' 已存在"}), 400
+
+    # 创建空模型文件
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    filepath = MODEL_DIR / f"{page_id}.json"
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump({"name": page_id, "layer": layer, "drawflow": {}}, f, ensure_ascii=False, indent=2)
+
+    # 更新清单
+    manifest["pages"].append({
+        "id": page_id, "layer": layer, "name": name,
+        "order": len(manifest["pages"])
+    })
+    _save_manifest(manifest)
+    return jsonify({"ok": True, "id": page_id, "layer": layer, "name": name})
+
+
+@app.route("/api/pages/<page_id>", methods=["PUT"])
+def api_rename_page(page_id):
+    """重命名页面"""
+    data = request.json or {}
+    new_name = data.get("name", "").strip()
+    if not new_name:
+        return jsonify({"error": "名称不能为空"}), 400
+    manifest = _load_manifest()
+    for p in manifest["pages"]:
+        if p["id"] == page_id:
+            p["name"] = new_name
+            _save_manifest(manifest)
+            return jsonify({"ok": True})
+    return jsonify({"error": f"页面 '{page_id}' 不存在"}), 404
+
+
+@app.route("/api/pages/<page_id>", methods=["DELETE"])
+def api_delete_page(page_id):
+    """删除页面（模型文件 + 清单条目）"""
+    manifest = _load_manifest()
+    manifest["pages"] = [p for p in manifest["pages"] if p["id"] != page_id]
+    _save_manifest(manifest)
+    # 删除模型文件
+    filepath = MODEL_DIR / f"{page_id}.json"
+    if filepath.exists():
+        filepath.unlink()
     return jsonify({"ok": True})
+
+
+@app.route("/api/pages/refs", methods=["GET"])
+def api_get_page_refs():
+    """扫描所有模型，收集 ref_out 标签及其所属页面"""
+    manifest = _load_manifest()
+    refs = []
+    for page in manifest.get("pages", []):
+        page_id = page["id"]
+        filepath = MODEL_DIR / f"{page_id}.json"
+        if not filepath.exists():
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                model = json.load(f)
+            # 解析 drawflow 中的 ref_out 节点
+            # CanvasEngine 导出格式: model.drawflow = {version, drawflow:{drawflow:{Home:{data:...}}}, meta:{...}}
+            # meta 在最外层 drawflow 对象上，必须在剥离嵌套前先提取
+            drawflow_data = model.get("drawflow", {})
+            meta = {}
+            if isinstance(drawflow_data, dict):
+                meta = drawflow_data.get("meta", {})
+                # 向下查找 meta（兼容不同嵌套深度）
+                if not meta and "drawflow" in drawflow_data:
+                    inner = drawflow_data["drawflow"]
+                    if isinstance(inner, dict):
+                        meta = inner.get("meta", {})
+            node_block_map = meta.get("nodeBlockMap", {})
+            node_data_map = meta.get("nodeDataMap", {})
+            for node_id, block_type in node_block_map.items():
+                if block_type == "ref_out":
+                    data = node_data_map.get(node_id, {})
+                    tag = data.get("tag", "")
+                    if tag:
+                        refs.append({
+                            "tag": tag,
+                            "page_id": page_id,
+                            "layer": page.get("layer", "IB"),
+                            "page_name": page.get("name", page_id),
+                        })
+        except Exception:
+            continue
+    return jsonify({"refs": refs})
+
+
+@app.route("/api/graph/info", methods=["POST"])
+def api_graph_info():
+    """解析整个工程的画布组态，返回图的输入输出信息（不执行）"""
+    from ..sim_engine.graph_runner import GraphRunner
+
+    manifest = _load_manifest()
+    ib_pages = [p["id"] for p in manifest.get("pages", []) if p.get("layer") == "IB"]
+    il_pages = [p["id"] for p in manifest.get("pages", []) if p.get("layer") == "IL"]
+
+    if not ib_pages:
+        return jsonify({"error": "工程中没有 IB 层页面"}), 400
+
+    ib_jsons = []
+    for page_id in ib_pages:
+        path = MODEL_DIR / f"{page_id}.json"
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                ib_jsons.append(json.load(f))
+
+    il_jsons = []
+    for page_id in il_pages:
+        path = MODEL_DIR / f"{page_id}.json"
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                il_jsons.append(json.load(f))
+
+    try:
+        runner = GraphRunner()
+        runner.load(ib_jsons, il_jsons if il_jsons else None)
+        return jsonify(runner.get_info())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 # ══════════════════════════════════════════════════════════
@@ -534,7 +1004,7 @@ def api_save_bindings():
 
 @app.route("/api/sim/start", methods=["POST"])
 def api_start_sim():
-    """启动仿真"""
+    """启动仿真（基于画布组态的图执行）"""
     if _sim_state["running"]:
         return jsonify({"error": "仿真已在运行中"}), 400
 
@@ -542,78 +1012,79 @@ def api_start_sim():
     mode = params.get("mode", "offline")
     duration = params.get("duration", 60)
     step_size = params.get("step_size", 0.2)
-    valve_position = params.get("valve_position", 0.7)
-    # 煤量调度: [{time: 0, coal: 200}, {time: 120, coal: 240}, ...]
-    coal_schedule = params.get("coal_schedule", [{"time": 0, "coal": 250}])
-    # 按时间排序
-    coal_schedule.sort(key=lambda x: x["time"])
+    # 用户在 Run 页面设定的初始输入值
+    initial_inputs = params.get("initial_inputs", {})
 
-    from ..sim_engine import SimEngine, CCSPlantModel
-    from ..opc_client import SignalMapping
+    # 整个工程运行：从 manifest 加载所有 IB + IL 页面
+    manifest = _load_manifest()
+    ib_pages = [p["id"] for p in manifest.get("pages", []) if p.get("layer") == "IB"]
+    il_pages = [p["id"] for p in manifest.get("pages", []) if p.get("layer") == "IL"]
 
-    model = CCSPlantModel("CCS被控对象模型")
-    mapping = SignalMapping.from_yaml(str(MAPPING_FILE))
-    engine = SimEngine(model, mapping, step_size=step_size)
+    if not ib_pages:
+        return jsonify({"error": "工程中没有 IB 层页面，请先组态"}), 400
+
+    from ..sim_engine.graph_runner import GraphRunner
+
+    # 加载画布组态
+    runner = GraphRunner()
+
+    # 加载 IB 层组态（支持多页）
+    ib_jsons = []
+    for page_id in ib_pages:
+        ib_path = MODEL_DIR / f"{page_id}.json"
+        if not ib_path.exists():
+            return jsonify({"error": f"IB 层模型 '{page_id}' 不存在"}), 400
+        with open(ib_path, "r", encoding="utf-8") as f:
+            ib_jsons.append(json.load(f))
+
+    # 加载 IL 层组态（可选，支持多页）
+    il_jsons = []
+    for page_id in il_pages:
+        il_path = MODEL_DIR / f"{page_id}.json"
+        if il_path.exists():
+            with open(il_path, "r", encoding="utf-8") as f:
+                il_jsons.append(json.load(f))
+
+    try:
+        runner.load(ib_jsons, il_jsons if il_jsons else None)
+    except Exception as e:
+        return jsonify({"error": f"组态解析失败: {e}"}), 400
+
+    # 加载 OPC 映射和信号配置
+    mapping_data = _load_mapping_raw()
+    opc_url = mapping_data.get("server", "opc.tcp://localhost:9440")
+
+    from ..sim_engine import SimEngine
+    engine = SimEngine(runner, step_size=step_size)
 
     _sim_state["engine"] = engine
     _sim_state["mode"] = mode
     _sim_state["running"] = True
-    _sim_state["sim_time"] = 0.0
-    _sim_state["step_count"] = 0
 
-    def make_input_func(schedule, valve):
-        """根据调度表生成输入函数"""
-        def input_func(t):
-            coal = schedule[0]["coal"]
-            for entry in schedule:
-                if t >= entry["time"]:
-                    coal = entry["coal"]
-            return {"coal_flow": coal, "valve_position": valve}
-        return input_func
-
-    input_func = make_input_func(coal_schedule, valve_position)
-
-    # 计算初始稳态
-    init_coal = coal_schedule[0]["coal"]
-    init_power = model.K1 * init_coal
-    init_pressure = init_power / (model.K2 * valve_position)
+    _sim_state["error"] = None
 
     def run_sim():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             if mode == "online":
-                initial = {
-                    "coal_flow": init_coal,
-                    "valve_position": valve_position,
-                    "main_steam_pressure": init_pressure,
-                    "unit_power": init_power,
-                }
-                # OPC 读回节点：验证写入
-                readback_nodes = {}
-                for name in model.output_names:
-                    sig = mapping.get(name)
-                    if sig and sig.channel_type.upper() == "AI":
-                        readback_nodes[f"{name}_opc"] = sig.pv_node
-
+                # 在线：连接 OPC，IO 层信号通过 OPC 读写
+                from ..opc_client import OPCClient, SignalMapping
+                opc_client = OPCClient(opc_url)
+                mapping = SignalMapping.from_yaml(str(MAPPING_FILE))
                 loop.run_until_complete(
                     engine.start(duration=duration,
-                                 initial_values=initial,
-                                 input_overrides=input_func,
-                                 readback_nodes=readback_nodes))
+                                 initial_inputs=initial_inputs,
+                                 opc_client=opc_client,
+                                 mapping=mapping))
             else:
-                model.reset({
-                    "coal_flow": init_coal,
-                    "valve_position": valve_position,
-                    "main_steam_pressure": init_pressure,
-                    "unit_power": init_power,
-                })
+                # 离线：输入使用用户设定的初始值，不连 OPC
                 loop.run_until_complete(
                     engine.run_offline(duration=duration,
-                                       input_func=input_func,
-                                       realtime=True))
+                                       initial_inputs=initial_inputs))
         except Exception as e:
             logger.error(f"仿真异常: {e}", exc_info=True)
+            _sim_state["error"] = str(e)
         finally:
             _sim_state["running"] = False
             loop.close()
@@ -622,9 +1093,11 @@ def api_start_sim():
     _sim_state["thread"] = t
     t.start()
 
+    # 返回图的输入输出信息
+    graph_info = runner.get_info()
     return jsonify({"ok": True, "mode": mode, "duration": duration,
-                    "init_power": round(init_power, 2),
-                    "init_pressure": round(init_pressure, 2)})
+                    "inputs": graph_info.get("inputs", []),
+                    "outputs": graph_info.get("outputs", [])})
 
 
 @app.route("/api/sim/stop", methods=["POST"])
@@ -632,8 +1105,7 @@ def api_stop_sim():
     """停止仿真"""
     engine = _sim_state.get("engine")
     if engine and _sim_state["running"]:
-        # 在引擎的事件循环中调用 stop
-        engine._running = False
+        engine.request_stop()
         return jsonify({"ok": True})
     return jsonify({"error": "仿真未在运行"}), 400
 
@@ -646,6 +1118,8 @@ def api_sim_status():
         "running": _sim_state["running"],
         "mode": _sim_state["mode"],
     }
+    if _sim_state.get("error"):
+        result["error"] = _sim_state["error"]
     if engine:
         result["sim_time"] = engine.sim_time
         result["step_count"] = engine.step_count
@@ -667,9 +1141,7 @@ def api_sim_data():
     total = recorder.count
 
     start = max(0, total - n)
-    timestamps = recorder._timestamps[start:]
-    data = recorder._data[start:]
-    columns = recorder.columns
+    timestamps, data, columns = recorder.get_range(start)
 
     return jsonify({
         "timestamps": timestamps,

@@ -35,9 +35,11 @@
           <label style="font-size:12px; color:var(--text-light);">Server 地址</label>
           <input type="text" class="form-control" id="serverUrl" value="" placeholder="opc.tcp://localhost:9440" style="font-family:monospace; font-size:13px;">
         </div>
-        <div style="width:140px;">
-          <label style="font-size:12px; color:var(--text-light);">DPU 名称</label>
-          <input type="text" class="form-control" id="dpuName" value="" placeholder="DPU3013" style="font-family:monospace; font-size:13px;">
+        <div style="flex:1;">
+          <label style="font-size:12px; color:var(--text-light);">DPU 列表</label>
+          <div id="dpuList" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+            <!-- 动态填充 -->
+          </div>
         </div>
         <div style="width:80px;">
           <label style="font-size:12px; color:var(--text-light);">信号数</label>
@@ -65,6 +67,7 @@
             <th>类型</th>
             <th>单位</th>
             <th>量程</th>
+            <th style="width:90px;">在线值</th>
             <th style="width:100px;">操作</th>
           </tr>
         </thead>
@@ -192,21 +195,52 @@
 <script>
 let allSignals = [];
 let importedPoints = [];
+let onlineValues = {};   // 在线值缓存 { signalName: value }
+let dpus = [];           // DPU 列表
+let liveTimer = null;    // 在线值轮询定时器
 
 async function loadSignals() {
   const data = await api('/api/signals');
   allSignals = data.signals || [];
+  dpus = data.dpus || (data.dpu ? [data.dpu] : []);
   document.getElementById('serverUrl').value = data.server || '';
-  document.getElementById('dpuName').value = data.dpu || '';
+  renderDpuList();
   document.getElementById('signalCount').textContent = allSignals.length;
   renderTable(allSignals);
   renderRedundancy(data.redundancy || {});
 }
 
+// ── DPU 列表管理 ──
+function renderDpuList() {
+  const el = document.getElementById('dpuList');
+  el.innerHTML = dpus.map((name, i) =>
+    `<span style="display:inline-flex;align-items:center;gap:2px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-family:monospace;font-size:13px;">
+      ${name}
+      <button onclick="removeDpu(${i})" style="border:none;background:none;color:var(--text-light);cursor:pointer;font-size:14px;padding:0 2px;" title="移除">&times;</button>
+    </span>`
+  ).join('') +
+  `<button onclick="addDpu()" class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:12px;" title="添加 DPU">+</button>`;
+}
+
+function addDpu() {
+  const name = prompt('输入 DPU 名称（如 DPU3014）:');
+  if (!name || !name.trim()) return;
+  const n = name.trim().toUpperCase();
+  if (dpus.includes(n)) { showToast('该 DPU 已存在', 'error'); return; }
+  dpus.push(n);
+  renderDpuList();
+}
+
+function removeDpu(idx) {
+  if (dpus.length <= 1) { showToast('至少保留一个 DPU', 'error'); return; }
+  dpus.splice(idx, 1);
+  renderDpuList();
+}
+
 function renderTable(signals) {
   const tbody = document.getElementById('signalBody');
   if (signals.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:40px; color:var(--text-light);">暂无信号，点击"添加信号"开始配置</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:40px; color:var(--text-light);">暂无信号，点击"添加信号"开始配置</td></tr>';
     return;
   }
   tbody.innerHTML = signals.map(s => {
@@ -218,6 +252,10 @@ function renderTable(signals) {
       : `<span class="mono" style="font-size:11px;">${s.node || '-'}</span>`;
     const range = (s.range_low !== undefined && s.type === 'AI')
       ? `${s.range_low} ~ ${s.range_high}` : '-';
+    const liveVal = onlineValues[s.name];
+    const liveStr = liveVal !== undefined && liveVal !== null
+      ? `<span class="mono" style="color:var(--primary);">${typeof liveVal === 'number' ? liveVal.toFixed(2) : liveVal}</span>`
+      : '<span style="color:var(--text-light);">-</span>';
     return `<tr>
       <td>${dirBadge}</td>
       <td><strong>${s.name}</strong></td>
@@ -226,6 +264,7 @@ function renderTable(signals) {
       <td><span class="badge badge-gray">${s.type || 'AI'}</span></td>
       <td>${s.unit || ''}</td>
       <td style="font-size:12px; color:var(--text-secondary);">${range}</td>
+      <td style="text-align:right; font-family:monospace; font-size:12px;" data-live="${s.name}">${liveStr}</td>
       <td>
         <div class="btn-group">
           <button class="btn btn-outline btn-sm" onclick='editSignal(${JSON.stringify(s)})'>编辑</button>
@@ -439,8 +478,7 @@ async function confirmImport() {
 // ── OPC 连接配置 ──
 async function saveOPCConfig() {
   const server = document.getElementById('serverUrl').value.trim();
-  const dpu = document.getElementById('dpuName').value.trim();
-  await api('/api/opc/config', { method: 'POST', body: { server, dpu } });
+  await api('/api/opc/config', { method: 'POST', body: { server, dpus } });
   showToast('OPC 配置已保存', 'success');
 }
 
@@ -474,7 +512,19 @@ let browseChildren = [];  // 当前子节点
 function openBrowseModal() {
   browseHistory = [];
   document.getElementById('browseModal').classList.add('active');
-  browseTo('');  // 从 DPU 根节点开始
+  if (dpus.length > 1) {
+    // 多 DPU 时先选择 DPU
+    const el = document.getElementById('browseContent');
+    el.innerHTML = '<div style="padding:12px;"><strong>选择 DPU：</strong><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">' +
+      dpus.map(d => `<button class="btn btn-outline" onclick="browseDpu('${d}')">${d}</button>`).join('') +
+      '</div></div>';
+  } else {
+    browseTo('');  // 单 DPU 直接开始
+  }
+}
+
+function browseDpu(dpuName) {
+  browseTo(`ns=0;s=${dpuName}`);
 }
 
 function closeBrowseModal() {
@@ -606,7 +656,73 @@ async function importBrowseSelected() {
   loadSignals();
 }
 
+// ── OPC 状态自动轮询 ──
+async function opcPingLoop() {
+  const badge = document.getElementById('connBadge');
+  async function ping() {
+    try {
+      const r = await api('/api/opc/ping');
+      if (r.ok) {
+        badge.className = 'badge badge-green';
+        badge.textContent = '已连接';
+        // OPC 连通时自动启动在线值轮询
+        if (!liveTimer) startLivePolling();
+      } else {
+        badge.className = 'badge badge-red';
+        badge.textContent = '连接异常';
+        stopLivePolling();
+      }
+    } catch(e) {
+      badge.className = 'badge badge-red';
+      badge.textContent = '连接异常';
+      stopLivePolling();
+    }
+  }
+  await ping();
+  setInterval(ping, 5000);
+}
+
+// ── 在线值批量读取 ──
+function startLivePolling() {
+  if (liveTimer) return;
+  fetchLiveValues();
+  liveTimer = setInterval(fetchLiveValues, 2000);
+}
+
+function stopLivePolling() {
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  onlineValues = {};
+  // 清空在线值显示
+  document.querySelectorAll('[data-live]').forEach(td => {
+    td.innerHTML = '<span style="color:var(--text-light);">-</span>';
+  });
+}
+
+async function fetchLiveValues() {
+  try {
+    const res = await api('/api/opc/read-batch', { method: 'POST', body: {} });
+    if (res.values) {
+      onlineValues = res.values;
+      updateLiveCells();
+    }
+  } catch(e) {}
+}
+
+function updateLiveCells() {
+  document.querySelectorAll('[data-live]').forEach(td => {
+    const name = td.dataset.live;
+    const val = onlineValues[name];
+    if (val !== undefined && val !== null) {
+      const display = typeof val === 'number' ? val.toFixed(2) : String(val);
+      td.innerHTML = `<span class="mono" style="color:var(--primary);">${display}</span>`;
+    } else {
+      td.innerHTML = '<span style="color:var(--text-light);">-</span>';
+    }
+  });
+}
+
 // 初始化
 loadSignals();
+opcPingLoop();
 </script>
 {% endblock %}

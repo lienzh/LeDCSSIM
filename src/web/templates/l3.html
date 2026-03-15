@@ -38,28 +38,21 @@
       <div id="drawflow"></div>
     </div>
 
-    <!-- 基础块面板 + 信息 -->
+    <!-- 功能块面板 + 信息 -->
     <div class="properties-panel" id="propsPanel" style="width:260px;">
       <div class="props-header" id="editorTitle">选择封装块</div>
       <div class="props-body">
-        <!-- 基础块拖放 -->
-        <div class="props-section-title">基础块</div>
+        <!-- 端口块（始终置顶） -->
+        <div class="props-section-title">端口</div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;">
           <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'port_in')" title="输入端口">IN</div>
           <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'port_out')" title="输出端口">OUT</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'G')" title="增益">G</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'ADD')" title="加法">ADD</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'SUB')" title="减法">SUB</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'ML')" title="乘法">ML</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'DIV')" title="除法">DIV</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'CON')" title="常数">CON</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'I')" title="积分器">I</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'FLT')" title="滤波">FLT</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'LDL')" title="超前滞后">LDL</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'LIM')" title="限幅">LIM</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'HS')" title="高选">HS</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'LS')" title="低选">LS</div>
-          <div class="palette-block-mini" draggable="true" ondragstart="drag(event,'ASW')" title="模拟开关">ASW</div>
+        </div>
+
+        <!-- 完整功能块列表 -->
+        <div class="props-section-title">功能块</div>
+        <div id="fullBlockList" style="max-height:300px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;">
+          加载中...
         </div>
 
         <!-- 封装块信息 -->
@@ -80,29 +73,30 @@
 <script>
 let engine = null;
 let currentBlockName = '';
+let allBlocks = [];
 
-// L3 基础块定义
-const l3Blocks = {
-  port_in:  {id:'port_in',  name:'输入端口', category:'signal',     inputs:0, outputs:1, params:[{key:'name',label:'端口名',type:'string',default:''},{key:'unit',label:'单位',type:'string',default:''}]},
-  port_out: {id:'port_out', name:'输出端口', category:'signal',     inputs:1, outputs:0, params:[{key:'name',label:'端口名',type:'string',default:''},{key:'unit',label:'单位',type:'string',default:''}]},
-  G:        {id:'G',    name:'增益',     category:'dynamic',    inputs:1, outputs:1, params:[{key:'K',label:'增益K',type:'number',default:1.0}]},
-  ADD:      {id:'ADD',  name:'加法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
-  SUB:      {id:'SUB',  name:'减法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
-  ML:       {id:'ML',   name:'乘法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
-  DIV:      {id:'DIV',  name:'除法',     category:'arithmetic', inputs:2, outputs:1, params:[]},
-  CON:      {id:'CON',  name:'常数',     category:'signal',     inputs:0, outputs:1, params:[{key:'value',label:'常数值',type:'number',default:0}]},
-  I:        {id:'I',    name:'积分器',   category:'dynamic',    inputs:1, outputs:1, params:[{key:'K',label:'增益K',type:'number',default:1.0},{key:'low',label:'下限',type:'number',default:-1e6},{key:'high',label:'上限',type:'number',default:1e6}]},
-  FLT:      {id:'FLT',  name:'滤波',     category:'dynamic',    inputs:1, outputs:1, params:[{key:'K',label:'增益K',type:'number',default:1.0},{key:'T',label:'时间常数T(s)',type:'number',default:10}]},
-  LDL:      {id:'LDL',  name:'超前滞后', category:'dynamic',    inputs:1, outputs:1, params:[{key:'T1',label:'T1(s)',type:'number',default:1},{key:'T2',label:'T2(s)',type:'number',default:1}]},
-  LIM:      {id:'LIM',  name:'限幅',     category:'dynamic',    inputs:1, outputs:1, params:[{key:'low',label:'下限',type:'number',default:0},{key:'high',label:'上限',type:'number',default:100}]},
-  HS:       {id:'HS',   name:'高选',     category:'compare',    inputs:2, outputs:1, params:[]},
-  LS:       {id:'LS',   name:'低选',     category:'compare',    inputs:2, outputs:1, params:[]},
-  ASW:      {id:'ASW',  name:'模拟开关', category:'logic',      inputs:2, outputs:1, params:[{key:'threshold',label:'阈值',type:'number',default:0.5}]},
+// 端口块定义（L3 专用）
+const portBlocks = {
+  port_in:  {id:'port_in',  name:'输入端口', category:'signal', inputs:0, outputs:1, params:[{key:'name',label:'端口名',type:'string',default:''},{key:'unit',label:'单位',type:'string',default:''}]},
+  port_out: {id:'port_out', name:'输出端口', category:'signal', inputs:1, outputs:0, params:[{key:'name',label:'端口名',type:'string',default:''},{key:'unit',label:'单位',type:'string',default:''}]},
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
   engine = new CanvasEngine('drawflow', { grid: 'dots', mode: 'config' });
-  Object.values(l3Blocks).forEach(b => engine.registerBlock(b));
+  Object.values(portBlocks).forEach(b => engine.registerBlock(b));
+
+  // 从 API 加载完整功能块库
+  try {
+    allBlocks = await api('/api/blocks');
+    allBlocks.forEach(b => engine.registerBlock(b));
+    // 渲染功能块面板
+    const listEl = document.getElementById('fullBlockList');
+    listEl.innerHTML = allBlocks.map(b =>
+      `<div class="palette-block-mini" draggable="true" ondragstart="drag(event,'${b.id}')" title="${b.description||b.name}">${b.id}</div>`
+    ).join('');
+  } catch(e) {
+    document.getElementById('fullBlockList').innerHTML = '<span style="color:var(--text-light);font-size:11px;">加载失败</span>';
+  }
 
   const canvas = document.getElementById('canvasArea');
   canvas.addEventListener('drop', (ev) => {
@@ -116,6 +110,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await loadLibrary();
   await loadPresets();
+
+  // 从 URL 参数自动选择封装块
+  const urlParams = new URLSearchParams(window.location.search);
+  const blockParam = urlParams.get('block');
+  if (blockParam) {
+    await selectBlock(blockParam);
+  }
 });
 
 function drag(ev, id) { ev.dataTransfer.setData('blockId', id); }

@@ -21,10 +21,10 @@
   --conn-color: #64748b;
   --conn-active: #3b82f6;
   --node-bg: #ffffff;
-  --node-border: #cbd5e1;
-  --node-selected: #3b82f6;
-  --canvas-bg: #f8fafc;
-  --grid-color: #cbd5e1;
+  --node-border: #94a3b8;
+  --node-selected: #1e293b;
+  --canvas-bg: #fff;
+  --grid-color: #e2e8f0;
 }
 
 
@@ -106,25 +106,24 @@
 }
 
 .drawflow .drawflow-node {
-  border-radius: 3px;
-  border: 2px solid var(--node-border);
-  background: var(--node-bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  min-width: 140px;
-  max-width: 220px;
+  border-radius: 0;
+  border: 1px solid #1e293b;
+  background: #fff;
+  box-shadow: none;
+  width: auto;
+  min-width: 20px;
+  min-height: 0;
+  padding: 0;
   cursor: move;
   z-index: 2;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
 }
 
 .drawflow .drawflow-node:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  border-width: 1.5px;
 }
 
 .drawflow .drawflow-node.selected {
-  border-color: var(--node-selected);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2),
-              0 2px 8px rgba(59, 130, 246, 0.15);
+  border: 2px solid #dc2626;
   z-index: 3;
 }
 
@@ -136,25 +135,23 @@
 /* 删除按钮 */
 .drawflow .drawflow-node .drawflow-delete {
   position: absolute;
-  top: -10px;
-  right: -10px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--danger);
+  top: -7px;
+  right: -7px;
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  background: #1e293b;
   color: #fff;
-  font-size: 12px;
-  line-height: 20px;
+  font-size: 8px;
+  line-height: 12px;
   text-align: center;
   cursor: pointer;
   display: none;
   z-index: 5;
-  border: 2px solid #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  border: none;
 }
 
-.drawflow .drawflow-node.selected .drawflow-delete,
-.drawflow .drawflow-node:hover .drawflow-delete {
+.drawflow .drawflow-node.selected .drawflow-delete {
   display: block;
 }
 
@@ -171,38 +168,41 @@
 }
 
 .drawflow .drawflow-node .inputs {
-  left: -10px;
+  left: -5px;
 }
 
 .drawflow .drawflow-node .outputs {
-  right: -10px;
+  right: -1px;
 }
 
+/* 端口 — 圆心骑在边框上，清除 Drawflow 默认偏移 */
 .drawflow .drawflow-node .input,
 .drawflow .drawflow-node .output {
-  width: 14px;
-  height: 14px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  border: 2px solid #fff;
+  border: none;
   cursor: crosshair;
   pointer-events: all;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
-  transition: transform 0.12s ease;
   position: relative;
-}
-
-.drawflow .drawflow-node .input {
-  background: var(--port-input);
-}
-
-.drawflow .drawflow-node .output {
-  background: var(--port-output);
+  background: #1e293b;
+  left: 0;
+  right: 0;
+  top: 0;
+  margin: 0;
+  z-index: 1;
 }
 
 .drawflow .drawflow-node .input:hover,
 .drawflow .drawflow-node .output:hover {
-  transform: scale(1.3);
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+  background: #000;
+}
+
+/* 含完整 SAMA 布局的功能块：端口偏移到标题栏下方 */
+.drawflow .drawflow-node:has(.sama-func-full) .inputs,
+.drawflow .drawflow-node:has(.sama-func-full) .outputs {
+  top: 15px;
+  height: calc(100% - 15px);
 }
 
 
@@ -210,21 +210,26 @@
    3. 连接线样式
    ═══════════════════════════════════════════════════════════ */
 
+/* Fix 4: 模拟量 2px 实线 / 开关量 2px 虚线 */
 .drawflow .connection .main-path {
-  stroke: var(--conn-color);
+  stroke: #1e293b;
   stroke-width: 2;
   fill: none;
-  transition: stroke 0.15s ease;
+  cursor: pointer;
 }
 
 .drawflow .connection .main-path:hover {
-  stroke: var(--conn-active);
-  stroke-width: 3;
+  stroke: #000;
+  stroke-width: 2.5;
 }
 
 .drawflow .connection.selected .main-path {
-  stroke: var(--node-selected);
-  stroke-width: 2.5;
+  stroke: #000;
+  stroke-width: 3;
+}
+
+.drawflow .connection.conn-digital .main-path {
+  stroke-dasharray: 5 3;
 }
 
 /* 连接删除按钮 */
@@ -243,37 +248,189 @@
 
 
 /* ═══════════════════════════════════════════════════════════
-   4. 节点内部布局 - SAMA 风格
+   4. 节点内部布局 - SAMA 图标风格
    ═══════════════════════════════════════════════════════════ */
 
-/* SAMA 图标风格：简洁方块 + 短标签 */
+/* SAMA 节点基础 */
 .sama-node {
+  font-family: "Consolas", "Courier New", monospace;
+  user-select: none;
+}
+
+/* 常量块 — 紧凑显示 */
+.sama-func {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1px 3px 2px;
+  min-width: 18px;
+}
+
+.sama-id {
+  font-size: 6px;
+  font-weight: 400;
+  color: #a3a3a3;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  margin-bottom: 0;
+}
+
+.sama-sym {
+  font-size: 9px;
+  font-weight: 700;
+  color: #1c1917;
+  line-height: 1.2;
+  text-align: center;
+}
+
+/* 功能块完整 SAMA 布局 — 紧凑黑白 */
+.sama-func-full {
+  min-width: 56px;
+}
+
+.sama-func-full .node-header {
+  height: 14px;
+  display: flex;
+  align-items: center;
+  padding: 0 3px;
+  border-bottom: 1px solid #d4d4d4;
+  background: #fff !important;
+}
+
+.sama-func-full .node-instance {
+  color: #78716c;
+  font-size: 7px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sama-func-full .node-body {
+  display: flex;
+  align-items: stretch;
+  min-height: 16px;
+}
+
+.sama-func-full .port-labels {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 1px 0;
+}
+
+.sama-func-full .port-labels-in {
+  padding-left: 2px;
+}
+
+.sama-func-full .port-labels-out {
+  padding-right: 2px;
+  text-align: right;
+}
+
+.sama-func-full .port-label {
+  font-size: 7px;
+  color: #a3a3a3;
+  line-height: 14px;
+  height: 14px;
+  white-space: nowrap;
+}
+
+.sama-func-full .node-center {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-width: 56px;
-  min-height: 36px;
-  padding: 4px 10px;
-  position: relative;
-  font-family: "Consolas", "SF Mono", monospace;
+  padding: 1px 3px;
+  min-width: 20px;
 }
 
-.sama-label {
-  font-size: 13px;
+.sama-func-full .node-type {
+  font-size: 9px;
   font-weight: 700;
-  color: var(--text, #1e293b);
+  color: #1c1917;
+  text-align: center;
+}
+
+.sama-func-full .node-params {
+  font-size: 7px;
+  color: #a3a3a3;
   text-align: center;
   white-space: nowrap;
-  line-height: 1.2;
+  margin-bottom: 1px;
+}
+
+/* IO 端子块 — 水平排列: 箭头 + tag */
+.sama-io-block {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px 3px;
+  white-space: nowrap;
+}
+
+.sama-arrow {
+  font-size: 6px;
+  color: #a3a3a3;
+  line-height: 1;
+}
+
+.sama-tag {
+  font-size: 7px;
+  font-weight: 500;
+  color: #1c1917;
+  line-height: 1;
+  max-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 引入/引出点虚线边框 */
+.drawflow .drawflow-node:has(.sama-ref) {
+  border-style: dashed;
+}
+
+/* 引出点选择列表项 */
+.ce-ref-item {
+  display: flex;
+  align-items: center;
+  padding: 5px 8px;
+  border: 1px solid #1e293b;
+  margin-bottom: 2px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: "Consolas", monospace;
+}
+.ce-ref-item:hover {
+  background: #f1f5f9;
+}
+.ce-ref-item.ce-ref-active {
+  background: rgba(59,130,246,.15);
+  border-color: #3b82f6;
+}
+.ce-ref-jump {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+.ce-ref-jump:hover {
+  background: rgba(96,165,250,.2);
 }
 
 /* 监视模式数值显示 */
 .node-value {
-  font-size: 10px;
-  color: var(--primary-dark, #2563eb);
+  font-size: 7px;
+  color: #1e40af;
   text-align: center;
-  font-family: monospace;
+  font-family: "Consolas", monospace;
   display: none;
 }
 .monitor-mode .node-value { display: block; }
@@ -284,51 +441,9 @@
    5. 节点类别颜色
    ═══════════════════════════════════════════════════════════ */
 
-.drawflow .drawflow-node.cat-signal {
-  --node-cat-color: var(--cat-signal);
-  border-left: 4px solid var(--cat-signal);
-}
-
-.drawflow .drawflow-node.cat-arithmetic {
-  --node-cat-color: var(--cat-arithmetic);
-  border-left: 4px solid var(--cat-arithmetic);
-}
-
-.drawflow .drawflow-node.cat-compare {
-  --node-cat-color: var(--cat-compare);
-  border-left: 4px solid var(--cat-compare);
-}
-
-.drawflow .drawflow-node.cat-dynamic {
-  --node-cat-color: var(--cat-dynamic);
-  border-left: 4px solid var(--cat-dynamic);
-}
-
-.drawflow .drawflow-node.cat-control {
-  --node-cat-color: var(--cat-control);
-  border-left: 4px solid var(--cat-control);
-}
-
-.drawflow .drawflow-node.cat-logic {
-  --node-cat-color: var(--cat-logic);
-  border-left: 4px solid var(--cat-logic);
-}
-
-.drawflow .drawflow-node.cat-timer {
-  --node-cat-color: var(--cat-timer);
-  border-left: 4px solid var(--cat-timer);
-}
-
-.drawflow .drawflow-node.cat-transfer {
-  --node-cat-color: var(--cat-transfer);
-  border-left: 4px solid var(--cat-transfer);
-}
-
+/* 类别变量保留供面板引用，节点本体不加色条 */
 .drawflow .drawflow-node.cat-encapsulated {
-  --node-cat-color: var(--cat-encapsulated);
-  border-left: 4px solid var(--cat-encapsulated);
   border-style: dashed;
-  border-left-style: solid;
 }
 
 /* 封装块展开指示器 */
@@ -373,22 +488,16 @@
 }
 
 /* 实时值覆盖层 */
-.node-value {
-  display: none;
-}
-
 .monitor-mode .node-value {
   display: block;
-  padding: 4px 10px 6px;
-  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-  font-size: 13px;
+  padding: 0 2px;
+  font-family: "Consolas", monospace;
+  font-size: 7px;
   font-weight: 600;
   text-align: center;
-  border-top: 1px solid var(--border, #e2e8f0);
+  border-top: 1px solid #e5e5e5;
   background: #f0fdf4;
   color: #166534;
-  border-radius: 0 0 2px 2px;
-  transition: background 0.3s ease, color 0.3s ease;
 }
 
 /* 值域颜色编码 */
@@ -447,6 +556,11 @@
   gap: 0;
   height: calc(100vh - 110px);
   overflow: hidden;
+}
+
+/* 两栏模式（无右侧面板） */
+.canvas-body.canvas-two-col {
+  grid-template-columns: 210px 1fr;
 }
 
 .canvas-layout.palette-collapsed {
@@ -960,7 +1074,390 @@
 
 
 /* ═══════════════════════════════════════════════════════════
-   12. 响应式布局
+   11a. Fix 3: 侧边滑出参数面板
+   ═══════════════════════════════════════════════════════════ */
+
+.ce-side-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 320px;
+  background: #fafaf9;
+  border-left: 1px solid #d6d3d1;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.08);
+}
+
+.ce-side-panel.open {
+  transform: translateX(0);
+}
+
+.ce-side-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #d6d3d1;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ce-side-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ce-side-footer {
+  padding: 8px 14px;
+  border-top: 1px solid #d6d3d1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   11b. 浮动调试小窗口 (Inspector)
+   ═══════════════════════════════════════════════════════════ */
+
+.ce-inspector {
+  position: fixed;
+  width: 200px;
+  background: #fafaf9;
+  border: 1px solid #d6d3d1;
+  border-radius: 0;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  z-index: 200;
+  font-size: 11px;
+  display: none;
+  overflow: hidden;
+  user-select: none;
+}
+
+.ce-inspector.visible {
+  display: block;
+}
+
+.ce-insp-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid #e7e5e4;
+  cursor: move;
+}
+
+.ce-insp-title {
+  font-size: 10px;
+  font-weight: 500;
+  color: #78716c;
+  font-family: monospace;
+}
+
+.ce-insp-close {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: #a8a29e;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.ce-insp-close:hover {
+  color: #1c1917;
+}
+
+.ce-insp-body {
+  padding: 6px 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ce-insp-header {
+  padding: 2px 0;
+  margin-bottom: 4px;
+}
+
+.ce-insp-type {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: monospace;
+  color: #1c1917;
+}
+
+.ce-insp-name {
+  font-size: 10px;
+  color: #78716c;
+}
+
+.ce-insp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  border-bottom: 1px solid #f8fafc;
+}
+
+.ce-insp-k {
+  color: #78716c;
+  font-size: 10px;
+}
+
+.ce-insp-v {
+  font-family: "Consolas", monospace;
+  font-size: 10px;
+  color: #1c1917;
+  text-align: right;
+}
+
+.ce-insp-v.ce-insp-tag {
+  font-weight: 600;
+}
+
+.ce-insp-sep {
+  font-size: 9px;
+  font-weight: 600;
+  color: #a8a29e;
+  margin: 6px 0 2px;
+  padding-top: 4px;
+  border-top: 1px solid #e7e5e4;
+}
+
+.ce-insp-desc {
+  font-size: 10px;
+  color: #78716c;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.ce-insp-actions {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid #e7e5e4;
+}
+
+.ce-insp-edit-btn {
+  width: 100%;
+  padding: 3px 0;
+  border: 1px solid #d6d3d1;
+  border-radius: 0;
+  background: transparent;
+  color: #44403c;
+  font-size: 10px;
+  cursor: pointer;
+}
+.ce-insp-edit-btn:hover {
+  background: #e7e5e4;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   11c. 参数编辑弹窗 (双击节点触发)
+   ═══════════════════════════════════════════════════════════ */
+
+.ce-modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(28, 25, 23, 0.3);
+  z-index: 600;
+  align-items: center;
+  justify-content: center;
+}
+
+.ce-modal-overlay.active {
+  display: flex;
+}
+
+.ce-modal {
+  background: #fafaf9;
+  border: 1px solid #d6d3d1;
+  border-radius: 0;
+  box-shadow: none;
+  width: 320px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ce-modal-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #d6d3d1;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ce-modal-header-color {
+  width: 3px;
+  height: 16px;
+  border-radius: 0;
+  flex-shrink: 0;
+}
+
+.ce-modal-header-text {
+  flex: 1;
+  font-size: 13px;
+  color: #44403c;
+}
+
+.ce-modal-close {
+  background: none;
+  border: none;
+  font-size: 16px;
+  color: #a8a29e;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 0;
+  line-height: 1;
+}
+.ce-modal-close:hover {
+  color: #44403c;
+}
+
+.ce-modal-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ce-modal-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #a8a29e;
+  margin: 10px 0 6px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid #e7e5e4;
+}
+
+.ce-modal-field {
+  margin-bottom: 10px;
+}
+
+.ce-modal-field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #57534e;
+  margin-bottom: 3px;
+}
+
+.ce-modal-field input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #d6d3d1;
+  border-radius: 0;
+  font-size: 12px;
+  font-family: "Consolas", monospace;
+  color: #1c1917;
+  background: #fafaf9;
+  transition: none;
+  box-sizing: border-box;
+}
+
+.ce-modal-field input:focus {
+  outline: none;
+  border-color: #78716c;
+  box-shadow: none;
+  background: #fff;
+}
+
+.ce-modal-field input.ce-field-primary {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 8px;
+  background: #fff;
+  border-color: #a8a29e;
+}
+
+.ce-modal-desc {
+  font-size: 11px;
+  color: #78716c;
+  line-height: 1.5;
+  margin-top: 8px;
+  padding: 8px;
+  background: transparent;
+  border-radius: 0;
+  border: 1px solid #e7e5e4;
+}
+
+.ce-modal-footer {
+  padding: 8px 14px;
+  border-top: 1px solid #d6d3d1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ce-modal-node-id {
+  font-size: 10px;
+  color: #a8a29e;
+  font-family: monospace;
+  margin-right: auto;
+}
+
+.ce-modal-btn {
+  padding: 4px 7px;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid #d6d3d1;
+  transition: none;
+}
+
+.ce-btn-cancel {
+  background: #fafaf9;
+  color: #57534e;
+  border-color: #d6d3d1;
+}
+.ce-btn-cancel:hover {
+  background: #e7e5e4;
+}
+
+.ce-btn-ok {
+  background: #57534e;
+  color: #fafaf9;
+  border-color: #57534e;
+}
+.ce-btn-ok:hover {
+  background: #44403c;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   12. 框选 & 封装
+   ═══════════════════════════════════════════════════════════ */
+
+.ce-select-box {
+  display: none;
+  position: absolute;
+  border: 1px dashed #78716c;
+  background: rgba(120, 113, 108, 0.08);
+  pointer-events: none;
+  z-index: 10;
+}
+
+.drawflow-node.ce-selected {
+  outline: 1.5px dashed #57534e;
+  outline-offset: 2px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   13. 响应式布局
    ═══════════════════════════════════════════════════════════ */
 
 @media (max-width: 1200px) {
@@ -1164,10 +1661,10 @@
 
 /* 信号选择弹窗 */
 .picker-item {
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
-  margin-bottom: 4px; cursor: pointer;
+  padding: 6px 8px; border: 1px solid #d6d3d1; border-radius: 0;
+  margin-bottom: 3px; cursor: pointer;
 }
-.picker-item:hover { border-color: var(--primary); background: var(--primary-light, #dbeafe); }
+.picker-item:hover { border-color: #78716c; background: #f5f5f4; }
 
 /* 面板搜索区 */
 .palette-search { padding: 8px; border-bottom: 1px solid var(--border, #e2e8f0); }

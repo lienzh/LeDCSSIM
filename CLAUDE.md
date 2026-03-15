@@ -43,14 +43,34 @@ py -3.12 -m src.test_framework.runner test_cases/
 ## 核心架构
 
 ```
-Python仿真模型 ←─ OPC UA ─→ 科远NTVDPU虚拟控制器
-     │                              │
-  功能块库 + 仿真引擎            协调控制逻辑执行
-  工艺参数(汽压/汽温/负荷)       控制输出(阀位/挡板开度)
-     │                              │
-     └──── 自动化测试框架 ──────────┘
-           测试用例→执行→判定→报告
+OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型逻辑)
+                                                      ↕
+                                                   L3(封装子块)
 ```
+
+**组态分层**（H5000M 规范）：
+- **IO**：OPC 硬件信号的直接映射（AI/DI 通道）
+- **IL**：信号预处理/后处理桥梁层。输入方向：多个 IO 硬点 → 三取中/滤波 → 抽象模型量；输出方向：模型输出 → 处理 → 写回 IO
+- **IB**：模型本体，用户用功能块在画布上组态搭建
+- **L3**：IB 中的子程序封装，便于画面整洁和逻辑复用
+
+**在线 vs 离线**：画布逻辑（IL+IB）相同，区别仅在于 IO 层是否连接 OPC。
+- 在线：OPC 读输入 → 图执行 → OPC 写输出
+- 离线：用户设定值 → 图执行 → 记录数据
+
+**图执行引擎**：GraphRunner 解析 Drawflow 画布 JSON → 拓扑排序 → 按步执行每个功能块
+
+**页面管理**：IL/IB 层支持多页面，通过 `_manifest.json` 管理页面清单。
+- 统一画布模板 `canvas.html`，IL/IB 功能完全一致
+- 侧边栏树形展开，可新建/重命名/删除页面
+- 跨页变量：`ref_out`(A页) → `ref_in`(B页) 通过 tag 名匹配，支持跳转
+- 多页仿真：Run 页面可多选 IB/IL 页面组合运行
+
+**路由结构**：
+- `/canvas/<layer>/<page_id>` — 统一画布（IL/IB）
+- `/il`, `/ib` — 重定向到该层第一个页面
+- `/api/pages` — 页面 CRUD
+- `/api/pages/refs` — 扫描所有页面的 ref_out 标签
 
 ### 模块说明
 
@@ -64,12 +84,16 @@ Python仿真模型 ←─ OPC UA ─→ 科远NTVDPU虚拟控制器
   - `select.py`: HighSelect、LowSelect、Switch（二选一）
   - `function.py`: LinearInterp（折线插值）、Polynomial（多项式）
 - **src/sim_engine/** — 仿真循环引擎（已完成）
-  - `model.py`: SimModel 基类，声明输入输出 + 功能块组合
-  - `engine.py`: 固定步长循环，在线/离线双模式，支持实时节拍
+  - `graph_runner.py`: 图执行引擎。解析 Drawflow JSON → 拓扑排序 → 逐步执行功能块。支持多页加载（`load()` 接受 list）
+  - `engine.py`: 固定步长循环，驱动 GraphRunner，在线/离线双模式
+  - `model.py`: SimModel 基类（保留，供硬编码模型使用）
   - `recorder.py`: 数据记录器，CSV 导出 + pandas
-  - `ccs_model.py`: CCS 被控对象模型（2输入2输出，参考 modelref/CCS.png）
+  - `ccs_model.py`: CCS 被控对象模型（保留作为预设参考）
 - **src/web/** — Web 界面（已完成）
-  - `app.py`: Flask 应用，H5000M 三层架构（IO/IL/IB/L3/运行）
+  - `app.py`: Flask 应用，页面管理 + 仿真 API + OPC API
+  - `templates/canvas.html`: IL/IB 统一画布模板
+  - `templates/base.html`: 侧边栏树形页面导航
+  - `static/js/canvas-engine.js`: Drawflow 增强引擎，含跨页 ref 选择器
   - 端口 5001，启动命令 `py -3.12 -m src.web.app`
 - **src/test_framework/** — 自动化测试（待开发）
 - **tools/** — 辅助脚本（待开发）
@@ -77,6 +101,8 @@ Python仿真模型 ←─ OPC UA ─→ 科远NTVDPU虚拟控制器
 ### 配置文件
 
 - `config/opc_mapping.yaml` — OPC UA 节点映射（模型变量名 ↔ 通道号，含 Server 地址）
+- `config/models/_manifest.json` — 页面清单（自动生成，记录页面 id/layer/name/order）
+- `config/models/*.json` — 各页面的 Drawflow 画布组态数据
 - `config/model_params.yaml` — 仿真模型参数（待创建）
 - `config/sim_settings.yaml` — 运行设置（待创建）
 

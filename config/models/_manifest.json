@@ -1,0 +1,34 @@
+{
+  "pages": [
+    {
+      "id": "CCS_model",
+      "layer": "IB",
+      "name": "负荷递增测试",
+      "order": 0
+    },
+    {
+      "id": "IL_机组功率",
+      "layer": "IL",
+      "name": "IL_机组功率",
+      "order": 1
+    },
+    {
+      "id": "L3_boiler_thermal",
+      "layer": "L3",
+      "name": "L3_boiler_thermal",
+      "order": 2
+    },
+    {
+      "id": "L3_turbine_power",
+      "layer": "L3",
+      "name": "L3_turbine_power",
+      "order": 3
+    },
+    {
+      "id": "页间测试",
+      "layer": "IB",
+      "name": "页间测试",
+      "order": 4
+    }
+  ]
+}

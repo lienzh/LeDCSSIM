@@ -3,30 +3,32 @@
 仿真引擎命令行入口
 
 用法:
-    py -3.12 -m src.sim_engine                       # 离线演示 (CCS 模型)
+    py -3.12 -m src.sim_engine                       # 离线演示
     py -3.12 -m src.sim_engine online                # 在线闭环
     py -3.12 -m src.sim_engine online --duration 60  # 指定运行时长
-    py -3.12 -m src.sim_engine offline --duration 30  # 离线调试
+    py -3.12 -m src.sim_engine offline --duration 30 # 离线运行
 """
 import asyncio
 import argparse
+import json
 import logging
-import sys
+from pathlib import Path
 
 from .engine import SimEngine
-from .ccs_model import CCSPlantModel
-from ..opc_client import SignalMapping
+from .graph_runner import GraphRunner
 
 
 def main():
     parser = argparse.ArgumentParser(description="DCS 协调控制仿真引擎")
     parser.add_argument("mode", nargs="?", default="offline",
                         choices=["offline", "online"],
-                        help="运行模式: offline(离线调试) / online(连接OPC)")
+                        help="运行模式: offline(离线) / online(连接OPC)")
     parser.add_argument("--duration", "-d", type=float, default=60.0,
                         help="运行时长, 秒 (默认 60)")
     parser.add_argument("--step", "-s", type=float, default=0.2,
                         help="仿真步长, 秒 (默认 0.2)")
+    parser.add_argument("--model", "-m", type=str, default="CCS_model",
+                        help="IB 层模型名称 (默认 CCS_model)")
     parser.add_argument("--config", "-c", type=str,
                         default="config/opc_mapping.yaml",
                         help="OPC 映射配置文件路径")
@@ -34,7 +36,6 @@ def main():
                         help="数据导出路径 (默认 data/{mode}_run.csv)")
     args = parser.parse_args()
 
-    # 日志
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -42,40 +43,35 @@ def main():
     )
     logger = logging.getLogger(__name__)
 
-    # 输出路径
     output_path = args.output or f"data/{args.mode}_run.csv"
 
-    # 创建 CCS 模型
-    model = CCSPlantModel("CCS被控对象模型")
+    # 加载画布组态
+    model_path = Path("config/models") / f"{args.model}.json"
+    if not model_path.exists():
+        logger.error(f"模型文件不存在: {model_path}")
+        logger.info("请先在 Web 界面 IB 层保存组态，或使用 --model 指定模型名称")
+        return
 
-    # 加载信号映射
-    mapping = SignalMapping.from_yaml(args.config)
+    with open(model_path, "r", encoding="utf-8") as f:
+        ib_json = json.load(f)
 
-    # 创建引擎
-    engine = SimEngine(model, mapping, step_size=args.step)
+    runner = GraphRunner()
+    runner.load(ib_json)
+
+    engine = SimEngine(runner, step_size=args.step)
 
     if args.mode == "online":
-        # 在线闭环
-        initial = {
-            "main_steam_pressure": CCSPlantModel.RATED_PRESSURE,
-            "unit_power": CCSPlantModel.RATED_POWER,
-        }
+        from ..opc_client import OPCClient, SignalMapping
+        opc_client = OPCClient("opc.tcp://localhost:9440")
+        mapping = SignalMapping.from_yaml(args.config)
         asyncio.run(engine.start(duration=args.duration,
-                                 initial_values=initial))
+                                 opc_client=opc_client,
+                                 mapping=mapping))
     else:
-        # 离线调试：模拟煤量阶跃
-        def coal_step_input(t):
-            """模拟煤量阶跃: 0~10s 额定250t/h, 之后增加10%到275t/h"""
-            coal = 250.0 if t < 10.0 else 275.0
-            return {
-                "coal_flow": coal,
-                "valve_position": 0.7,  # 调门固定
-            }
-
-        asyncio.run(engine.run_offline(duration=args.duration,
-                                       input_func=coal_step_input))
+        asyncio.run(engine.run_offline(duration=args.duration))
 
     # 导出数据
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     engine.export_data(output_path)
     logger.info(f"数据已保存: {output_path}")
 

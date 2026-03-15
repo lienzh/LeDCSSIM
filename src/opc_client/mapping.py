@@ -36,6 +36,10 @@ class SignalInfo:
     @property
     def pv_node(self) -> str:
         """PV 节点路径"""
+        # block 类型信号的 node 已经是完整路径（如 SH0021.PROMW.IN），不需要追加 .PV
+        # AI/DI 硬件通道的 node_base 是通道基础路径（如 HW.AI010605），需要追加 .PV
+        if self.channel_type.upper() == "BLOCK":
+            return self.node_base
         return f"{self.node_base}.PV"
 
     @property

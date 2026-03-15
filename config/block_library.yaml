@@ -67,6 +67,32 @@ blocks:
         default: ""
     py_class: null
 
+  - id: ref_out
+    name: 引出点
+    category: signal
+    description: 定义中间变量，供引入点引用
+    inputs: 1
+    outputs: 0
+    params:
+      - key: tag
+        label: 变量名
+        type: string
+        default: ""
+    py_class: null
+
+  - id: ref_in
+    name: 引入点
+    category: signal
+    description: 引用已定义的引出点变量
+    inputs: 0
+    outputs: 1
+    params:
+      - key: tag
+        label: 引用变量
+        type: string
+        default: ""
+    py_class: null
+
   - id: constant
     name: 常数
     category: signal

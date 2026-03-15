@@ -1,20 +1,18 @@
 {% extends "base.html" %}
-{% set active_page = "ib" %}
-{% block title %}IB 层 - 逻辑组态 - LeDCSsim{% endblock %}
+{% set active_page = "canvas_" + layer|lower %}
+{% block title %}{{ layer }} - {{ page_name }} - LeDCSsim{% endblock %}
 
 {% block content %}
 <div class="canvas-page">
   <!-- 工具栏 -->
   <div class="canvas-toolbar">
     <div class="toolbar-left">
-      <span class="toolbar-title">IB 逻辑组态</span>
+      <span class="toolbar-title">{{ layer }} - {{ page_name }}</span>
       <div class="toolbar-sep"></div>
-      <input type="text" class="toolbar-input" id="modelName" value="CCS_model" placeholder="模型名称">
       <button class="toolbar-btn" onclick="saveModel()" title="保存 Ctrl+S">&#128190;</button>
-      <button class="toolbar-btn" onclick="loadModel()" title="加载">&#128194;</button>
       <div class="toolbar-sep"></div>
-      <button class="toolbar-btn" onclick="engine.undo()" title="撤销 Ctrl+Z">&#8630;</button>
-      <button class="toolbar-btn" onclick="engine.redo()" title="重做 Ctrl+Y">&#8631;</button>
+      <button class="toolbar-btn" onclick="engine.undo();updateDirtyIndicator()" title="撤销 Ctrl+Z">&#8630;</button>
+      <button class="toolbar-btn" onclick="engine.redo();updateDirtyIndicator()" title="重做 Ctrl+Y">&#8631;</button>
       <div class="toolbar-sep"></div>
       <button class="toolbar-btn" onclick="engine.zoomIn()">&#43;</button>
       <button class="toolbar-btn" onclick="engine.zoomOut()">&#8722;</button>
@@ -25,6 +23,7 @@
       <button class="toolbar-btn" id="btnEncap" onclick="doEncapsulate()" title="封装选中块 (Shift框选)" style="display:none;">&#9744; 封装</button>
     </div>
     <div class="toolbar-right">
+      <span id="opcDot" title="NTVDPU 通讯状态" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-right:4px;vertical-align:middle;"></span>
       <select class="toolbar-input" id="simMode" style="width:auto;">
         <option value="offline">离线</option>
         <option value="online">在线</option>
@@ -82,6 +81,9 @@
 
 {% block scripts %}
 <script>
+const PAGE_ID = {{ page_id|tojson }};
+const PAGE_LAYER = {{ layer|tojson }};
+
 let engine = null;
 let blockDefs = [];
 let categories = [];
@@ -105,7 +107,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     ioSignals = sigsData.signals || [];
     blockDefs.forEach(b => engine.registerBlock(b));
 
-    // L3 封装块（从已保存模型中读取实际端口数）
+    // L3 封装块
     await loadL3Blocks();
 
     renderPalette();
@@ -122,11 +124,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await autoLoadModel();
 
+  // 画布变更时更新标题栏脏标记
+  engine._onCanvasChanged = () => updateDirtyIndicator();
+
   // 快捷键
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveModel(); }
-    if (e.ctrlKey && e.key === 'z') { e.preventDefault(); engine.undo(); }
-    if (e.ctrlKey && e.key === 'y') { e.preventDefault(); engine.redo(); }
+    if (e.ctrlKey && e.key === 'z') { e.preventDefault(); engine.undo(); updateDirtyIndicator(); }
+    if (e.ctrlKey && e.key === 'y') { e.preventDefault(); engine.redo(); updateDirtyIndicator(); }
     if (e.key === 'Delete' && !simRunning) { engine.removeSelected(); }
   });
 
@@ -135,8 +140,53 @@ document.addEventListener('DOMContentLoaded', async () => {
   canvas.addEventListener('drop', handleDrop);
   canvas.addEventListener('dragover', e => e.preventDefault());
 
+  // 离开页面前检测未保存修改
+  window.addEventListener('beforeunload', (e) => {
+    if (engine && engine.isDirty()) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
+  // 覆写全局导航守卫：离开前提示保存
+  window.beforeNavigate = async function() {
+    if (!engine || !engine.isDirty()) return true;
+    if (confirm('当前画布有未保存的修改，是否保存后再离开？\n\n点击"确定"保存并跳转，点击"取消"放弃修改并跳转。')) {
+      await saveModel();
+    }
+    return true;
+  };
+
+  // 拦截侧边栏导航链接
+  document.querySelectorAll('.sidebar a[href]').forEach(a => {
+    a.addEventListener('click', async (e) => {
+      if (!engine || !engine.isDirty()) return;
+      e.preventDefault();
+      await window.beforeNavigate();
+      window.location.href = a.getAttribute('href');
+    });
+  });
+
   checkSimStatus();
+  opcPingLoop();
 });
+
+// ── OPC 通讯状态 ──
+async function opcPingLoop() {
+  const dot = document.getElementById('opcDot');
+  async function ping() {
+    try {
+      const r = await api('/api/opc/ping');
+      dot.style.background = r.ok ? '#10b981' : '#ef4444';
+      dot.title = r.ok ? 'NTVDPU 通讯正常' : 'NTVDPU 通讯异常';
+    } catch(e) {
+      dot.style.background = '#ef4444';
+      dot.title = 'NTVDPU 通讯异常';
+    }
+  }
+  await ping();
+  setInterval(ping, 5000);
+}
 
 // ── 面板 ──
 function renderPalette() {
@@ -200,12 +250,11 @@ function handleDrop(ev) {
 async function startSim() {
   const mode = document.getElementById('simMode').value;
   const duration = parseFloat(document.getElementById('cfgDuration').value) || 60;
-  const modelName = document.getElementById('modelName').value.trim() || 'CCS_model';
   await saveModel();
   try {
     await api('/api/sim/start', {
       method: 'POST',
-      body: { mode, duration, step_size: 0.2, ib_model: modelName }
+      body: { mode, duration, step_size: 0.2 }
     });
     enterMonitorMode();
     showToast('仿真已启动', 'success');
@@ -230,7 +279,15 @@ function enterMonitorMode() {
   monitorTimer = setInterval(async () => {
     try {
       const s = await api('/api/sim/status');
-      if (!s.running) { exitMonitorMode(); showToast('仿真已完成', 'info'); return; }
+      if (!s.running) {
+        exitMonitorMode();
+        if (s.error) {
+          showToast('仿真异常: ' + s.error, 'error');
+        } else {
+          showToast('仿真已完成', 'info');
+        }
+        return;
+      }
       document.getElementById('simTime').textContent = `t=${(s.sim_time||0).toFixed(1)}s`;
       document.getElementById('simSteps').textContent = `step=${s.step_count||0}`;
       if (s.latest) engine.updateMonitorValues(s.latest);
@@ -254,27 +311,25 @@ async function checkSimStatus() {
   try { const s = await api('/api/sim/status'); if (s.running) enterMonitorMode(); } catch(e) {}
 }
 
-// ── 保存/加载 ──
-async function saveModel() {
-  const name = document.getElementById('modelName').value.trim() || 'CCS_model';
-  await api('/api/model/save', { method:'POST', body:{ name, drawflow: engine.exportJSON(), layer:'IB' }});
-  showToast(`"${name}" 已保存`, 'success');
+// ── 脏标记 ──
+function updateDirtyIndicator() {
+  if (!engine) return;
+  const title = document.querySelector('.toolbar-title');
+  const base = `{{ layer }} - {{ page_name }}`;
+  title.textContent = engine.isDirty() ? base + ' *' : base;
 }
 
-async function loadModel() {
-  const name = document.getElementById('modelName').value.trim() || 'CCS_model';
-  try {
-    const d = await api(`/api/model/load/${name}`);
-    if (d.drawflow) { engine.importJSON(d.drawflow); showToast('已加载', 'success'); }
-  } catch(e) {
-    const models = await api('/api/model/list');
-    if (models.length > 0) showToast('可用: ' + models.map(m=>m.name).join(', '), 'info');
-  }
+// ── 保存/加载 ──
+async function saveModel() {
+  await api('/api/model/save', { method:'POST', body:{ name: PAGE_ID, drawflow: engine.exportJSON(), layer: PAGE_LAYER }});
+  engine.markSaved();
+  updateDirtyIndicator();
+  showToast(`"${PAGE_ID}" 已保存`, 'success');
 }
 
 async function autoLoadModel() {
   try {
-    const d = await api(`/api/model/load/${document.getElementById('modelName').value.trim()||'CCS_model'}`);
+    const d = await api(`/api/model/load/${PAGE_ID}`);
     if (d.drawflow) engine.importJSON(d.drawflow);
   } catch(e) {}
 }
@@ -334,20 +389,17 @@ async function doEncapsulate() {
   const result = engine.encapsulate(name.trim());
   if (!result) { showToast('未选中任何块', 'error'); return; }
 
-  // 保存封装模型
   try {
     await api('/api/model/save', {
       method: 'POST',
       body: { name: result.name, drawflow: result.drawflow, layer: 'L3' }
     });
 
-    // 注册为可用块并刷新面板
     const def = { id: result.name, name: name.trim(), category: 'encapsulated', inputs: result.numInputs, outputs: result.numOutputs, params: [], description: '封装模型' };
     blockDefs.push(def);
     engine.registerBlock(def);
     renderPalette();
 
-    // 在原位放置一个封装块
     engine.addBlock(result.name, 300, 200);
 
     showToast(`已封装为 "${result.name}"`, 'success');

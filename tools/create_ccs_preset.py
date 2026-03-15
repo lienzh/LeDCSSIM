@@ -25,11 +25,11 @@ def make_html(title, subtitle, color="#3b82f6"):
 nodes = {}
 
 # 输入信号
-nodes["1"] = node(1, "input", {"name": "coal_flow", "default": 200}, "input",
+nodes["1"] = node(1, "input", {"tag": "coal_flow", "default": 200}, "input",
     make_html("输入: coal_flow", "给煤量 (t/h) 默认=200", "#10b981"),
     {}, {"output_1": {"connections": conn(3, "input_1")}}, 30, 80)
 
-nodes["2"] = node(2, "input", {"name": "valve_position", "default": 0.7}, "input",
+nodes["2"] = node(2, "input", {"tag": "valve_position", "default": 0.7}, "input",
     make_html("输入: valve_position", "调门开度 默认=0.7", "#10b981"),
     {}, {"output_1": {"connections": conn(8, "input_1")}}, 30, 330)
 
@@ -86,13 +86,13 @@ nodes["10"] = node(10, "Inertia", {"K": 1.0, "T": 15}, "Inertia",
     {"output_1": {"connections": conn(12, "input_1")}}, 680, 310)
 
 # 输出: 主汽压力
-nodes["11"] = node(11, "output", {"name": "main_steam_pressure", "default": 16.7}, "output",
+nodes["11"] = node(11, "output", {"tag": "main_steam_pressure", "default": 16.7}, "output",
     make_html("输出: main_steam_pressure", "主蒸汽压力 (MPa)"),
     {"input_1": {"connections": conn_in(7, "output_1")}},
     {}, 1200, 100)
 
 # 输出: 功率
-nodes["12"] = node(12, "output", {"name": "unit_power", "default": 600}, "output",
+nodes["12"] = node(12, "output", {"tag": "unit_power", "default": 600}, "output",
     make_html("输出: unit_power", "发电机功率 (MW)"),
     {"input_1": {"connections": conn_in(10, "output_1")}},
     {}, 880, 310)

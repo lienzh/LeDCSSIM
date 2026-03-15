@@ -1,126 +1,60 @@
 {
-  "name": "CCS_model",
+  "name": "IL_机组功率",
   "drawflow": {
     "version": 1,
     "drawflow": {
       "drawflow": {
         "Home": {
           "data": {
-            "15": {
-              "class": "cat-arithmetic",
-              "data": {
-                "_blockId": "ADD",
-                "_blockName": "加法"
-              },
-              "html": "<div class=\"sama-node\"><div class=\"sama-label\">Σ</div><div class=\"node-value\" data-node-value></div></div>",
-              "id": 15,
-              "inputs": {
-                "input_1": {
-                  "connections": [
-                    {
-                      "input": "output_1",
-                      "node": "20"
-                    }
-                  ]
-                },
-                "input_2": {
-                  "connections": [
-                    {
-                      "input": "output_1",
-                      "node": "18"
-                    }
-                  ]
-                }
-              },
-              "name": "ADD",
-              "outputs": {
-                "output_1": {
-                  "connections": [
-                    {
-                      "node": "16",
-                      "output": "input_1"
-                    }
-                  ]
-                }
-              },
-              "pos_x": 358,
-              "pos_y": 222,
-              "typenode": false
-            },
-            "16": {
+            "1": {
               "class": "cat-signal",
               "data": {
-                "_blockId": "output",
-                "_blockName": "输出端子",
-                "tag": "unit_power",
+                "_blockId": "input",
+                "_blockName": "输入端子",
+                "tag": "generator_power",
                 "unit": ""
               },
-              "html": "<div class=\"sama-node sama-io-block\"><span class=\"sama-tag\">unit_power</span><span class=\"sama-arrow\"> ◁</span><div class=\"node-value\" data-node-value></div></div>",
-              "id": 16,
-              "inputs": {
-                "input_1": {
-                  "connections": [
-                    {
-                      "input": "output_1",
-                      "node": "15"
-                    }
-                  ]
-                }
-              },
-              "name": "output",
-              "outputs": {},
-              "pos_x": 573,
-              "pos_y": 250,
-              "typenode": false
-            },
-            "18": {
-              "class": "cat-signal",
-              "data": {
-                "_blockId": "constant",
-                "_blockName": "常数",
-                "value": -10
-              },
-              "html": "<div class=\"sama-node sama-func\"><div class=\"sama-sym\">0</div><div class=\"node-value\" data-node-value></div></div>",
-              "id": 18,
+              "html": "<div class=\"sama-node sama-io-block\"><span class=\"sama-arrow\">▷ </span><span class=\"sama-tag\">generator_power</span><div class=\"node-value\" data-node-value></div></div>",
+              "id": 1,
               "inputs": {},
-              "name": "constant",
+              "name": "input",
               "outputs": {
                 "output_1": {
                   "connections": [
                     {
-                      "node": "15",
-                      "output": "input_2"
-                    }
-                  ]
-                }
-              },
-              "pos_x": 130,
-              "pos_y": 292,
-              "typenode": false
-            },
-            "20": {
-              "class": "cat-signal",
-              "data": {
-                "_blockId": "ref_in",
-                "_blockName": "引入点",
-                "tag": "MWtest"
-              },
-              "html": "<div class=\"sama-node sama-io-block sama-ref\"><span class=\"sama-arrow\">▷ </span><span class=\"sama-tag\">ref_in</span><div class=\"node-value\" data-node-value></div></div>",
-              "id": 20,
-              "inputs": {},
-              "name": "ref_in",
-              "outputs": {
-                "output_1": {
-                  "connections": [
-                    {
-                      "node": "15",
+                      "node": "2",
                       "output": "input_1"
                     }
                   ]
                 }
               },
-              "pos_x": 130,
-              "pos_y": 226,
+              "pos_x": 283,
+              "pos_y": 189.33333206176758,
+              "typenode": false
+            },
+            "2": {
+              "class": "cat-signal",
+              "data": {
+                "_blockId": "ref_out",
+                "_blockName": "引出点",
+                "tag": "MWtest"
+              },
+              "html": "<div class=\"sama-node sama-io-block sama-ref\"><span class=\"sama-tag\">ref_out</span><span class=\"sama-arrow\"> ◁</span><div class=\"node-value\" data-node-value></div></div>",
+              "id": 2,
+              "inputs": {
+                "input_1": {
+                  "connections": [
+                    {
+                      "input": "output_1",
+                      "node": "1"
+                    }
+                  ]
+                }
+              },
+              "name": "ref_out",
+              "outputs": {},
+              "pos_x": 573,
+              "pos_y": 193,
               "typenode": false
             }
           }
@@ -2010,42 +1944,24 @@
         }
       },
       "nodeBlockMap": {
-        "13": "output",
-        "15": "ADD",
-        "16": "output",
-        "18": "constant",
-        "20": "ref_in"
+        "1": "input",
+        "2": "ref_out"
       },
       "nodeDataMap": {
-        "13": {
-          "_blockId": "output",
-          "_blockName": "输出端子",
-          "tag": "main_steam_pressure",
+        "1": {
+          "_blockId": "input",
+          "_blockName": "输入端子",
+          "tag": "generator_power",
           "unit": ""
         },
-        "15": {
-          "_blockId": "ADD",
-          "_blockName": "加法"
-        },
-        "16": {
-          "_blockId": "output",
-          "_blockName": "输出端子",
-          "tag": "unit_power",
-          "unit": ""
-        },
-        "18": {
-          "_blockId": "constant",
-          "_blockName": "常数",
-          "value": -10
-        },
-        "20": {
-          "_blockId": "ref_in",
-          "_blockName": "引入点",
+        "2": {
+          "_blockId": "ref_out",
+          "_blockName": "引出点",
           "tag": "MWtest"
         }
       },
-      "exportTime": "2026-03-15T12:45:09.992Z"
+      "exportTime": "2026-03-15T12:24:59.109Z"
     }
   },
-  "layer": "IB"
+  "layer": "IL"
 }

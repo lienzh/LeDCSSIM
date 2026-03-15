@@ -14,39 +14,39 @@
   <!-- 架构图 -->
   <div class="card" style="margin-bottom:20px;">
     <div class="card-body" style="padding:20px 24px;">
+      <!-- 组态数据流 -->
       <div style="display:flex; align-items:center; justify-content:center; gap:12px; font-size:13px; flex-wrap:wrap;">
+        <div style="padding:8px 14px; background:#f1f5f9; border:1px solid #cbd5e1; border-radius:6px; text-align:center; font-size:12px; color:#475569;">
+          OPC UA<br><small>NTVDPU</small>
+        </div>
+        <div style="color:var(--text-light); font-size:18px;">&harr;</div>
         <a href="/io" style="text-decoration:none;">
-          <div style="padding:12px 20px; background:#f0fdf4; border:2px solid #86efac; border-radius:8px; text-align:center; min-width:100px;">
-            <div style="font-weight:700; color:#166534;">IO 层</div>
-            <div style="font-size:11px; color:#4ade80;">硬件通道</div>
+          <div style="padding:12px 20px; background:#f0fdf4; border:2px solid #86efac; border-radius:8px; text-align:center; min-width:80px;">
+            <div style="font-weight:700; color:#166534;">IO</div>
+            <div style="font-size:11px; color:#4ade80;">硬件信号</div>
           </div>
         </a>
-        <div style="color:var(--text-light); font-size:18px;">&rarr;</div>
+        <div style="color:var(--text-light); font-size:18px;">&harr;</div>
         <a href="/il" style="text-decoration:none;">
-          <div style="padding:12px 20px; background:#eff6ff; border:2px solid #93c5fd; border-radius:8px; text-align:center; min-width:100px;">
-            <div style="font-weight:700; color:#1e40af;">IL 层</div>
-            <div style="font-size:11px; color:#60a5fa;">预处理</div>
+          <div style="padding:12px 20px; background:#eff6ff; border:2px solid #93c5fd; border-radius:8px; text-align:center; min-width:80px;">
+            <div style="font-weight:700; color:#1e40af;">IL</div>
+            <div style="font-size:11px; color:#60a5fa;">信号预处理</div>
           </div>
         </a>
-        <div style="color:var(--text-light); font-size:18px;">&rarr;</div>
+        <div style="color:var(--text-light); font-size:18px;">&harr;</div>
         <a href="/ib" style="text-decoration:none;">
-          <div style="padding:12px 20px; background:#fef3c7; border:2px solid #fcd34d; border-radius:8px; text-align:center; min-width:100px;">
-            <div style="font-weight:700; color:#92400e;">IB 层</div>
+          <div style="padding:12px 20px; background:#fef3c7; border:2px solid #fcd34d; border-radius:8px; text-align:center; min-width:80px;">
+            <div style="font-weight:700; color:#92400e;">IB</div>
             <div style="font-size:11px; color:#f59e0b;">逻辑组态</div>
           </div>
         </a>
-        <div style="color:var(--text-light); font-size:18px;">&rarr;</div>
-        <a href="/run" style="text-decoration:none;">
-          <div style="padding:12px 20px; background:#fce7f3; border:2px solid #f9a8d4; border-radius:8px; text-align:center; min-width:100px;">
-            <div style="font-weight:700; color:#9d174d;">运行</div>
-            <div style="font-size:11px; color:#ec4899;">仿真闭环</div>
-          </div>
-        </a>
       </div>
-      <div style="text-align:center; margin-top:8px;">
-        <a href="/l3" style="font-size:11px; color:var(--text-light); text-decoration:none;">
-          L3 层 (封装实现) &mdash; IL/IB 中复合块的内部逻辑展开
+      <div style="text-align:center; margin-top:8px; font-size:11px; color:var(--text-light);">
+        <a href="/l3" style="color:inherit; text-decoration:none;">
+          L3 封装子块 &mdash; IB 中可复用的子程序模块
         </a>
+        &nbsp;|&nbsp;
+        数据双向流动：IO &harr; IL &harr; IB
       </div>
     </div>
   </div>
@@ -54,28 +54,28 @@
   <div class="dashboard-grid">
     <a href="/io" class="card feature-card">
       <div class="feature-icon" style="background:#d1fae5;"><span style="font-size:20px; color:#059669; font-weight:700;">IO</span></div>
-      <h3>IO 层</h3>
+      <h3>IO 硬件信号</h3>
       <p>OPC UA 硬件通道配置，AI/DI 信号映射</p>
     </a>
     <a href="/il" class="card feature-card">
       <div class="feature-icon" style="background:#dbeafe;"><span style="font-size:20px; color:#2563eb; font-weight:700;">IL</span></div>
-      <h3>IL 预处理层</h3>
-      <p>信号缩放、滤波、有效性判断、冗余选择</p>
+      <h3>IL 信号预处理</h3>
+      <p>IO 硬点 → 模型量：三取中、滤波、缩放；模型输出 → IO 写回</p>
     </a>
     <a href="/ib" class="card feature-card">
       <div class="feature-icon" style="background:#fef3c7;"><span style="font-size:20px; color:#d97706; font-weight:700;">IB</span></div>
-      <h3>IB 逻辑组态层</h3>
-      <p>SAMA 图组态，CCS 控制模型搭建</p>
+      <h3>IB 逻辑组态</h3>
+      <p>被控对象模型搭建，功能块组态，输入输出来自 IL 层</p>
     </a>
     <a href="/l3" class="card feature-card">
       <div class="feature-icon" style="background:#f3e8ff;"><span style="font-size:20px; color:#7c3aed; font-weight:700;">L3</span></div>
-      <h3>L3 封装实现层</h3>
-      <p>复合功能块内部逻辑展开与编辑</p>
+      <h3>L3 封装子块</h3>
+      <p>IB 中的子程序封装，便于画面整洁和逻辑复用</p>
     </a>
     <a href="/run" class="card feature-card">
       <div class="feature-icon" style="background:#fce7f3;"><span style="font-size:18px; color:#db2777;">&#9654;</span></div>
       <h3>仿真运行</h3>
-      <p>在线/离线仿真，实时趋势曲线</p>
+      <p>执行画布组态，在线连接 OPC / 离线独立运行</p>
     </a>
   </div>
 
