@@ -119,6 +119,40 @@ blocks:
         default: 0.0
     py_class: null
 
+  - id: comment
+    name: 文本注释
+    category: signal
+    description: 纯文本注释，不参与仿真计算
+    inputs: 0
+    outputs: 0
+    params:
+      - key: text
+        label: 注释内容
+        type: string
+        default: "注释"
+      - key: fontSize
+        label: 字号(px)
+        type: number
+        default: 12
+      - key: color
+        label: 颜色
+        type: string
+        default: "#64748b"
+    py_class: null
+
+  - id: DELAY
+    name: 一拍延迟
+    category: signal
+    description: 输出延迟一个仿真周期，用于打断纯代数环路
+    inputs: 1
+    outputs: 1
+    params:
+      - key: init
+        label: 初始值
+        type: number
+        default: 0.0
+    py_class: null
+
   # ============================================================
   # 算术运算 (arithmetic)
   # ============================================================

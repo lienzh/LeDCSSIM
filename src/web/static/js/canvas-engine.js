@@ -94,7 +94,9 @@
     SEL:  { inputs: 'float', outputs: 'float' },
     NTH:  { inputs: 'float', outputs: 'float' },
     // BP1 — transfer
-    BP1:  { inputs: 'float', outputs: 'float' }
+    BP1:  { inputs: 'float', outputs: 'float' },
+    // DELAY — 一拍延迟
+    DELAY: { inputs: 'any', outputs: 'any' }
   };
 
   /**
@@ -190,7 +192,21 @@
 
     // 内容
     var body = '';
-    if (blockId === 'input' || blockId === 'output') {
+    if (blockId === 'comment') {
+      var textVal = data.text !== undefined ? data.text : '注释';
+      var fsVal = data.fontSize !== undefined ? data.fontSize : 12;
+      var colVal = data.color || '#64748b';
+      body += '<div class="ce-modal-field">';
+      body += '<label>注释内容</label>';
+      body += '<textarea data-key="text" rows="4" style="width:100%;resize:vertical;font-size:12px;font-family:inherit;padding:4px 6px;border:1px solid #d4d4d4;">' + esc(textVal) + '</textarea>';
+      body += '</div>';
+      body += '<div class="ce-modal-field" style="display:flex;gap:10px;">';
+      body += '<div style="flex:1;"><label>字号(px)</label>';
+      body += '<input type="number" value="' + esc(String(fsVal)) + '" data-key="fontSize" min="8" max="48" step="1"></div>';
+      body += '<div style="flex:1;"><label>颜色</label>';
+      body += '<input type="color" value="' + esc(colVal) + '" data-key="color" style="width:100%;height:28px;padding:0;border:1px solid #d4d4d4;cursor:pointer;"></div>';
+      body += '</div>';
+    } else if (blockId === 'input' || blockId === 'output') {
       body += '<div class="ce-modal-field">';
       body += '<label>信号标签 (tag)</label>';
       body += '<input type="text" value="' + esc(data.tag || data.name || '') + '" data-key="tag" class="ce-field-primary">';
@@ -665,7 +681,7 @@
     // 定时
     TON: 'TON', TOFF: 'TOF', TP: 'TP', CTR: 'CTR',
     // 信号处理
-    SH: 'S/H', RAMP: '/', GRAD: '\u2202',
+    SH: 'S/H', RAMP: '/', GRAD: '\u2202', DELAY: 'Z\u207B\u00B9',
     SC: 'SC', BG: 'B+G', DEV: '\u0394',
     // 常量
     CON: 'K', constant: 'K',
@@ -695,10 +711,20 @@
     var isIO = !!IO_TYPES[typeId];
     var isRef = (typeId === 'ref_in' || typeId === 'ref_out');
     var isCon = (typeId === 'CON' || typeId === 'constant');
+    var isComment = (typeId === 'comment');
 
     var html = '';
 
-    if (isIO) {
+    if (isComment) {
+      // 纯文本注释块
+      var text = data.text || data.name || '注释';
+      var fontSize = parseNumSafe(data.fontSize, 12);
+      var color = data.color || '#64748b';
+      html = '<div class="sama-node sama-comment">';
+      html += '<span class="sama-comment-text" style="font-size:' + fontSize + 'px;color:' + esc(color) + '">' + esc(text) + '</span>';
+      html += '</div>';
+
+    } else if (isIO) {
       // IO 端子 / 引用点 — 单行标签块
       var tag = data.tag || data.name || '';
       var arrow = '';
@@ -2053,6 +2079,181 @@
         attachEvents();
       }
     }).catch(function () {});
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
+     方向键移动节点
+     ═══════════════════════════════════════════════════════════ */
+
+  /**
+   * 移动选中的节点（单选或多选）
+   * @param {number} dx  X 方向偏移量（像素）
+   * @param {number} dy  Y 方向偏移量（像素）
+   */
+  CanvasEngine.prototype.moveSelected = function (dx, dy) {
+    if (this._mode !== 'config') return false;
+
+    var self = this;
+    var nodeIds = [];
+
+    // 优先取多选
+    if (this._selectedNodes && this._selectedNodes.length > 0) {
+      nodeIds = this._selectedNodes.slice();
+    } else {
+      // 单选
+      var sel = this._editor.node_selected;
+      if (sel) {
+        var nid = parseInt(sel.id.replace('node-', ''), 10);
+        if (!isNaN(nid)) nodeIds.push(nid);
+      }
+    }
+    if (nodeIds.length === 0) return false;
+
+    nodeIds.forEach(function (nid) {
+      try {
+        var dfNode = self._editor.getNodeFromId(nid);
+        if (!dfNode) return;
+        var newX = dfNode.pos_x + dx;
+        var newY = dfNode.pos_y + dy;
+        dfNode.pos_x = newX;
+        dfNode.pos_y = newY;
+        var el = self._container.querySelector('#node-' + nid);
+        if (el) {
+          el.style.left = newX + 'px';
+          el.style.top = newY + 'px';
+        }
+        self._editor.updateConnectionNodes('node-' + nid);
+      } catch (e) {}
+    });
+
+    // 推送历史记录
+    this._pushHistory();
+    this._redoStack = [];
+    if (this._onCanvasChanged) this._onCanvasChanged('nodeMoved');
+    return true;
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
+     复制 & 粘贴
+     ═══════════════════════════════════════════════════════════ */
+
+  var CLIPBOARD_LS_KEY = 'ce_clipboard';
+
+  /**
+   * 复制当前选中的节点（单选或多选）到剪贴板
+   * 使用 localStorage 存储，支持跨页粘贴
+   */
+  CanvasEngine.prototype.copySelected = function () {
+    var self = this;
+    var nodeIds = [];
+
+    // 优先取多选
+    if (this._selectedNodes && this._selectedNodes.length > 0) {
+      nodeIds = this._selectedNodes.slice();
+    } else {
+      // 单选
+      var sel = this._editor.node_selected;
+      if (sel) {
+        var nid = parseInt(sel.id.replace('node-', ''), 10);
+        if (!isNaN(nid)) nodeIds.push(nid);
+      }
+    }
+    if (nodeIds.length === 0) return false;
+
+    // 收集节点信息
+    var clipboard = [];
+    var minX = Infinity, minY = Infinity;
+    nodeIds.forEach(function (nid) {
+      var dfNode;
+      try { dfNode = self._editor.getNodeFromId(nid); } catch (e) { return; }
+      if (!dfNode) return;
+      if (dfNode.pos_x < minX) minX = dfNode.pos_x;
+      if (dfNode.pos_y < minY) minY = dfNode.pos_y;
+      var blockId = self._nodeBlockMap[nid];
+      var data = deepClone(self._nodeDataMap[nid] || dfNode.data || {});
+      clipboard.push({
+        blockId: blockId,
+        data: data,
+        pos_x: dfNode.pos_x,
+        pos_y: dfNode.pos_y
+      });
+    });
+
+    // 归一化坐标（相对左上角）
+    clipboard.forEach(function (item) {
+      item.rel_x = item.pos_x - minX;
+      item.rel_y = item.pos_y - minY;
+    });
+
+    // 存入 localStorage（跨页可用）
+    try {
+      localStorage.setItem(CLIPBOARD_LS_KEY, JSON.stringify({ items: clipboard, pasteCount: 0 }));
+    } catch (e) {}
+    this._clipboard = clipboard;
+    this._pasteCount = 0;
+    return true;
+  };
+
+  /**
+   * 粘贴剪贴板中的节点（优先从 localStorage 读取，支持跨页）
+   */
+  CanvasEngine.prototype.pasteClipboard = function () {
+    // 从 localStorage 恢复（跨页场景）
+    if (!this._clipboard || this._clipboard.length === 0) {
+      try {
+        var stored = JSON.parse(localStorage.getItem(CLIPBOARD_LS_KEY));
+        if (stored && stored.items && stored.items.length > 0) {
+          this._clipboard = stored.items;
+          this._pasteCount = stored.pasteCount || 0;
+        }
+      } catch (e) {}
+    }
+    if (!this._clipboard || this._clipboard.length === 0) return false;
+    if (this._mode !== 'config') return false;
+
+    this._pasteCount = (this._pasteCount || 0) + 1;
+    var offset = this._pasteCount * 40;
+    var self = this;
+    var newIds = [];
+
+    this._clipboard.forEach(function (item) {
+      var blockDef = self._blockDefs[item.blockId];
+      if (!blockDef) return;
+
+      // 克隆数据，清除内部映射字段
+      var data = deepClone(item.data);
+      delete data._blockId;
+      delete data._blockName;
+      // 保留 tag 等用户数据，但对 IO 信号块追加 _copy 后缀避免重名
+      if (data.tag && (item.blockId === 'output' || item.blockId === 'ref_out')) {
+        data.tag = data.tag + '_copy';
+      }
+      data.name = item.data._blockName || item.data.name || blockDef.name;
+
+      var x = item.pos_x + offset;
+      var y = item.pos_y + offset;
+      var nid = self.addBlock(blockDef, x, y, data);
+      if (nid) newIds.push(nid);
+    });
+
+    // 更新 localStorage 中的 pasteCount
+    try {
+      localStorage.setItem(CLIPBOARD_LS_KEY, JSON.stringify({ items: this._clipboard, pasteCount: this._pasteCount }));
+    } catch (e) {}
+
+    // 选中新粘贴的节点
+    if (newIds.length > 0) {
+      this.clearSelection();
+      this._selectedNodes = newIds;
+      newIds.forEach(function (nid) {
+        var el = self._container.querySelector('#node-' + nid);
+        if (el) el.classList.add('ce-selected');
+      });
+    }
+
+    return true;
   };
 
 

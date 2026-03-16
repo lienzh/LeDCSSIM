@@ -155,9 +155,10 @@
   display: block;
 }
 
-/* 输入/输出端口 */
+/* 输入/输出端口容器 — Drawflow 默认 width:0，作为边框锚点 */
 .drawflow .drawflow-node .inputs,
 .drawflow .drawflow-node .outputs {
+  width: 0;
   position: absolute;
   top: 0;
   height: 100%;
@@ -168,34 +169,62 @@
 }
 
 .drawflow .drawflow-node .inputs {
-  left: -5px;
+  left: 0;
 }
 
 .drawflow .drawflow-node .outputs {
-  right: -1px;
+  right: 0;
 }
 
-/* 端口 — 圆心骑在边框上，清除 Drawflow 默认偏移 */
+/* 端口 — 20px 透明点击区，视觉 7px 圆点骑在边框上
+   容器 width:0 锚在边框上，端口用 left/right 偏移使中心对齐边框
+   input: 中心在容器(左边框)位置 → left: -10px
+   output: 中心在容器(右边框)位置 → right 重置，用 left: -10px */
 .drawflow .drawflow-node .input,
 .drawflow .drawflow-node .output {
-  width: 6px;
-  height: 6px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   border: none;
   cursor: crosshair;
   pointer-events: all;
   position: relative;
-  background: #1e293b;
-  left: 0;
-  right: 0;
+  background: transparent;
   top: 0;
-  margin: 0;
+  margin: -6px 0;
   z-index: 1;
 }
 
-.drawflow .drawflow-node .input:hover,
-.drawflow .drawflow-node .output:hover {
+.drawflow .drawflow-node .input {
+  left: -10px;
+}
+
+.drawflow .drawflow-node .output {
+  right: auto;
+  left: -10px;
+}
+
+/* 视觉小圆点居中于 20px 区域中心 = 边框位置 */
+.drawflow .drawflow-node .input::after,
+.drawflow .drawflow-node .output::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: #1e293b;
+  pointer-events: none;
+}
+
+.drawflow .drawflow-node .input:hover::after,
+.drawflow .drawflow-node .output:hover::after {
   background: #000;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
 }
 
 /* 含完整 SAMA 布局的功能块：端口偏移到标题栏下方 */
@@ -366,23 +395,24 @@
 .sama-io-block {
   display: flex;
   align-items: center;
-  gap: 1px;
-  padding: 1px 3px;
+  gap: 2px;
+  padding: 3px 6px;
+  min-height: 18px;
   white-space: nowrap;
 }
 
 .sama-arrow {
-  font-size: 6px;
+  font-size: 8px;
   color: #a3a3a3;
   line-height: 1;
 }
 
 .sama-tag {
-  font-size: 7px;
+  font-size: 9px;
   font-weight: 500;
   color: #1c1917;
-  line-height: 1;
-  max-width: 60px;
+  line-height: 1.2;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -390,6 +420,30 @@
 /* 引入/引出点虚线边框 */
 .drawflow .drawflow-node:has(.sama-ref) {
   border-style: dashed;
+}
+
+/* 文本注释块 — 无边框，纯文本 */
+.drawflow .drawflow-node:has(.sama-comment) {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+.drawflow .drawflow-node:has(.sama-comment):hover {
+  border: none;
+}
+.drawflow .drawflow-node:has(.sama-comment).selected {
+  border: 1px dashed #dc2626;
+}
+
+.sama-comment {
+  padding: 2px 4px;
+}
+
+.sama-comment-text {
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 300px;
 }
 
 /* 引出点选择列表项 */

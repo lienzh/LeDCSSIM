@@ -57,6 +57,17 @@ OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型
 
 **图执行引擎**：GraphRunner 解析 Drawflow 画布 JSON → 拓扑排序 → 按步执行每个功能块
 
+**画布操作**：
+- 复制粘贴：Ctrl+C/V，支持单选和 Shift 框选多选，剪贴板存 localStorage 支持跨页粘贴
+- 方向键微调：选中节点后方向键移动 5px，Shift+方向键 1px 精调
+- 拖放定位：从面板拖入画布时坐标已校正缩放和平移，落点精确
+- 页面切换自动保存：离开画布页面时自动保存，不弹确认框
+
+**反馈环路处理**：
+- 有状态块（积分器、PID、惯性、DELAY 等）天然打断环路，用上一步值，无需干预
+- 纯代数环（全是加减乘除等无状态块）：引擎警告并建议插入 DELAY（一拍延迟）功能块
+- DELAY 块：1 输入 1 输出，每步输出上一步的输入值，等效延迟一个仿真周期
+
 **页面管理**：IL/IB 层支持多页面，通过 `_manifest.json` 管理页面清单。
 - 统一画布模板 `canvas.html`，IL/IB 功能完全一致
 - 侧边栏树形展开，可新建/重命名/删除页面
@@ -91,7 +102,7 @@ OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型
   - `select.py`: HighSelect、LowSelect、Switch（二选一）
   - `function.py`: LinearInterp（折线插值）、Polynomial（多项式）
 - **src/sim_engine/** — 仿真循环引擎（已完成）
-  - `graph_runner.py`: 图执行引擎。解析 Drawflow JSON → 拓扑排序 → 逐步执行功能块。支持多页加载（`load()` 接受 list）
+  - `graph_runner.py`: 图执行引擎。解析 Drawflow JSON → 拓扑排序 → 逐步执行功能块。支持多页加载、反馈环路检测与处理
   - `engine.py`: 固定步长循环，驱动 GraphRunner，在线/离线双模式
   - `model.py`: SimModel 基类（保留，供硬编码模型使用）
   - `recorder.py`: 数据记录器，CSV 导出 + pandas
@@ -100,7 +111,7 @@ OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型
   - `app.py`: Flask 应用，页面管理 + 仿真 API + OPC API
   - `templates/canvas.html`: IL/IB 统一画布模板
   - `templates/base.html`: 侧边栏树形页面导航
-  - `static/js/canvas-engine.js`: Drawflow 增强引擎，含跨页 ref 选择器
+  - `static/js/canvas-engine.js`: Drawflow 增强引擎，含跨页 ref 选择器、复制粘贴、方向键微调
   - 端口 5001，启动命令 `py -3.12 -m src.web.app`
 - **src/test_framework/** — 自动化测试（待开发）
 - **tools/** — 辅助脚本（待开发）
@@ -187,6 +198,12 @@ await client.write_ai_channel("ns=0;s=DPU3013.HW.AI010605", 600.0)
 - 统一接口：`output = block.calc(input, dt)`
 - `reset(value)` 用于初始化工况
 - 每个块独立无状态依赖，可自由组合
+
+### 特殊功能块（UI 专用，无 Python Block 实例）
+
+- **comment**（文本注释）：0 输入 0 输出，纯标注用途，支持自定义字号和颜色，不参与仿真计算
+- **DELAY**（一拍延迟）：1 输入 1 输出，输出延迟一个仿真周期，用于打断纯代数环路
+- **constant / CON**（常数）：0 输入 1 输出，输出固定值
 
 ## DCS 环境关键约束
 

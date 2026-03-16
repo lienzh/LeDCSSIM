@@ -133,11 +133,32 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 快捷键
   document.addEventListener('keydown', (e) => {
+    // 忽略输入框中的按键
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
     if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveModel(); }
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); engine.undo(); updateDirtyIndicator(); }
     if (e.ctrlKey && e.key === 'y') { e.preventDefault(); engine.redo(); updateDirtyIndicator(); }
-    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) { e.preventDefault(); LogicChecker.runCheck(engine); }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) { e.preventDefault(); LogicChecker.runCheck(engine); return; }
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      engine.copySelected() && showToast('已复制', 'info');
+    }
+    if (e.ctrlKey && e.key === 'v' && !simRunning) {
+      e.preventDefault();
+      engine.pasteClipboard() && showToast('已粘贴', 'info');
+      updateDirtyIndicator();
+    }
     if (e.key === 'Delete' && !simRunning) { engine.removeSelected(); }
+    // 方向键微调节点位置：默认 5px，Shift 按 1px 精调
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key) && !simRunning) {
+      const step = e.shiftKey ? 1 : 5;
+      const map = { ArrowUp: [0,-step], ArrowDown: [0,step], ArrowLeft: [-step,0], ArrowRight: [step,0] };
+      if (engine.moveSelected(map[e.key][0], map[e.key][1])) {
+        e.preventDefault();
+        updateDirtyIndicator();
+      }
+    }
   });
 
   // 拖放
@@ -145,18 +166,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   canvas.addEventListener('drop', handleDrop);
   canvas.addEventListener('dragover', e => e.preventDefault());
 
-  // 离开页面前检测未保存修改
-  window.addEventListener('beforeunload', (e) => {
+  // 离开页面前自动保存
+  window.addEventListener('beforeunload', () => {
     if (engine && engine.isDirty()) {
-      e.preventDefault();
-      e.returnValue = '';
+      // 同步发送保存请求（beforeunload 中不能用 async）
+      const data = JSON.stringify({ name: PAGE_ID, drawflow: engine.exportJSON(), layer: PAGE_LAYER });
+      navigator.sendBeacon('/api/model/save', new Blob([data], { type: 'application/json' }));
     }
   });
 
-  // 覆写全局导航守卫：离开前提示保存
+  // 覆写全局导航守卫：自动保存，不弹框
   window.beforeNavigate = async function() {
-    if (!engine || !engine.isDirty()) return true;
-    if (confirm('当前画布有未保存的修改，是否保存后再离开？\n\n点击"确定"保存并跳转，点击"取消"放弃修改并跳转。')) {
+    if (engine && engine.isDirty()) {
       await saveModel();
     }
     return true;
@@ -240,8 +261,15 @@ function handleDrop(ev) {
   if (simRunning) return;
   const blockId = ev.dataTransfer.getData('blockId');
   if (!blockId) return;
+
+  // 屏幕坐标 → 画布逻辑坐标（考虑缩放和平移）
+  const editor = engine.getEditor();
   const rect = document.getElementById('drawflow').getBoundingClientRect();
-  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+  const zoom = editor.zoom || 1;
+  const canvasX = editor.canvas_x || 0;
+  const canvasY = editor.canvas_y || 0;
+  const x = (ev.clientX - rect.left - canvasX) / zoom;
+  const y = (ev.clientY - rect.top - canvasY) / zoom;
 
   if (blockId === 'input' || blockId === 'output') {
     pendingDrop = { blockId, x, y };

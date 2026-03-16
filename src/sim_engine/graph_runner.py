@@ -385,15 +385,41 @@ class GraphRunner:
                     node.input_connections = [(ref_outs[tag].id, 0)]
                     logger.debug(f"ref 链接: {tag} ({ref_outs[tag].id} → {node.id})")
 
+    # ── 有状态块判定 ─────────────────────────────────────
+
+    # 有内部记忆（依赖上一步 _output）的块类型
+    # 这些块天然打断反馈环：本步输出由上一步状态决定，不依赖当前步输入的即时收敛
+    _STATEFUL_TYPES = {
+        # 一拍延迟（专用环路打断块）
+        "DELAY",
+        # 动态环节
+        "FLT", "Inertia", "I", "Integrator", "LDL", "LeadLag", "SO", "SecondOrder",
+        "RL", "RateLimiter",
+        # 控制器（含积分器）
+        "PI", "PID", "PD",
+        # 逻辑锁存
+        "SR", "RS", "FFR", "FFS",
+        # 定时计数
+        "TON", "TOFF", "TP", "CTR", "TB", "TBD", "TD", "THF", "TW", "TWF", "TWO", "RT",
+        # 采样保持 / 斜坡
+        "SH", "RAMP", "GRAD",
+    }
+
+    def _is_stateful(self, node: "GraphNode") -> bool:
+        """判断节点是否有状态（天然打断环路）"""
+        return node.block_type in self._STATEFUL_TYPES
+
     # ── 拓扑排序 ──────────────────────────────────────────
 
     def _topological_sort(self) -> List[str]:
         """
         对图进行拓扑排序，确定执行顺序。
-        支持反馈环路：有状态块（Integrator 等）天然打断代数环，
-        环路中的节点追加到排序末尾，使用上一步的 output_value。
+
+        反馈环路处理策略：
+        1. 含有状态块（含 DELAY）的环路：有状态块天然打断，用上一步值，单遍执行
+        2. 纯代数环：警告用户插入 DELAY 块，仍按末尾追加执行（用上一步旧值）
         """
-        # 计算入度 + 利用 downstream 索引实现 O(V+E)
+        # 计算入度
         in_degree = {nid: 0 for nid in self._nodes}
         for nid, node in self._nodes.items():
             for conn in node.input_connections:
@@ -414,21 +440,76 @@ class GraphRunner:
                     queue.append(target_id)
 
         if len(sorted_ids) != len(self._nodes):
-            # 环路中的节点：优先放置有状态块（它们能打断代数环）
             remaining = [nid for nid in self._nodes if nid not in sorted_ids]
-            # 有状态块（Integrator/Inertia 等）排在环路前面
-            stateful = [nid for nid in remaining
-                        if self._nodes[nid].block is not None]
-            stateless = [nid for nid in remaining
-                         if self._nodes[nid].block is None]
-            remaining_sorted = stateful + stateless
-            logger.info(f"图中存在反馈环路（{len(remaining)} 个节点），"
-                        f"有状态块自动打断代数环")
-            sorted_ids.extend(remaining_sorted)
+
+            # 有状态块排前（提供上一步值），无状态块排后
+            stateful = [nid for nid in remaining if self._is_stateful(self._nodes[nid])]
+            stateless = [nid for nid in remaining if not self._is_stateful(self._nodes[nid])]
+
+            if stateful:
+                logger.info(f"反馈环路（{len(remaining)} 节点），"
+                            f"有状态块（{len(stateful)}）自动打断")
+            else:
+                # 纯代数环：警告
+                types = [self._nodes[nid].block_type for nid in remaining]
+                logger.warning(
+                    f"检测到纯代数环（{len(remaining)} 节点: {types}），"
+                    f"无有状态块打断，将使用上一步旧值。"
+                    f"建议在环路中插入 DELAY（一拍延迟）功能块。")
+
+            sorted_ids.extend(stateful + stateless)
 
         return sorted_ids
 
     # ── 执行 ──────────────────────────────────────────────
+
+    def _exec_node(self, node: "GraphNode", io_values: Dict[str, float],
+                   dt: float, outputs: Dict[str, float]):
+        """执行单个节点的计算"""
+        if node.block_type == "input":
+            tag = node.tag
+            node.output_value = io_values.get(tag, node.params.get("default", 0.0))
+
+        elif node.block_type == "output":
+            tag = node.tag
+            input_val = self._get_input_value(node, 0)
+            node.output_value = input_val
+            if tag:
+                outputs[tag] = input_val
+
+        elif node.block_type == "ref_out":
+            tag = node.tag
+            input_val = self._get_input_value(node, 0)
+            node.output_value = input_val
+            if tag:
+                self._ref_values[tag] = input_val
+
+        elif node.block_type == "ref_in":
+            tag = node.tag
+            node.output_value = self._ref_values.get(tag, 0.0)
+
+        elif node.block_type == "_relay":
+            node.output_value = self._get_input_value(node, 0)
+
+        elif node.block_type == "DELAY":
+            # 一拍延迟：输出上一步保存的值，再存入当前输入
+            input_val = self._get_input_value(node, 0)
+            init_val = float(node.params.get("init", 0.0))
+            node.output_value = node.params.get("_prev", init_val)
+            node.params["_prev"] = input_val
+
+        elif node.block_type == "comment":
+            pass
+
+        elif node.block_type in ("constant", "CON"):
+            node.output_value = float(node.params.get("value", 0.0))
+
+        elif node.block is not None:
+            input_val = self._get_input_value(node, 0)
+            node.output_value = node.block.calc(input_val, dt)
+
+        else:
+            node.output_value = self._inline_calc(node, dt)
 
     def step(self, io_values: Dict[str, float], dt: float) -> Dict[str, float]:
         """
@@ -444,49 +525,7 @@ class GraphRunner:
         outputs = {}
 
         for nid in self._sorted_ids:
-            node = self._nodes[nid]
-
-            if node.block_type == "input":
-                # 输入端子：从 io_values 取值（兼容 name 字段）
-                tag = node.tag
-                node.output_value = io_values.get(tag, node.params.get("default", 0.0))
-
-            elif node.block_type == "output":
-                # 输出端子：收集输入值作为最终输出（兼容 name 字段）
-                tag = node.tag
-                input_val = self._get_input_value(node, 0)
-                node.output_value = input_val
-                if tag:
-                    outputs[tag] = input_val
-
-            elif node.block_type == "ref_out":
-                # 引出点：接收输入值，记录到 ref 字典供引入点使用
-                tag = node.tag
-                input_val = self._get_input_value(node, 0)
-                node.output_value = input_val
-                if tag:
-                    self._ref_values[tag] = input_val
-
-            elif node.block_type == "ref_in":
-                # 引入点：从 ref 字典中按 tag 取值
-                tag = node.tag
-                node.output_value = self._ref_values.get(tag, 0.0)
-
-            elif node.block_type == "_relay":
-                # 中继节点（IL-IB 对接产生）
-                node.output_value = self._get_input_value(node, 0)
-
-            elif node.block_type in ("constant", "CON"):
-                node.output_value = float(node.params.get("value", 0.0))
-
-            elif node.block is not None:
-                # 有对应 Python Block 的功能块
-                input_val = self._get_input_value(node, 0)
-                node.output_value = node.block.calc(input_val, dt)
-
-            else:
-                # 无 Block 实例，用内联计算
-                node.output_value = self._inline_calc(node, dt)
+            self._exec_node(self._nodes[nid], io_values, dt, outputs)
 
         self._latest_outputs = outputs
         return outputs
