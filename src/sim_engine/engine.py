@@ -11,6 +11,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from .recorder import DataRecorder
@@ -29,14 +30,16 @@ class SimEngine:
     - 过程数据记录
     """
 
-    def __init__(self, graph_runner, step_size: float = 0.2):
+    def __init__(self, graph_runner, step_size: float = 0.2, pairing_runner=None):
         """
         Args:
             graph_runner: GraphRunner 实例（已 load 完成的可执行图）
             step_size: 仿真步长, 秒（默认 200ms）
+            pairing_runner: PairingRunner 实例（声明式 IL 配对，可选）
         """
         self.graph = graph_runner
         self.step_size = step_size
+        self._pairing = pairing_runner  # 声明式 IL 运行器（简单赋值配对，可选）
 
         self.recorder = DataRecorder(max_rows=10000)
 
@@ -47,6 +50,11 @@ class SimEngine:
         # 在线模式的 OPC 相关
         self._opc_client = None
         self._mapping = None
+
+        # 源时间戳校验：记录每个信号上次的源时间戳
+        self._last_source_ts: Dict[str, datetime] = {}
+        self._stale_warn_count = 0  # 累计陈旧数据警告次数
+        self._stale_threshold = 5.0  # 源时间戳超过此秒数未更新则警告
 
     # ── 公共接口 ──────────────────────────────────────────
 
@@ -141,12 +149,16 @@ class SimEngine:
         while self._running and self._sim_time < duration:
             t_wall = time.perf_counter()
 
-            # 图执行
-            outputs = self.graph.step(io_values, self.step_size)
+            # 图执行（复杂逻辑）
+            canvas_out = self.graph.step(io_values, self.step_size)
+            # 声明式配对（简单赋值）
+            pairing_out = (self._pairing.step(io_values, self.step_size)
+                           if self._pairing is not None else {})
+            outputs = {**pairing_out, **canvas_out}  # 同 tag 时画布优先
 
-            # 记录（所有节点值，含中间变量）
+            # 记录（画布全节点值 + 配对反馈）
             all_values = self.graph.get_all_node_values()
-            self.recorder.record(self._sim_time, all_values)
+            self.recorder.record(self._sim_time, {**pairing_out, **all_values})
 
             # 步进
             self._sim_time += self.step_size
@@ -200,13 +212,15 @@ class SimEngine:
         self._step_count = 0
         self.recorder.clear()
         self.graph.reset()
+        if self._pairing is not None:
+            self._pairing.reset()
 
         # 用初始输入执行一步以建立稳态
         if initial_inputs:
             self.graph.step(initial_inputs, self.step_size)
 
     async def _read_opc_inputs(self) -> Dict[str, float]:
-        """从 OPC 批量读取图的输入信号"""
+        """从 OPC 批量读取图的输入信号（含源时间戳校验）"""
         result = {}
         if not self._mapping:
             return result
@@ -221,11 +235,43 @@ class SimEngine:
                 names.append(tag)
                 nodes.append(sig.pv_node)
 
-        if nodes:
-            values = await self._opc_client.read_values(nodes)
-            for i, name in enumerate(names):
-                val = values[i]
-                result[name] = float(val) if val is not None else 0.0
+        if not nodes:
+            return result
+
+        # 批量读取完整 DataValue（含源时间戳）
+        raw = await asyncio.gather(
+            *[self._opc_client.read_data_value(nid) for nid in nodes],
+            return_exceptions=True)
+
+        now = datetime.now(timezone.utc)
+        for i, name in enumerate(names):
+            dv = raw[i]
+            if isinstance(dv, Exception):
+                logger.warning(f"读取失败 [{name}]: {dv}")
+                result[name] = 0.0
+                continue
+
+            val = dv.Value.Value
+            result[name] = float(val) if val is not None else 0.0
+
+            # 源时间戳校验：检测 NTVDPU 是否更新了值
+            src_ts = dv.SourceTimestamp
+            if src_ts is not None:
+                prev_ts = self._last_source_ts.get(name)
+                self._last_source_ts[name] = src_ts
+
+                # 首次读取跳过比较
+                if prev_ts is not None and src_ts == prev_ts:
+                    age = (now - src_ts).total_seconds()
+                    if age > self._stale_threshold:
+                        self._stale_warn_count += 1
+                        # 限制日志频率：前 5 次每次都报，之后每 50 次报一次
+                        if (self._stale_warn_count <= 5 or
+                                self._stale_warn_count % 50 == 0):
+                            logger.warning(
+                                f"信号 '{name}' 源时间戳未更新 "
+                                f"({age:.1f}s)，NTVDPU 可能未处理写入 "
+                                f"(累计 {self._stale_warn_count} 次)")
 
         return result
 
