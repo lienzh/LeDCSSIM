@@ -1,0 +1,23 @@
+# MVP 实例化清单 - 阀门指令回写 + 一阶惯性流量模拟
+#
+# 离线场景: CON 提供固定阀门指令 50.0
+#   → DirectThrough 直接回写当作阀门反馈
+#   → FirstOrder(τ=5s) 模拟流量响应
+#
+# 在线场景(需扩展 tagmap.yaml): CON 替换为 OPC 读到的真实阀门指令值
+blocks:
+  - name: valve_cmd_src
+    type: CON
+    params:
+      value: 50.0           # 阀门指令(0-100%)
+
+  - name: valve_fb
+    type: DirectThrough
+    params:
+      T: 0.0                # 不加滞后 — 立即回写
+
+  - name: flow_model
+    type: FirstOrder
+    params:
+      K: 1.0                # 增益(阀门 100% 对应流量 100 t/h)
+      T: 5.0                # 时间常数 5s

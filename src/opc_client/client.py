@@ -106,6 +106,18 @@ class OPCClient:
         dv = await node.read_data_value(raise_on_bad_status=False)
         return dv.Value.Value
 
+    async def read_data_value(self, node_id: str) -> Any:
+        """
+        读取单个节点的完整 DataValue（含源时间戳和状态码）
+
+        Args:
+            node_id: 节点标识
+        Returns:
+            asyncua DataValue 对象（.Value.Value 为值，.SourceTimestamp 为源时间戳）
+        """
+        node = self._get_node(node_id)
+        return await node.read_data_value(raise_on_bad_status=False)
+
     async def read_values(self, node_ids: List[str]) -> List[Any]:
         """
         批量读取节点值
@@ -115,36 +127,51 @@ class OPCClient:
         Returns:
             值列表, 顺序与输入一致。读取失败的返回 None
         """
+        # 分批并发, 防压垮 NTVDPU
+        BATCH = 100
         results = []
-        tasks = [self.read_value(nid) for nid in node_ids]
-        for coro in asyncio.as_completed(tasks):
-            pass  # as_completed 不保序
-
-        # 用 gather 保序
-        raw = await asyncio.gather(*[self.read_value(nid) for nid in node_ids],
-                                   return_exceptions=True)
-        for i, val in enumerate(raw):
-            if isinstance(val, Exception):
-                logger.warning(f"读取失败 [{node_ids[i]}]: {val}")
-                results.append(None)
-            else:
-                results.append(val)
+        for i in range(0, len(node_ids), BATCH):
+            chunk = node_ids[i:i+BATCH]
+            raw = await asyncio.gather(*[self.read_value(nid) for nid in chunk],
+                                       return_exceptions=True)
+            for nid, val in zip(chunk, raw):
+                if isinstance(val, Exception):
+                    logger.warning(f"读取失败 [{nid}]: {val}")
+                    results.append(None)
+                else:
+                    results.append(val)
         return results
 
     async def write_value(self, node_id: str, value: Any,
                           variant_type: ua.VariantType = None):
         """
-        写入单个节点值
+        写入单个节点值(自动 VariantType 检测 + Python 值类型适配)
 
         Args:
             node_id: 节点标识
-            value: 要写入的值
+            value: 要写入的值(允许 float 写到 Boolean 节点等,自动转)
             variant_type: OPC UA 数据类型。为 None 时自动检测
         """
         node = self._get_node(node_id)
         if variant_type is None:
             dv = await node.read_data_value(raise_on_bad_status=False)
             variant_type = dv.Value.VariantType
+        # Python 值类型适配 NTVDPU 严格类型:
+        #   Boolean 节点 ← 数值 0/1: 转 True/False
+        #   Float/Double 节点 ← 整数 / bool: 转 float
+        #   整数节点 ← float: 转 int
+        if variant_type == ua.VariantType.Boolean and not isinstance(value, bool):
+            if isinstance(value, (int, float)):
+                value = bool(value)
+        elif variant_type in (ua.VariantType.Float, ua.VariantType.Double):
+            if isinstance(value, (bool, int)):
+                value = float(value)
+        elif variant_type in (ua.VariantType.SByte, ua.VariantType.Byte,
+                              ua.VariantType.Int16, ua.VariantType.UInt16,
+                              ua.VariantType.Int32, ua.VariantType.UInt32,
+                              ua.VariantType.Int64, ua.VariantType.UInt64):
+            if isinstance(value, (bool, float)):
+                value = int(value)
         await node.write_value(ua.DataValue(ua.Variant(value, variant_type)))
 
     async def write_values(self, values: Dict[str, Any],
@@ -159,48 +186,61 @@ class OPCClient:
         if variant_types is None:
             variant_types = {}
 
-        tasks = []
-        for node_id, value in values.items():
-            vt = variant_types.get(node_id)
-            tasks.append(self.write_value(node_id, value, vt))
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, (node_id, _) in enumerate(values.items()):
-            if isinstance(results[i], Exception):
-                logger.warning(f"写入失败 [{node_id}]: {results[i]}")
+        # 分批并发,避免一次性 gather 上千个并发请求压垮 NTVDPU
+        BATCH = 50
+        out: Dict[str, bool] = {}
+        node_list = list(values.keys())
+        for i in range(0, len(node_list), BATCH):
+            chunk = node_list[i:i+BATCH]
+            tasks = [self.write_value(nid, values[nid], variant_types.get(nid))
+                     for nid in chunk]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for nid, r in zip(chunk, results):
+                if isinstance(r, Exception):
+                    logger.warning(f"写入失败 [{nid}]: {r}")
+                    out[nid] = False
+                else:
+                    out[nid] = True
+        return out
 
     async def write_ai_channel(self, channel_base: str, target_value: float,
                                variant_type: ua.VariantType = None):
         """
-        通过 HR=LR=目标值 写入 AI 通道
+        写入 AI 通道 PV
 
-        AI 硬点 PV 不可直接写入，但可以通过设置 HR 和 LR 为相同值
-        使 PV 锁定在该值。
+        前置条件: NTVDPU 端 AI 通道已下装包含 HR/LR 行的点表
+        (HR/LR 节点的存在会触发 AI 通道切换为"外部驱动模式",信号发生器停,PV 直接可写)
 
         Args:
-            channel_base: AI 通道基础路径, 如 "ns=0;s=DPU3013.HW.AI010605"
+            channel_base: AI 通道基础路径, 如 "ns=0;s=DPU3013.HW.AI010502"
+                          (不含 .PV;函数内部自动补)
             target_value: 目标值
             variant_type: 数据类型, 为 None 时自动检测
         """
-        hr_id = f"{channel_base}.HR"
-        lr_id = f"{channel_base}.LR"
-        await asyncio.gather(
-            self.write_value(hr_id, target_value, variant_type),
-            self.write_value(lr_id, target_value, variant_type),
-        )
+        pv_id = f"{channel_base}.PV"
+        await self.write_value(pv_id, target_value, variant_type)
 
     async def write_ai_channels(self, channels: Dict[str, float],
-                                variant_type: ua.VariantType = None):
+                                variant_type: ua.VariantType = None) -> Dict[str, Optional[str]]:
         """
-        批量写入多个 AI 通道
+        批量写入多个 AI 通道(单个失败不影响其他)
 
         Args:
             channels: {通道基础路径: 目标值} 字典
+        Returns:
+            {channel_base: 错误信息 or None} — 成功的为 None
         """
-        tasks = []
-        for base, value in channels.items():
-            tasks.append(self.write_ai_channel(base, value, variant_type))
-        await asyncio.gather(*tasks)
+        bases = list(channels.keys())
+        tasks = [self.write_ai_channel(b, channels[b], variant_type) for b in bases]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        out: Dict[str, Optional[str]] = {}
+        for base, r in zip(bases, results):
+            if isinstance(r, Exception):
+                logger.warning(f"AI 通道写入失败 [{base}]: {r}")
+                out[base] = str(r)
+            else:
+                out[base] = None
+        return out
 
     async def browse_children(self, node_id: str) -> List[Tuple[str, str]]:
         """
@@ -217,4 +257,33 @@ class OPCClient:
         for child in children:
             name = await child.read_browse_name()
             result.append((name.Name, child.nodeid.to_string()))
+        return result
+
+    async def browse_hw_points(self, dpu_name: str) -> List[dict]:
+        """
+        浏览指定 DPU 的所有硬件点 (HW.* 下的 PV 节点)。
+
+        Args:
+            dpu_name: DPU 节点名, 如 "DPU3013"
+        Returns:
+            [{"name": "AI010605", "code": "AI", "node": "ns=0;s=DPU3013.HW.AI010605.PV"}, ...]
+        """
+        import re as _re
+        result = []
+        try:
+            hw_children = await self.browse_children(f"ns=0;s={dpu_name}.HW")
+        except Exception as e:
+            logger.warning(f"浏览 {dpu_name}.HW 失败: {e}")
+            return result
+        # hw_children: [("AI010605", "ns=0;s=DPU3013.HW.AI010605"), ...]
+        PT = _re.compile(r"^([A-Z]+)(\d+)$")
+        for name, _id in hw_children:
+            m = PT.match(name)
+            if not m:
+                continue
+            result.append({
+                "name": name,
+                "code": m.group(1),
+                "node": f"ns=0;s={dpu_name}.HW.{name}.PV",
+            })
         return result

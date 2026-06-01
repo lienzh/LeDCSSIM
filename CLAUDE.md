@@ -2,230 +2,326 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 开发原则（必须遵守）
+> **架构方向已变更(2026-05-30)**:项目从"Drawflow 画布 + JSON 序列化"路线**转向**"纯代码 Block + YAML 配置"路线。画布相关代码、UI、序列化产物**全部计划删除**,不再投入。详见第 2、6、7 节。
+>
+> **MVP 范围(当前阶段唯一目标)**:
+> 1. **阀门指令回写** — DCS 出阀门指令 → 读到 → 直接当反馈写回(echo)
+> 2. **流量模拟** — DCS 出阀门指令 → 过一阶惯性 → 当流量反馈写回
+>
+> **暂不做**(明确砍掉,不要主动设计/实现):故障注入、运行控制(暂停/单步/加速/回带)、工况快照(IC/snapshot)、scenarios 工况库、DAE 隐式求解器、多变量复杂耦合(用户自己写)、工程层组装(用户自己处理)、测试框架。
+>
+> **工程经验保护(架构再变也不要删)**:第 8 节(OPC 通讯方案)、第 9 节(DCS 硬约束)、第 10.1 节(OPC 通信规范)、第 4 节"过渡态命令"、第 1 节里"Web UI 端口 5001""地址归一化"这类条款,都是**踩坑得来的事务性经验**,不属于架构描述,**架构演进时不要删,只能补**。
+>
+> 详细目标架构、资产处置见 `CLAUDE-ref.md`(讨论稿,与本文一致;本文是权威)。
 
-1. **最小实现优先**：只实现用户明确要求的功能，不要添加未要求的 UI 控件、额外功能或"锦上添花"。如果觉得某功能有用但未被要求，记在注释里而不是实现它。
-2. **复杂功能先出方案**：涉及多文件修改或新架构时，先列出要改的文件、接口和数据流，用户确认后再写代码。
-3. **每步验证**：服务启动后必须 curl 确认端口可达；写完代码后验证基本功能；发现问题定位根因而不是盲试。
-4. **地址/路径归一化**：处理 OPC 地址、信号映射时，必须统一格式（去 `ns=0;s=`、`s=` 前缀和 DPU 名前缀，大写比较），防止重复和匹配失败。
-5. **Web UI 端口固定 5001**：`py -3.12 -m src.web.app` 默认端口 5001，不要用 5000。
+## 1. 开发原则(必须遵守)
 
-## 项目概述
+1. **最小实现优先**:只实现用户明确要求的功能,不要添加未要求的 UI 控件、额外功能或"锦上添花"。如果觉得某功能有用但未被要求,记在注释里而不是实现它。
+2. **复杂功能先出方案**:涉及多文件修改或新架构时,先列出要改的文件、接口和数据流,用户确认后再写代码。
+3. **每步验证**:写完代码后验证基本功能(跑 CLI、对比输出);服务/进程启动后必须确认可达;发现问题定位根因而不是盲试。
+4. **地址/路径归一化**:处理 OPC 地址、信号映射时,必须统一格式(去 `ns=0;s=`、`s=` 前缀和 DPU 名前缀,大写比较),防止重复和匹配失败。
+5. **配置驱动**:实例、参数、连接、点映射全部进 YAML,不写死在代码里。
+6. **Web UI 端口固定 5001**(过渡期事务性约束):画布回归对比期间,`py -3.12 -m src.web.app` 默认端口 5001,不要用 5000(5000 在某些 Windows/Hyper-V 环境被系统占用)。
+7. **YAGNI**:不为"未来可能换协议/换厂家/做工况库/加运行控制/故障注入"等假想需求预留抽象;真到那天再加。
 
-DCS协调控制（CCS）逻辑仿真验证平台。Python仿真模型通过OPC UA与科远NT6000虚拟控制器（NTVDPU）闭环通信，自动化验证控制逻辑的可靠性。
+## 2. 项目概述
 
-**闭环流程**：模型算出工艺参数 → OPC UA写入NTVDPU → 控制逻辑产生控制指令 → OPC UA读回 → 模型算下一步 → 循环
+DCS 协调控制(CCS)逻辑仿真验证平台。Python 仿真模型通过 OPC UA 与科远 NT6000 虚拟控制器(NTVDPU)闭环通信,自动化验证控制逻辑的可靠性。
 
-详细项目规划和阶段计划见 `PROJECT_PLAN.md`。
+**闭环流程**:模型算出工艺参数 → OPC UA 写入 NTVDPU → 控制逻辑产生控制指令 → OPC UA 读回 → 模型算下一步 → 循环。
 
-## 环境
+**核心设计诉求**:
+1. **可移植** — 换 DCS 厂家或换项目时,只重做适配层 + tagmap,模型库与引擎不动。
+2. **不重复造轮子** — 沿用 Block-Signal-Engine 范式;**不自研图形组态编辑器**(画布路线已否决,见第 6 节)。
 
-- **Python**: 3.12（3.14 不兼容 asyncua，不要使用）
-- **启动命令**: 使用 `py -3.12` 运行所有 Python 脚本
-- **依赖**: `pip install asyncua pyyaml matplotlib pandas flask`
-- **OPC UA Server**: `opc.tcp://localhost:9440`（科远 NTVDPU，端口 9440）
-- **DPU 节点**: `DPU3013`
+## 3. 环境
 
-## 常用命令
+- **Python**:3.12(3.14 不兼容 `asyncua`,严禁使用)
+- **启动命令**:统一用 `py -3.12`
+- **依赖**:`pip install asyncua pyyaml pandas`
+  - 旧依赖 `flask`、`matplotlib` 随画布层一起弃用,不要在新代码中引入
+- **OPC UA Server**:`opc.tcp://localhost:9440`(NTVDPU)
+- **DPU 节点**:`DPU3013`
 
+## 4. 常用命令
+
+**目标态(MVP 完成后)**:
 ```bash
-# 启动 Web 界面 (端口 5001)
+# 离线运行(纯本地,不连 OPC,看模型自洽)
+py -3.12 -m src.cli run --duration 60
+
+# 在线运行(连 NTVDPU 闭环)
+py -3.12 -m src.cli run --online --duration 60
+```
+
+**配套工具**:
+```bash
+# Web 仪表板 + DSL 脚本编辑器 (端口 5002)
+#   - /script 页面: DSL 赋值脚本编辑 + OPC 实时桥接(MVP 主入口)
+#   - 已实现: @ 自动补全 / 中间变量 $xxx / 14 个算法块(RS LAG LIMIT 等) /
+#            自动备份链 / 行号 / 语法高亮 / 帮助 F1
+py -3.12 -m src.viewer
+
+# 从 YQ3SIM-IO/*.csv 自动勾选 OPC 通讯(按 KKS 配对规则,改前自动备份)
+py -3.12 -m tools.mark_opc_communication
+
+# 从配对结果生成 ref 架构 yaml (models.generated.yaml 等)
+py -3.12 -m tools.generate_yaml_from_pairs
+```
+
+**点表目录约定** (viewer 自动扫描):
+- 简化版主点表:`YQ3SIM-IO/SIMPLE/简化/<dpu>_S.csv` (优先)
+- 老路径回退:`YQ3SIM-IO/DPU<num>.csv`
+- 文件名后缀 `_S`/`-S` 自动剥离为 DPU 名(如 `3013_S` → `DPU3013`)
+
+**DSL 脚本语法概要** (完整说明按 F1 弹帮助):
+```
+DPU3013.AI010502 = DPU3013.AQ010101           # OPC 直通
+DPU3013.AI010502 = 50.0                        # 写常数
+DPU3013.DI = RS(DPU3013.DQ开, DPU3013.DQ关)    # SR 锁存
+$tmp = MUL(DPU3013.AQ_tph, 0.2778)             # 中间变量 ($ 前缀, 不读写 OPC)
+DPU3013.AI = LIMIT($tmp, 0, 100)               # 引用中间变量
+DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
+```
+函数库:`RS/RS_NOT/NOT/AND/OR/ADD/SUB/MUL/DIV/MAX/MIN/LIMIT/SEL/LAG`
+
+**当前过渡态(画布代码尚未删除,仅用于回归对比)**:
+```bash
+# 旧画布 Web,即将弃用 — 不要再加功能(默认端口 5001)
 py -3.12 -m src.web.app
 
-# 命令行运行仿真
+# 旧引擎 CLI,新 src.cli 跑通前可继续用作回归基线
 py -3.12 -m src.sim_engine offline --duration 60
 py -3.12 -m src.sim_engine online --duration 60
-
-# 执行测试用例（待开发）
-py -3.12 -m src.test_framework.runner test_cases/
 ```
 
-## 核心架构
+## 5. 目标架构(4 层)
 
 ```
-OPC UA (NTVDPU) ←→ IO层(硬点) ←→ IL层(预处理) ←→ IB层(模型逻辑)
+配置层(Config, 数据驱动)
+  models.yaml       — 实例化哪些块、各自参数
+  connections.yaml  — 块间信号连接
+  tagmap.yaml       — 仿真变量 ↔ OPC 节点 + 量程/单位换算
+  sim_settings.yaml — 步长、OPC 连接参数、记录器配置
+        │
+        ▼
+引擎层(Engine)
+  - 加载配置 → 实例化 Block → 拓扑排序
+  - 固定周期主循环:批量读 OPC → step 所有块 → 批量写 OPC
+  - 数据写 CSV(Recorder 是 engine 内的小模块,不独立成层)
+        │
+   ┌────┴────┐
+   ▼         ▼
+模型库(Lib) 适配层(Adapter)
+原子模型类   封装 asyncua;对上暴露与协议无关的批量读写接口
 ```
 
-**组态分层**（H5000M 规范）：
-- **IO**：OPC 硬件信号的直接映射（AI/DI 通道）
-- **IL**：信号预处理/后处理桥梁层。输入方向：多个 IO 硬点 → 三取中/滤波 → 抽象模型量；输出方向：模型输出 → 处理 → 写回 IO
-- **IB**：模型本体，用户用功能块在画布上组态搭建
+**可移植性来源**:适配层 + tagmap。**复用性来源**:模型库。
 
-**在线 vs 离线**：画布逻辑（IL+IB）相同，区别仅在于 IO 层是否连接 OPC。
-- 在线：OPC 读输入 → 图执行 → OPC 写输出
-- 离线：用户设定值 → 图执行 → 记录数据
+**仿真逻辑分两类**(对应 MVP 两个目标):
+1. **直通(DirectThrough)**:阀门指令读到 → 直接当反馈写回。对应 Block:`DirectThrough`。
+2. **建模(FirstOrder)**:阀门指令 → 一阶惯性 → 当流量反馈写回。对应 Block:`FirstOrder`。
 
-**图执行引擎**：GraphRunner 解析 Drawflow 画布 JSON → 拓扑排序 → 按步执行每个功能块
+新增第三种(PID/限幅/选择)只是再加一个 Block 类,引擎和配置不改。
 
-**画布操作**：
-- 复制粘贴：Ctrl+C/V，支持单选和 Shift 框选多选，剪贴板存 localStorage 支持跨页粘贴
-- 方向键微调：选中节点后方向键移动 5px，Shift+方向键 1px 精调
-- 拖放定位：从面板拖入画布时坐标已校正缩放和平移，落点精确
-- 页面切换自动保存：离开画布页面时自动保存，不弹确认框
+### 5.1 目录结构(目标态)
 
-**反馈环路处理**：
-- 有状态块（积分器、PID、惯性、DELAY 等）天然打断环路，用上一步值，无需干预
-- 纯代数环（全是加减乘除等无状态块）：引擎警告并建议插入 DELAY（一拍延迟）功能块
-- DELAY 块：1 输入 1 输出，每步输出上一步的输入值，等效延迟一个仿真周期
+```
+src/
+  adapter/          # 协议适配层
+    base.py         # 协议无关接口(read_batch / write_batch)
+    opc_ua.py       # asyncua 实现(由 src/opc_client/client.py 迁移)
+  models/           # 原子模型库(由 src/blocks/ 迁移并改接口)
+    base.py         # Block 基类:step(inputs, dt) -> dict / reset(state=None)
+    basic.py        # MVP 必需:DirectThrough, FirstOrder。后续按需加 PID/Limiter/选择等
+  engine/           # 仿真引擎
+    runner.py       # 加载 YAML → 实例化 → 拓扑 → 主循环(读-算-写三段)
+    tagmap.py       # 加载 tagmap.yaml + 物理量/工程量换算(MVP 阶段就一个薄文件)
+    recorder.py     # 数据记录器 → CSV(沿用 src/sim_engine/recorder.py)
+  cli/
+    main.py         # `py -3.12 -m src.cli run [--online] --duration N`
+  viewer/           # 只读 Web 仪表板(端口 5002)
+    app.py          # Flask 单页 — 展示 blocks/connections/tagmap + 最新 CSV
+    __main__.py     # `py -3.12 -m src.viewer` 启动
 
-**页面管理**：IL/IB 层支持多页面，通过 `_manifest.json` 管理页面清单。
-- 统一画布模板 `canvas.html`，IL/IB 功能完全一致
-- 侧边栏树形展开，可新建/重命名/删除页面
-- 跨页变量：`ref_out`(A页) → `ref_in`(B页) 通过 tag 名匹配，支持跳转
-- 多页仿真：Run 页面可多选 IB/IL 页面组合运行
+tools/              # 工程辅助脚本(独立可跑,与核心代码解耦)
+  mark_opc_communication.py    # YQ3SIM-IO/*.csv 批量勾选 OPC 通讯
+  generate_yaml_from_pairs.py  # 配对结果 → ref 架构 yaml
+                    # 后续按需加: OPC 节点批量扫描、AI 通道开通辅助、变量名归一化检查
 
-**变量管理**：统一管理所有仿真变量（IO 通讯点 + 画布计算变量）
-- 变量来源：画布 JSON（output/ref_out/input 节点的 tag）+ `opc_mapping.yaml`（通讯信号）
-- 一键同步：`POST /api/variables/sync`，扫描画布和 OPC 映射自动导入，不需要仿真运行
-- 变量类型：按 OPC 映射的 `direction` 判断（input→AI，output→AO），纯画布变量→CALC
-- 来源页：仅 CALC 类型显示，取变量定义节点（output/ref_out/input）所在页面，非引用（ref_in）页面
-- 纯数字 ID 过滤：`get_all_node_values()` 和同步逻辑均跳过无 tag 的中间节点
+config/
+  models.yaml  connections.yaml  tagmap.yaml  sim_settings.yaml
 
-**路由结构**：
-- `/canvas/<layer>/<page_id>` — 统一画布（IL/IB）
-- `/il`, `/ib` — 重定向到该层第一个页面
-- `/variables` — 变量管理页面
-- `/api/pages` — 页面 CRUD
-- `/api/pages/refs` — 扫描所有页面的 ref_out 标签
-- `/api/variables` — 变量 CRUD（GET/POST/PUT/DELETE）
-- `/api/variables/sync` — 一键同步（画布 + OPC 映射 → 变量表）
+tests/  docs/
+```
 
-### 模块说明
+> **注**:`tagmap` 放在 `src/engine/` 内而非独立 `src/mapping/` 目录 — MVP 阶段它就是个"读 YAML + 做量程换算"的薄文件,独立成层属于过度抽象。未来如果换算逻辑复杂到需要独立模块再升格。
 
-- **src/opc_client/** — OPC UA 异步通信（已完成）
-  - `client.py`: OPC UA Client 封装。连接重试、批量读写、AI 通道写入（HR/LR 方案）
-  - `mapping.py`: 信号映射管理。YAML 加载，变量名 ↔ OPC 节点路径转换
-- **src/blocks/** — 仿真功能块库（已完成）
-  - `base.py`: 功能块抽象基类，统一接口 `output = block.calc(input, dt)`
-  - `basic.py`: Inertia（一阶惯性）、Integrator（积分器）、DeadZone、RateLimiter、Limiter
-  - `transfer.py`: LeadLag（超前滞后）、SecondOrder（二阶惯性）
-  - `select.py`: HighSelect、LowSelect、Switch（二选一）
-  - `function.py`: LinearInterp（折线插值）、Polynomial（多项式）
-- **src/sim_engine/** — 仿真循环引擎（已完成）
-  - `graph_runner.py`: 图执行引擎。解析 Drawflow JSON → 拓扑排序 → 逐步执行功能块。支持多页加载、反馈环路检测与处理
-  - `engine.py`: 固定步长循环，驱动 GraphRunner，在线/离线双模式
-  - `model.py`: SimModel 基类（保留，供硬编码模型使用）
-  - `recorder.py`: 数据记录器，CSV 导出 + pandas
-  - `ccs_model.py`: CCS 被控对象模型（保留作为预设参考）
-- **src/web/** — Web 界面（已完成）
-  - `app.py`: Flask 应用，页面管理 + 仿真 API + OPC API
-  - `templates/canvas.html`: IL/IB 统一画布模板
-  - `templates/base.html`: 侧边栏树形页面导航
-  - `static/js/canvas-engine.js`: Drawflow 增强引擎，含跨页 ref 选择器、复制粘贴、方向键微调
-  - 端口 5001，启动命令 `py -3.12 -m src.web.app`
-- **src/test_framework/** — 自动化测试（待开发）
-- **tools/** — 辅助脚本（待开发）
+### 5.2 各层职责要点
 
-### 配置文件
+- **Adapter**:只此一层出现 `asyncua` / `ns=…;s=…`。批量读写,禁止逐点同步。PV 读取用 `read_data_value(raise_on_bad_status=False)`(NTVDPU 无卡件状态是 `UncertainInitialValue`)。
+- **Models**:统一接口 `step(inputs: dict, dt: float) -> dict` + `reset(state=None)`。新增模型 = 加一个类,引擎和配置机制不改。
+  - **MVP 必需块**(两个):`DirectThrough`(直通,支持可配置一阶滞后)、`FirstOrder`(一阶惯性)。
+  - **常用辅助块**(按需实现,不超前):
+    - `CON`(常数):0 输入 1 输出,提供初值或固定信号源
+    - `DELAY`(一拍延迟):1 输入 1 输出,输出延迟一个仿真周期 — **打破纯代数环的唯一工程手段**,引擎检测到代数环时用户应该插这个
+  - **不再需要的画布专用块**:`comment`(文本注释)— 仅画布渲染用途,新架构里 YAML 注释即可
+- **Engine**:
+  - 加载 4 个 YAML → 实例化 Block → 拓扑排序(检测到纯代数环则报错退出,提示用户在环路中插入 `DELAY` 块或重组连接)
+  - 主循环严格**读-算-写三段式**:`adapter.read_batch(in_tags) → for block in topo_order: block.step() → adapter.write_batch(out_tags)`
+  - 离线模式跳过 read/write,只 step 模型 + 写 CSV,用于本地自洽测试
+- **tagmap**:单条目字段 MVP 够用即可:`tag / opc_node / direction(in|out) / dtype / range_low / range_high`。可选:`redundant_nodes`(冗余通道列表,三取中/二取一时用)、`scale`(非线性换算)。物理量/工程量换算在本层做,模型层只见物理量。
+  - OPC Server 地址(`opc.tcp://localhost:9440`)和 DPU 节点(`DPU3013`)放在 `sim_settings.yaml`,不在 tagmap 重复。
+- **Recorder**:每步追加被关注 tag 的值,落 CSV。MVP 不需要 Parquet/滚动文件/降频。
 
-- `config/opc_mapping.yaml` — OPC UA 节点映射（模型变量名 ↔ 通道号，含 Server 地址、direction、冗余通道）
-- `config/variables.yaml` — 变量表（tag/name/type/unit/opc_node/description，由同步自动生成+手动编辑）
-- `config/models/_manifest.json` — 页面清单（自动生成，记录页面 id/layer/name/order）
-- `config/models/*.json` — 各页面的 Drawflow 画布组态数据
-- `config/model_params.yaml` — 仿真模型参数（待创建）
-- `config/sim_settings.yaml` — 运行设置（待创建）
+## 6. 为什么放弃画布(已决策,不要建议恢复)
 
-## OPC UA 通讯方案（已验证）
+历史上项目走过"Drawflow + JSON"可视化组态路线,现已弃用。原因:
 
-### OPC 节点结构
+1. **投入产出比低** — 复制粘贴、跨页 ref、多选、变量管理 UI 等大量代码,仅是为了拖出 SAMA 等价连接关系,YAML 几行就描述完。
+2. **调试困难** — 画布 JSON 难 grep/diff/code-review;YAML 文本一目了然。
+3. **可移植性差** — 画布带坐标、UI 状态,跨项目复用要拖一堆和工程无关的东西。
+4. **真正的可视化看图工作在 CCMStudio 那边已做**,本框架不重复。
+
+→ **不要建议引入任何形式的画布、组态编辑器、画布查看器、SAMA 渲染器**,除非用户在新会话中明确要求重新讨论这个决策。
+
+## 7. 过渡期约束(关键 — 当前代码现状)
+
+代码库当前**仍是画布架构**,新架构(第 5 节)尚未实现。`src/web/`、`src/sim_engine/graph_runner.py`、`config/models/*.json` 等画布资产**都存在但计划删除**。
+
+**禁止区**(下列代码上不要添加新功能、不要修复非阻塞 bug):
+- `src/web/`(全部 — Flask 应用、画布模板、canvas-engine.js、block_defs.py)
+- `src/sim_engine/graph_runner.py`(只服务画布 JSON)
+- `src/sim_engine/engine.py`(画布驱动版,将被 `src/engine/runner.py` 取代)
+- `src/sim_engine/pairing_runner.py`(画布版的配对运行器;新架构用 `src/engine/runner.py` 跑生成的 yaml,不要它)
+- `src/sim_engine/ccs_model.py / demo_model.py / model.py`(硬编码示例)
+- `config/models/*.json`(Drawflow 序列化)
+- `config/models/_manifest.json`
+- `config/block_library.yaml`(画布面板定义)
+- `config/variables.yaml`(画布同步产物,被 tagmap 替代)
+- `config/scenarios.yaml` / `config/io_pairing*.yaml`(scenarios 暂不做;io_pairing 是画布配对工具的旧产物)
+
+**已升格为正式工具(非禁止区,可继续维护)**:
+- `src/sim_engine/io_pairing_gen.py` — KKS 配对算法(`pair_analog` AQ↔AI、`pair_digital` DQ↔DI)。`tools/mark_opc_communication.py` 和 `tools/generate_yaml_from_pairs.py` 都依赖它。后续如需扩展(放宽配对规则、加新信号位)在这里改。
+
+**新功能/修改应去的地方**:
+| 类别 | 位置 |
+|---|---|
+| OPC 通信改动 | `src/opc_client/client.py` 现状可用;迁移期间直接复用 |
+| 新增模型块 | 直接写在 `src/blocks/` 也行,但**必须用新接口 `step(inputs:dict, dt) -> dict`**,不要再用 `calc(input, dt) -> output` |
+| 配置 schema 改动 | 直接按目标态写 `config/models.yaml / connections.yaml / tagmap.yaml`,不要再扩展 `config/models/*.json` |
+| 仿真主循环 | 直接新建 `src/engine/runner.py`,不要修改 `src/sim_engine/engine.py` |
+
+**资产对照**(详见 CLAUDE-ref.md 第 9 节):
+- **保留迁移**:`src/blocks/`(改接口后迁 `src/models/`)、`src/opc_client/client.py`(迁 `src/adapter/opc_ua.py`)、`src/sim_engine/recorder.py`(迁 `src/engine/recorder.py`)、`config/opc_mapping.yaml`(改写为 `config/tagmap.yaml`)、`config/sim_settings.yaml`
+- **删除**:`src/web/`、`graph_runner.py`、`engine.py`(旧)、`pairing_runner.py`、`io_pairing_gen.py`、`config/models/*.json`、`config/variables.yaml`、`config/scenarios.yaml`、`config/block_library.yaml`、`config/io_pairing*.yaml`、画布相关一切
+
+**迁移分两阶段**(简化为 MVP 节奏):
+- **阶段 A:新写跑通 MVP** — 在 `src/adapter/ engine/ models/ cli/` 下新写最小骨架,实现 `DirectThrough + FirstOrder` 两个 Block,跑通"阀门指令回写 + 一阶惯性流量"闭环。旧画布代码不动。
+- **阶段 B:清理画布** — 阶段 A 验收通过后,删除上面"删除"列表里的所有内容,合并 CLAUDE-ref.md 进 CLAUDE.md。
+
+## 8. OPC UA 通讯方案(已验证,DCS 硬约束)
+
+### 8.1 OPC 节点结构
 
 ```
 DPU3013
 ├── HW                          # 硬件通道
-│   ├── AI010605                # AI 通道（机组功率, 0-990MW）
-│   │   ├── PV                  # 过程值（只读，由 HR/LR 决定）
-│   │   ├── HR                  # 量程上限（可写, Float）
-│   │   └── LR                  # 量程下限（可写, Float）
+│   ├── AI010605                # AI 通道(机组功率, 0-990MW)
+│   │   ├── PV                  # 过程值(只读,由 HR/LR 决定)
+│   │   ├── HR                  # 量程上限(可写, Float)
+│   │   └── LR                  # 量程下限(可写, Float)
 │   ├── DI030401                # DI 通道
-│   │   ├── PV                  # 开关量（只读, Boolean）
-│   │   ├── ALM, ACK, ACFG      # 报警相关参数
+│   │   ├── PV                  # 开关量(只读, Boolean)
+│   │   ├── ALM, ACK, ACFG      # 报警相关
 │   │   ├── SCI, K, B, RSET, EN, SETB, CPV, RPV  # DI 配置参数
 │   │   └── ...                 # 均无法间接控制 PV
 │   └── ...
-├── SH0015, SH0021, ...         # 组态图号（约100个）
+├── SH0015, SH0021, ...         # 组态图号(约 100 个)
 │   └── {功能块名}
 │       └── PV                  # 功能块输出
 └── ...
 ```
 
-### AI 通道写入方案 ✅
+### 8.2 AI 通道写入方案 ✅
 
-**原理**：NTVDPU 对无卡件 AI 通道内置正弦波信号发生器，PV 在 LR~HR 范围内波动。设置 HR=LR=目标值，PV 即锁定为该值。
+**原理**:NTVDPU 对无卡件 AI 通道内置正弦波信号发生器,PV 在 LR~HR 范围内波动。设置 `HR=LR=目标值`,PV 即锁定为该值。
 
-**已验证结论**：
-- 写入 HR/LR 后约 **1 秒**生效，之后 PV 完全稳定
-- 数据类型为 Float（VariantType=10）
-- 128 个 AI 通道，HR/LR 需在 CCMStudio 中配置暴露（目前仅 AI010605 已开通，后续可批量开通）
-- 单通道读写耗时约 1.6ms，远低于 200ms 步长预算
+**已验证结论**:
+- 写入 HR/LR 后约 **1 秒**生效,之后 PV 完全稳定
+- 数据类型为 Float(VariantType=10)
+- 128 个 AI 通道,HR/LR 需在 CCMStudio 中配置暴露(目前仅 AI010605 已开通,后续可批量开通 — **不在代码开发范围**)
+- 单通道读写约 1.6ms,远低于 200ms 步长预算
 
-**代码使用**：
 ```python
 # 通过 OPCClient 写 AI 通道
 await client.write_ai_channel("ns=0;s=DPU3013.HW.AI010605", 600.0)
 ```
 
-### DI 通道写入方案 ❌
+### 8.3 DI 通道写入方案 ❌
 
-**已验证结论**：
-- DI 通道 PV 为 Boolean，直接写入不生效
-- DI 暴露的所有参数（ALM, ACK, SCI, K, B, RSET, EN, SETB, CPV, RPV）均无法间接控制 PV
-- **DI 通道必须在 CCMStudio 组态层做仿真切换（MUX 二选一）**
+- DI 通道 PV 为 Boolean,直接写入不生效
+- 暴露的所有参数(ALM/ACK/SCI/K/B/RSET/EN/SETB/CPV/RPV)均无法间接控制 PV
+- **DI 通道必须在 CCMStudio 组态层做仿真切换(MUX 二选一)** — 非代码层面可解决
 
-### 读取注意事项
+### 8.4 读取注意事项
 
-- PV 读取必须使用 `raise_on_bad_status=False`，因为无卡件通道状态为 `UncertainInitialValue`
-- 代码中已封装在 `OPCClient.read_value()` 中
+- PV 读取必须 `raise_on_bad_status=False`(无卡件通道状态为 `UncertainInitialValue`)
+- 已封装在 `OPCClient.read_value()` 中
+- **在线模式必须校验 `SourceTimestamp`**:每次读 PV 时记录返回的 SourceTimestamp,如果两个相邻仿真步读到的 SourceTimestamp 完全相同,说明 NTVDPU 尚未处理本框架上一步写入的值(写入到 HR/LR 生效有 ~1s 延迟)。这种情况下要么等待、要么记录"未生效"标记 — 不要把陈旧值当作 DCS 控制逻辑的真实响应。
 
-## 编码规范
+### 8.5 连接建立与重试
 
-- **中文注释**：面向热控工程师，代码注释用中文，变量命名用英文但关键变量加中文注释
-- **物理量标注单位**：`main_steam_pressure  # 主汽压力, MPa`
-- **配置与代码分离**：OPC 节点地址、模型参数、测试工况全部放 config/ 或 test_cases/，不硬编码
-- **依赖轻量**：不引入重型框架
-- **Python 版本**：必须使用 3.12，不要用 3.14（asyncua 不兼容）
+- 启动时:`asyncua.Client(url=...)` → `await client.connect()`,连接失败按第 10.1 节规则重试
+- 连接对象长期持有,**不要每步都重连**
+- 优雅退出:`await client.disconnect()`(否则 NTVDPU 端 session 会残留,影响下次连接)
 
-### OPC UA 通信规范
+## 9. DCS 环境关键约束
 
-- 使用 opcua-asyncio 异步 API
-- 连接失败自动重试（间隔 3s，最多 10 次）
-- 批量读写用 `read_values`/`write_values`，不逐个读写
-- 读写异常捕获记录日志，单个点异常不中断整个仿真循环
-- PV 读取使用 `read_data_value(raise_on_bad_status=False)`
+- **NTVDPU 是黑盒**:exe 形式,不可修改,只能通过 CCMStudio 下装组态
+- **在线组态**:CCMStudio 支持在线组态,一个控制周期内生效,不需要停控制器
+- **精度定位**:目标是逻辑正确性验证(控制方向、联锁动作、模式切换),不苛求绝对数值精度
+- **趋势监控**:使用科远 DCS 自带趋势软件;本框架的 Recorder 只出 CSV 供事后分析,不做实时可视化
 
-### 功能块规范
+## 10. 编码规范
 
-- 所有功能块继承 `Block` 基类
-- 统一接口：`output = block.calc(input, dt)`
-- `reset(value)` 用于初始化工况
-- 每个块独立无状态依赖，可自由组合
+- **中文注释**:面向热控工程师,代码注释用中文,变量名用英文但关键变量加中文注释
+- **物理量标注单位**:`main_steam_pressure  # 主汽压力, MPa`
+- **配置与代码分离**:OPC 节点、模型参数、工况全部进 `config/`,不硬编码
+- **依赖轻量**:不引入重型框架
+- **Python 版本**:3.12,严禁 3.14
 
-### 特殊功能块（UI 专用，无 Python Block 实例）
+### 10.1 OPC UA 通信规范
 
-- **comment**（文本注释）：0 输入 0 输出，纯标注用途，支持自定义字号和颜色，不参与仿真计算
-- **DELAY**（一拍延迟）：1 输入 1 输出，输出延迟一个仿真周期，用于打断纯代数环路
-- **constant / CON**（常数）：0 输入 1 输出，输出固定值
+- 使用 `opcua-asyncio` 异步 API(包名 `asyncua`)
+- 连接失败自动重试:**间隔 3s,最多 10 次**;10 次后抛错给上层而不是无限重试
+- 批量读写用 `read_values` / `write_values`,不逐点同步读写
+- 单点异常捕获记录日志,**不中断整个仿真循环**(一个测点坏不能让整个模型停)
+- PV 读取必须 `read_data_value(raise_on_bad_status=False)`
+- 写 AI 通道用 `OPCClient.write_ai_channel()` 封装(内部写 HR/LR 双值,见第 8.2)
+- 在线模式校验 `SourceTimestamp`(见第 8.4)
+- OPC 地址在代码内统一格式:**去 `ns=0;s=`、`s=` 前缀和 DPU 名前缀,大写比较**(防重复和匹配失败,见开发原则第 4 条)
 
-## DCS 环境关键约束
+### 10.2 功能块规范(目标接口)
 
-- **NTVDPU 是黑盒**：exe 形式，不可修改内部，只能通过 CCMStudio 下装组态
-- **AI 硬点可通过 HR/LR 间接写入**（已验证）
-- **DI 硬点不可写**，必须组态层做仿真切换逻辑（MUX 二选一模块）
-- **在线组态**：CCMStudio 支持在线组态，一个控制周期内生效，不需要停控制器
-- **精度定位**：目标是逻辑正确性验证（控制方向、联锁动作、模式切换），不苛求绝对数值精度
-- **趋势监控**：使用科远 DCS 自带趋势软件，不需要自行开发
+- 所有功能块继承 `Block` 基类(`src/models/base.py`)
+- 统一接口(MVP 阶段就这两个方法,不要加 snapshot/序列化等):
+  ```python
+  class Block:
+      def __init__(self, name: str, params: dict): ...
+      def step(self, inputs: dict, dt: float) -> dict: ...
+      def reset(self, state: dict | None = None) -> None: ...
+  ```
+- 旧接口 `calc(input, dt) -> output` 单值版本**仅过渡期内** `src/blocks/` 还在用;迁到 `src/models/` 时必须改新接口
+- 每个块独立无状态依赖,可自由组合
 
-## 待完善 / 已知问题
+## 11. 给 Claude 的工作指引
 
-### 变量管理
-- 变量同步后，mapping 中已有的变量如果用户手动修改了 type，再次同步会被覆盖回 AI/AO（同步逻辑以 mapping 为准）
-- 变量删除无级联：删除画布上的节点后，变量表中对应条目不会自动清理，需手动删除
-
-### 配置文件（待创建）
-- `config/model_params.yaml` — 仿真模型参数配置（功能块默认参数、工况参数等）
-- `config/sim_settings.yaml` — 运行设置（步长、时长、在线/离线默认配置等）
-
-### 功能模块（待开发）
-- **src/test_framework/** — 自动化测试框架（测试用例定义、批量执行、结果判定）
-- **tools/** — 辅助脚本（OPC 节点批量扫描、通道批量开通辅助等）
-- OPC 映射 UI 编辑（目前只能手动编辑 YAML）
-- DI 通道仿真切换（需 CCMStudio 组态层配合，非代码层面可解决）
+- 动手前对照第 5 节分层和第 7 节过渡约束审视改动:它属于哪一层?是否动到禁止区?是否影响可移植性?
+- 提改动时,说明它在新架构中的位置(配置/适配/模型/引擎)。
+- **不要建议引入图形化组态编辑器、画布查看器、SAMA 渲染器或重型仿真框架**(第 6 节已否决)。如果未来真要做查看器,从 YAML 单向渲染,不做双向编辑。
+- **不要主动设计**:故障注入、运行控制(暂停/单步/加速/回带)、工况快照(IC/snapshot)、scenarios 工况库、DAE 隐式求解、测试框架 — 这些都暂不在 MVP 范围内,只有用户明确点名才做。
+- 新增模型块时,用新接口 `step(inputs:dict, dt:float) -> dict`,并同步给出 `models.yaml` + `connections.yaml` 配置示例和单元测试。
+- 修改 OPC 相关代码时,务必检查第 8 节硬约束(AI HR/LR、DI 不可写、批量读写、`raise_on_bad_status=False`)。
+- 涉及 ≥ 2 个文件或新增配置 schema 时,先列改动清单 + 数据流给用户过目,再写代码。
+- 看到画布相关代码出现 bug:不要主动修;告诉用户该文件在删除清单里,问是否需要修(可能因为还在跑回归对比所以暂时需要)。

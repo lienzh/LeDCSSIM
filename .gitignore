@@ -13,3 +13,18 @@ data/
 *.swp
 *.swo
 *~
+
+# 工程数据 / 用户私有
+YQ3SIM-IO/
+_pdf_pages/
+config/_OPC_*.md
+
+# 自动生成 / 备份
+config/script_backups/
+config/script.txt.bak
+config/*.generated.yaml
+
+# 调试临时文件
+_chk*.py
+_scan*.py
+_check*.py

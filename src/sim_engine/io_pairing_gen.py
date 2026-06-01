@@ -47,16 +47,21 @@ def is_soft(p: dict) -> bool:
     return any(k in p["desc"] for k in SOFT_KW)
 
 
-def pair_analog(pts: List[dict], dpu: str) -> List[dict]:
-    """同一 KKS 设备码下 AQ 指令 ↔ AI 反馈配对"""
+def _group_by_device_root(pts: List[dict]) -> Dict[str, list]:
+    """按 KKS 设备根分组,剔除软点"""
     by_root: Dict[str, list] = {}
     for p in pts:
         m = DEV.match(p["kks"])
         if not m or is_soft(p):
             continue
         by_root.setdefault(m.group(1), []).append(p)
+    return by_root
+
+
+def pair_analog(pts: List[dict], dpu: str) -> List[dict]:
+    """同一 KKS 设备码下 AQ 指令 ↔ AI 反馈配对"""
     pairs = []
-    for root, grp in by_root.items():
+    for root, grp in _group_by_device_root(pts).items():
         aq = [p for p in grp if p["code"] == "AQ"]
         ai = [p for p in grp if p["code"] == "AI"]
         if aq and ai:
@@ -72,10 +77,42 @@ def pair_analog(pts: List[dict], dpu: str) -> List[dict]:
     return pairs
 
 
+def pair_digital(pts: List[dict], dpu: str) -> List[dict]:
+    """
+    同一 KKS 设备码下 DQ 指令 ↔ DI 反馈配对
+
+    生成的 block 是 DirectThrough(立即直通,无滞后)。
+    注意 NTVDPU DI 通道实际不可写(见 CLAUDE.md 第 8.3 节),
+    在线模式下 write_value 会失败 — DI 实际生效需要在 CCMStudio 端用 MUX
+    把"我们写的软点" 选择为 DI 来源。本工具只负责生成代码/配置,组态那一步是用户的事。
+    """
+    pairs = []
+    for root, grp in _group_by_device_root(pts).items():
+        dq = [p for p in grp if p["code"] == "DQ"]
+        di = [p for p in grp if p["code"] == "DI"]
+        if dq and di:
+            for c in dq:
+                pairs.append({
+                    "dpu": dpu, "device": root,
+                    "cmd": c["name"], "fb": di[0]["name"],
+                    "template": "digital",
+                    "transform": {"type": "direct"},
+                    "online_writable": True,  # 写会被 NTVDPU 拒,但代码不阻拦
+                    "desc": c["desc"],
+                })
+    return pairs
+
+
 def generate(src_dir: str) -> dict:
-    """扫描目录下所有 *.csv，聚合 analog 配对"""
+    """扫描目录下 DPU*.csv (主点表), 聚合 analog + digital 配对
+
+    只扫 DPU* 前缀, 避开 _FULL.csv / *_HRLR.csv 等中间产物
+    """
     analog = []
-    for fn in sorted(glob.glob(str(Path(src_dir) / "*.csv"))):
+    digital = []
+    for fn in sorted(glob.glob(str(Path(src_dir) / "DPU*.csv"))):
         dpu = Path(fn).stem
-        analog.extend(pair_analog(load_points(fn), dpu))
-    return {"analog": analog}
+        pts = load_points(fn)
+        analog.extend(pair_analog(pts, dpu))
+        digital.extend(pair_digital(pts, dpu))
+    return {"analog": analog, "digital": digital}

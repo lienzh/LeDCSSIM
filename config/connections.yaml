@@ -1,0 +1,10 @@
+# MVP 块间连接 - 端点格式 'block.port'
+#
+# 数据流:
+#   valve_cmd_src.out ──→ valve_fb.in     (阀门指令回写)
+#   valve_cmd_src.out ──→ flow_model.in   (阀门指令驱动流量)
+connections:
+  - from: valve_cmd_src.out
+    to:   valve_fb.in
+  - from: valve_cmd_src.out
+    to:   flow_model.in

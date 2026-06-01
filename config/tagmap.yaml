@@ -1,0 +1,42 @@
+# MVP 测点映射表 - 在线模式才用,离线模式留空也可
+#
+# 字段:
+#   tag          模型内部名(必填),用 'block.port' 格式与 GraphRunner 端口对应
+#   opc_node     OPC UA 节点 ID(必填)
+#   direction    in / out
+#   dtype        Float / Bool / Int
+#   range_low/range_high  量程(可选,MVP 阶段未做线性换算)
+#   write_mode   ai_hr_lr 表示走 AI HR/LR 双写方案
+#   channel_base ai_hr_lr 模式必填,为不含 .PV 的通道路径
+#
+# === MVP 离线场景下,本文件可以为空 ===
+# 下面示例是在线模式的最小配置,启 NTVDPU 后参考填写真实节点
+tags: []
+
+# --- 在线模式示例(注释中,需要时取消注释并替换为真实节点)---
+# tags:
+#   # DCS 出的阀门指令 → 喂给 valve_cmd_src 块的 out 端口
+#   - tag: valve_cmd_src.out
+#     opc_node: "ns=0;s=DPU3013.SH0015.VLV01_CMD.PV"
+#     direction: in
+#     dtype: Float
+#
+#   # valve_fb.out → 写回 OPC 作为阀门反馈
+#   - tag: valve_fb.out
+#     opc_node: "ns=0;s=DPU3013.HW.AI010605"
+#     direction: out
+#     dtype: Float
+#     write_mode: ai_hr_lr
+#     channel_base: "ns=0;s=DPU3013.HW.AI010605"
+#     range_low: 0
+#     range_high: 100
+#
+#   # flow_model.out → 写回 OPC 作为流量反馈
+#   - tag: flow_model.out
+#     opc_node: "ns=0;s=DPU3013.HW.AI010606"
+#     direction: out
+#     dtype: Float
+#     write_mode: ai_hr_lr
+#     channel_base: "ns=0;s=DPU3013.HW.AI010606"
+#     range_low: 0
+#     range_high: 100

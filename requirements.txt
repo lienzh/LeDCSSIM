@@ -1,0 +1,9 @@
+# LeDCSSIM 依赖 — Python 3.12
+# 安装: py -3.12 -m pip install -r requirements.txt
+
+asyncua==1.1.8
+Flask==3.1.1
+PyYAML==6.0.2
+pandas==2.2.3
+matplotlib==3.10.3
+PyMuPDF==1.26.3
