@@ -557,7 +557,13 @@ def api_script_run():
         return jsonify({"ok": False, "error": str(e)}), 400
     if not pairs:
         return jsonify({"ok": False, "error": "脚本为空(全是注释?)"}), 400
+    # 已在运行: 先 stop 再 start (热重启, 新加的赋值立刻生效)
+    was_running = rt.get_status().get("running", False)
+    if was_running:
+        rt.stop()
     ok, msg = rt.start(pairs, dt=dt)
+    if was_running and ok:
+        msg = f"♻ 热重启: {msg}"
     return jsonify({"ok": ok, "msg": msg, "pairs_count": len(pairs)})
 
 
@@ -570,6 +576,52 @@ def api_script_stop():
 @app.route("/api/script/status")
 def api_script_status():
     return jsonify(rt.get_status())
+
+
+@app.route("/api/script/debug")
+def api_script_debug():
+    """完整 debug 包 (状态/摘要/失败 top/日志), 用于沟通调试"""
+    return jsonify(rt.get_debug())
+
+
+@app.route("/api/script/reset_state", methods=["POST"])
+def api_script_reset_state():
+    """清空持久状态 (RS/LAG/中间变量) — '从头开始'仿真"""
+    n = rt.reset_persistent_state()
+    return jsonify({"ok": True, "cleared": n,
+                    "msg": f"已清: RS {n['rs']} / LAG {n['lag']} / $var {n['var']}"})
+
+
+@app.route("/api/script/state/save", methods=["POST"])
+def api_script_state_save():
+    """显式保存当前状态镜像 (RS/LAG/中间变量)"""
+    body = request.get_json(force=True, silent=True) or {}
+    return jsonify(rt.save_state_snapshot(force=bool(body.get("force"))))
+
+
+@app.route("/api/script/state/restore", methods=["POST"])
+def api_script_state_restore():
+    """从镜像恢复状态"""
+    return jsonify(rt.restore_state_snapshot())
+
+
+@app.route("/api/script/state/info")
+def api_script_state_info():
+    """当前镜像信息 (?detail=1 时返回每个模块的具体值)"""
+    detail = request.args.get("detail") in ("1", "true", "yes")
+    return jsonify(rt.get_snapshot_info(with_detail=detail))
+
+
+@app.route("/api/script/state/delete", methods=["POST"])
+def api_script_state_delete():
+    """删除镜像文件"""
+    from src.viewer.runtime import _SNAPSHOT_PATH
+    try:
+        if _SNAPSHOT_PATH.exists():
+            _SNAPSHOT_PATH.unlink()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/script/backups")
@@ -856,6 +908,7 @@ header a:hover { text-decoration: underline; }
 .hl-var     { color: #90c; font-weight: bold; }   /* 中间变量 $xxx */
 .hl-desc    { color: #888; }
 .hl-op      { color: #000; font-weight: bold; }
+.hl-mathop  { color: #c06; font-weight: bold; }   /* + - * / ^ */
 .hl-bad     { background: #fde; }   /* 解析失败行整行底色 */
 .values-panel { padding: 8px 12px; }
 .values-panel h3 { margin: 0 0 6px; font-size: 12px; border-bottom: 1px solid #000;
@@ -924,7 +977,7 @@ mark      { background: #ff8; padding: 0; }
 </header>
 <div class="hint">
   <b>快速</b>:<code>@关键词</code> 补全 · <code>Ctrl+G</code> 跳行 · <code>Ctrl+/</code> 注释 · <code>F1</code> 完整帮助
-  · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV MAX MIN LIMIT SEL LAG</code>
+  · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR</code>
 </div>
 <div class="toolbar">
   <button onclick="loadScript()">⟳ 加载</button>
@@ -937,6 +990,8 @@ mark      { background: #ff8; padding: 0; }
   <button onclick="reloadSymbols()" title="点表 CSV 改了后重新加载 (无需重启)">🔄 刷新点表</button>
   <span class="sep"></span>
   <button onclick="openBackups()">📚 备份历史</button>
+  <button onclick="openSnapshot()" title="RS/LAG/中间变量 镜像 — NTVDPU 重启前保存, 重启后恢复">📸 状态镜像</button>
+  <button onclick="openDebug()" title="运行状态 / 失败统计 / 日志 (沟通时复制)">🩺 诊断</button>
   <button onclick="openHelp()" title="DSL 语法 / 函数 / 快捷键 (F1)">❓ 帮助</button>
   <button onclick="syncFromOPC()" title="从 NTVDPU 浏览实际点表(兜底, CSV 没同步时用)"
           style="color:#888;border-color:#bbb">🔌 OPC 浏览</button>
@@ -973,8 +1028,10 @@ mark      { background: #ff8; padding: 0; }
       <label>角色
         <select id="fltRole" onchange="renderVals()" style="font-size:11px;padding:1px 3px;">
           <option value="">全部</option>
+          <option value="对比">同时有写+读</option>
           <option value="写">仅写入(LHS)</option>
           <option value="读">仅读取(RHS 源)</option>
+          <option value="diff">写读不一致 ⚠</option>
         </select>
       </label>
       <input id="fltKw" placeholder="描述关键字..." oninput="renderVals()"
@@ -998,6 +1055,51 @@ mark      { background: #ff8; padding: 0; }
     </div>
     <div id="helpbody" style="overflow-y:auto; padding:14px 22px; font-size:12px;
          line-height:1.65; color:#222;"></div>
+  </div>
+</div>
+
+<!-- 诊断模态框 -->
+<div id="dbgmodal" style="display:none; position:fixed; inset:0; z-index:2200;
+     background:rgba(0,0,0,.5);" onclick="if(event.target===this) closeDebug()">
+  <div style="background:#fff; max-width:980px; margin:30px auto; padding:0;
+       box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:90vh; display:flex; flex-direction:column;">
+    <div style="background:#111; color:#eee; padding:8px 14px; display:flex;
+         justify-content:space-between; align-items:center;">
+      <b>🩺 诊断信息 — 运行状态 / 失败统计 / 日志</b>
+      <span>
+        <button onclick="copyDebug()" style="font-size:11px;padding:3px 10px;
+                background:#0a0;color:#fff;border:0;cursor:pointer;">📋 复制全部</button>
+        <span style="cursor:pointer;font-size:18px;margin-left:10px" onclick="closeDebug()">×</span>
+      </span>
+    </div>
+    <div id="dbgbody" style="overflow-y:auto; padding:14px 22px; font-size:11px;
+         line-height:1.55; color:#222; font-family:'Consolas',monospace;"></div>
+  </div>
+</div>
+
+<!-- 状态镜像模态框 -->
+<div id="snapmodal" style="display:none; position:fixed; inset:0; z-index:2300;
+     background:rgba(0,0,0,.4);" onclick="if(event.target===this) closeSnapshot()">
+  <div style="background:#fff; max-width:880px; margin:40px auto; padding:0;
+       box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:85vh; display:flex; flex-direction:column;">
+    <div style="background:#048; color:#fff; padding:8px 14px; display:flex;
+         justify-content:space-between; align-items:center;">
+      <b>📸 状态镜像 — RS / LAG / 中间变量</b>
+      <span style="cursor:pointer;font-size:18px;" onclick="closeSnapshot()">×</span>
+    </div>
+    <div style="padding:8px 14px; background:#fffce0; color:#666; font-size:11px; border-bottom:1px solid #eec">
+      用于 NTVDPU 重启等场景:<b>重启前</b>点【💾 保存镜像】留底,<b>重启后</b>点【🔄 恢复镜像】把锁存状态拉回来。
+      镜像文件:<code>data/state_snapshot.json</code>。
+    </div>
+    <div id="snapinfo" style="padding:12px 14px; overflow-y:auto; flex:1;"></div>
+    <div style="padding:8px 14px; border-top:1px solid #eee; display:flex; gap:8px; flex-wrap:wrap">
+      <button onclick="saveSnapshot()" style="background:#048;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px">💾 保存镜像</button>
+      <button id="snapRestoreBtn" onclick="restoreSnapshot()" style="background:#06a;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px">🔄 恢复镜像</button>
+      <button id="snapDeleteBtn" onclick="deleteSnapshot()" style="background:#999;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px">🗑 删除镜像</button>
+      <span style="flex:1"></span>
+      <button onclick="resetState()" style="background:#c60;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px"
+              title="清空当前内存 RS/LAG/中间变量 — 从头开始仿真">🔥 清空状态</button>
+    </div>
   </div>
 </div>
 
@@ -1029,7 +1131,7 @@ function setStatus(msg, cls) {
 
 // ===== 语法高亮 =====
 const FN_NAMES = ['RS_NOT','RS','NOT','AND','OR','ADD','SUB','MUL','DIV',
-                  'MAX','MIN','LIMIT','SEL','LAG'];
+                  'POW','SQRT','ABS','MAX','MIN','LIMIT','SEL','LAG','CHAR'];
 const FN_RE = new RegExp('\\b(' + FN_NAMES.join('|') + ')\\b(?=\\s*\\()', 'g');
 
 function escHtml2(s) {
@@ -1072,6 +1174,12 @@ function colorPart(s) {
   // 数字 (整数 / 小数 / 负数)
   out = out.replace(/(?<![\w.])(-?\d+(?:\.\d+)?)\b/g,
                     '<span class="hl-num">$1</span>');
+  // 中缀运算符 + - * / ^ (不影响已染色的 hl-* span 标签里的运算符,
+  //  因为标签里的 + - 出现在 class= 之外被忽略 — 我们只染色独立的)
+  // 简化处理: 这里不在 span 内做替换会破坏标签结构,所以只在 escape 后的"裸字符"前做.
+  // 由于 span 里的属性值是引号包裹的, 不含 + - * / ^,直接替换是安全的.
+  out = out.replace(/(\^|\*\*|[+\-*/])(?![^<]*>)/g,
+                    '<span class="hl-mathop">$1</span>');
   return out;
 }
 
@@ -1331,14 +1439,38 @@ async function stopIt() {
 // ===== 帮助文档 =====
 const HELP_HTML = `
 <h2>1. DSL 基础</h2>
-<p>每行一个赋值,格式 <code>左边 = 右边</code>。<code>#</code> 开头是注释。</p>
+<p>每行一个赋值,格式 <code>左边 = 右边</code>。<code>#</code> 开头是注释。右边支持<b>完整中缀表达式 + 函数嵌套</b>。</p>
 <pre># 注释行
 DPU3013.AI010502 = DPU3013.AQ010101          # 直通
 DPU3013.AI010502(指令) = DPU3013.AQ010101(反馈)   # 括号内是信号名(可读性, 解析忽略)
 DPU3013.AI010502 = 50.0                       # 写常数
-$tmp_flow = ADD(DPU3001.AI010101, DPU3002.AI010101)   # 中间变量(只在内存)
-DPU3013.AI010502 = LIMIT($tmp_flow, 0, 100)             # 引用中间变量</pre>
+DPU3013.AI010604 = (DPU3013.SH0500.PRO27137.IN / 250) ^ 2   # 中缀表达式
+$tmp = LIMIT(DPU3001.AI010101 + DPU3002.AI010101, 0, 100)    # 嵌套调用
+DPU3013.AI010502 = $tmp * 0.5                  # 中间变量参与计算</pre>
+
+<h3>1.0 运算符</h3>
+<p>优先级(高 → 低):</p>
+<table>
+  <tr><th>运算符</th><th>优先级</th><th>结合</th><th>等价函数</th></tr>
+  <tr><td><code>( )</code></td><td>最高</td><td>—</td><td>分组</td></tr>
+  <tr><td><code>-x</code> (一元)</td><td>1</td><td>右</td><td>取负</td></tr>
+  <tr><td><code>^</code> 或 <code>**</code></td><td>2</td><td>右</td><td>POW(x, n)</td></tr>
+  <tr><td><code>*</code> <code>/</code></td><td>3</td><td>左</td><td>MUL / DIV</td></tr>
+  <tr><td><code>+</code> <code>-</code></td><td>4</td><td>左</td><td>ADD / SUB</td></tr>
+</table>
+<p>逻辑运算继续用 <code>AND/OR/NOT</code> 函数(没引入 <code>&&</code> / <code>||</code>)。</p>
 <p>短码 <code>DPU3013.AI010502</code> 自动展开为 <code>ns=0;s=DPU3013.HW.AI010502.PV</code>。左边是 <code>AI</code> 时自动走 HR/LR 双写。</p>
+
+<h3>1.05 多目标赋值(批量同值)</h3>
+<p>左边用 <b>逗号</b> 分隔多个目标,共享同一个右边表达式:</p>
+<pre># 30 个 DI 一次置 0
+DPU3044.DI010207, DPU3044.DI020206, DPU3044.DI010210 = 0
+
+# 共享一个 RS 锁存 (state 也共享)
+DPU3001.DI020401, DPU3002.DI020501 = RS(DPU3013.DQ010201, DPU3013.DQ010202)
+
+# 描述括号里的逗号不影响切分
+DPU3013.AI010604(主给水流量1), DPU3013.AI020404(主给水流量2) = 50</pre>
 
 <h3>1.1 中间变量 (<code>$xxx</code>)</h3>
 <p>用 <code>$</code> 前缀声明,任意命名 (字母/下划线开头)。<b>不写 OPC, 不读 OPC</b>, 只在仿真内存里传递,免去把无意义的中间结果通过 OPC 转一手:</p>
@@ -1378,6 +1510,9 @@ DPU3003.AI010101 = $fw_safe</pre>
   <tr><td class="fn">SUB(a, b)</td><td>a − b</td><td class="ex">偏差 = SUB(测量值, 设定值)</td></tr>
   <tr><td class="fn">MUL(a, b)</td><td>a × b (常用于单位换算)</td><td class="ex">AI_kg/s = MUL(AI_t/h, 0.2778)</td></tr>
   <tr><td class="fn">DIV(a, b)</td><td>a ÷ b (b=0 时返 0)</td><td class="ex">AI_压差_MPa = DIV(AI_压差_kPa, 1000)</td></tr>
+  <tr><td class="fn">POW(x, n)</td><td>x 的 n 次方</td><td class="ex">$sq = POW($flow_norm, 2)</td></tr>
+  <tr><td class="fn">SQRT(x)</td><td>开平方 (x &lt; 0 返 0)</td><td class="ex">AI_v = SQRT(AI_压差)</td></tr>
+  <tr><td class="fn">ABS(x)</td><td>绝对值</td><td class="ex">$dev = ABS(SUB(AI_测量, 设定))</td></tr>
   <tr><td class="fn">MAX(a, b) / MIN(a, b)</td><td>取大 / 取小</td><td class="ex">AI_最高温 = MAX(AI_T1, AI_T2)</td></tr>
   <tr><td class="fn">LIMIT(x, lo, hi)</td><td>限幅: max(lo, min(hi, x))</td><td class="ex">AI_反馈 = LIMIT(AQ_指令, 0, 100)</td></tr>
 </table>
@@ -1392,6 +1527,11 @@ DPU3003.AI010101 = $fw_safe</pre>
       <td>一阶滞后: y[k] = y[k-1] + dt/T·(x − y[k-1])。<br>
           T = 时间常数(秒)。模拟阀门/汽机响应延迟。</td>
       <td class="ex">AI_流量反馈 = LAG(AQ_阀位指令, 3.0)</td></tr>
+  <tr><td class="fn">CHAR(x, x0,y0, x1,y1, ...)</td>
+      <td>折线特性曲线(变长)。<br>
+          按 (x,y) 点对定义,段内线性插值,端点外取最近值。<br>
+          至少 2 个点(5 参数),参数总数必须是奇数。</td>
+      <td class="ex">$flow = CHAR(AI_x, 0,0, 25,5, 50,50, 75,80, 100,100)</td></tr>
 </table>
 
 <h2>3. 快捷键</h2>
@@ -1454,28 +1594,63 @@ DPU3030.DI_跳闸 = OR(DPU3030.DI_轴温保护, DPU3030.DI_振动保护)</pre>
 <pre># 用 A 测量优先, 故障切 B
 DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)</pre>
 
-<h2>5. 备份机制</h2>
-<p>每次会冲掉 editor 的操作都<b>自动备份</b>当前内容到 <code>config/script_backups/</code>:</p>
+<h2>6. 脚本备份</h2>
+<p>每次会冲掉 editor 的操作都<b>自动备份</b>当前脚本到 <code>config/script_backups/</code>(保留最近 30 个):</p>
 <ul>
 <li>【💾 保存】 → <code>_save</code></li>
-<li>【📝 自动生成样本】 → <code>_before-gen</code></li>
+<li>【📝 生成样本】 → <code>_before-gen</code></li>
 <li>【⟳ 加载】(editor 非空) → <code>_before-reload</code></li>
 <li>【📚 备份历史 → 加载】 → <code>_before-restore</code></li>
-<li>【💾+ 立即备份】 → <code>_manual</code></li>
 </ul>
-<p>保留最近 30 个。反悔随时在【📚 备份历史】里找。</p>
+<p>反悔随时在【📚 备份历史】里找时间戳还原。</p>
 
-<h2>6. 常见问题</h2>
-<h3>Q: @后搜不到点?</h3>
-<p>① 中文输入法 — 拼音期间不弹,选完字才搜。② 该点不在已扫的 15 个 DPU CSV 里。③ 关键词太严,试用<b>空格分多个词</b>(<code>@A给煤 启</code>)。</p>
-<h3>Q: DI 写不进 NTVDPU?</h3>
-<p>NT6000 DI 通道实际不可写(见 CLAUDE.md 第 8.3)。仿真要让 DI 生效,得在 CCMStudio 用 MUX 把 DI 来源切换到组态内某 DQ 软点,代码这边正常写,组态那边做转接。</p>
+<h2>7. 状态镜像(RS / LAG / 中间变量)</h2>
+<p>跟脚本备份不同 —— 这里备的是 <b>运行时锁存状态</b>(RS 触发器的 Q 值、LAG 滤波器的累积值、$中间变量 当前值)。
+用于 <b>NTVDPU 试用授权重启</b> 等场景:重启前保存,重启后恢复。</p>
+<ul>
+<li>入口:工具栏【📸 状态镜像】</li>
+<li>文件:<code>data/state_snapshot.json</code>(可 VS Code 直接打开看)</li>
+<li>【💾 保存镜像】:把当前内存状态落盘。<b>空内存自动拦截</b>,防误覆盖</li>
+<li>【🔄 恢复镜像】:从磁盘读回,同时清 last_written(让所有 LHS 重写一次)</li>
+<li>【🗑 删除镜像】 / 【🔥 清空状态】(清内存)</li>
+<li>详情表显示每个 RS/LAG/$var 的当前值 + <b>"用在哪几个赋值行"</b>(便于核对)</li>
+</ul>
+<p><b>NTVDPU 重启场景</b>:viewer 也加了 <b>OPC 自动重连</b>(连续 10 周期读失败触发);重连成功后,如果 DCS 端 DQ 输入都是 0(开/关脉冲已结束),RS 的 Q 从内存里取,自动写回 DCS — 不必每次手动恢复镜像。镜像主要是 viewer 进程也被重启的兜底。</p>
+
+<h2>8. 诊断面板</h2>
+<p>【🩺 诊断】 — 一键收集运行状态 / 失败统计 / 日志,沟通时点【📋 复制全部】贴给同事。</p>
+<p>状态栏会出现的 badge(直接点开打开诊断):</p>
+<ul>
+<li><b style="background:#a0c;color:#fff;padding:0 4px">⛔ N 对跳过</b> — 右边某节点持续读不到 → 整对赋值无效(常见:SH 段端子 NTVDPU 没暴露读权限)</li>
+<li><b style="background:#c00;color:#fff;padding:0 4px">⚠ 写后未生效</b> — 写了但 DCS 端持续 ≥ 1 秒不一致(常见:DI 上游被组态强驱动)</li>
+<li><b style="background:#c60;color:#fff;padding:0 4px">写失败 N 节点</b> — OPC server 拒绝写(BadTypeMismatch 等)</li>
+<li><b style="background:#888;color:#fff;padding:0 4px">读失败 N 节点</b> — OPC 节点不存在 / 卡件未连</li>
+</ul>
+
+<h2>9. 常见问题</h2>
+<h3>Q: @ 搜不到点?</h3>
+<p>① 中文输入法 — 拼音期间不弹,选完字才搜。② 该点不在已扫的 DPU CSV 里 — 点【🔄 刷新点表】。③ 关键词太严,试 <b>空格分多个词</b>(<code>@A给煤 启</code>)。</p>
+
+<h3>Q: 改了脚本怎么生效?</h3>
+<p>点【💾 保存】然后点【▶ 运行】 — 已经在跑会 <b>热重启</b>(状态栏提示 ♻),自动接管新 pairs。RS/LAG/$var 状态不丢。</p>
+
 <h3>Q: 保存失败提示"第 N 行错"?</h3>
-<p>保存按钮自动跳到错误行并选中整行,根据状态栏提示修。常见错误:括号不闭合、参数个数不对、未知函数名(大小写敏感)。</p>
-<h3>Q: 嵌套函数支持吗?</h3>
-<p>暂不支持。<code>= LIMIT(MUL(x, 0.5), 0, 100)</code> 解析报错。用两行:<br>
-<code>tmp = MUL(x, 0.5)</code><br>
-<code>out = LIMIT(tmp, 0, 100)</code></p>
+<p>保存按钮自动跳到错误行并选中整行,根据状态栏提示修。常见:括号不闭合、参数个数不对、未知函数名(大小写敏感)、运算符前后空格。</p>
+
+<h3>Q: DI 写不进 / 写后未生效?</h3>
+<p>① DI 通道 OPC <b>可直接写 PV</b>(NT6000 有 1 秒延迟),正常情况下应生效。② 如果【🩺 诊断 → 写后未生效】持续报某些 DI,说明 <b>DCS 组态层有上游块在驱动它</b>,我们写完下个扫描周期被覆盖。<b>解决</b>:CCMStudio 端断开 DI 上游 / 改用 MUX / 写组态软点(SH 段)。</p>
+
+<h3>Q: SH 段读到 None 怎么办?</h3>
+<p><code>DPU.SH0xxx.PROxxxxx.IN</code> 是组态块输入端子,NTVDPU 通常 <b>不让外部读这种节点</b>(返回 None)→ 整对赋值被静默跳过(⛔ badge)。解决:CCMStudio 把 IN 上游断线,或改用同块的 <code>.OUT</code> 端子。</p>
+
+<h3>Q: NTVDPU 试用授权到期重启怎么办?</h3>
+<p>① 重启前点【📸 状态镜像 → 💾 保存镜像】留底。② NTVDPU 重启时 viewer 会自动重连(连续 10 周期读失败触发,日志可见)。③ 重连后内存 RS/LAG 状态保留,last_written 自动清空 → 下周期所有 LHS 重写一次。④ 如果 viewer 进程也被重启了,点【🔄 恢复镜像】拉回保存时的状态。</p>
+
+<h3>Q: 镜像里 RS 全是 0?</h3>
+<p>说明你保存时内存里就没有 RS 状态(可能 viewer 刚重启 / 脚本没运行 / 全部 SkipCycle 中)。先【▶ 运行】跑一会儿让 RS 算出值,再保存。<b>空内存保存已被拦截</b>,防止误覆盖。</p>
+
+<h3>Q: 嵌套函数 / 中缀运算符支持吗?</h3>
+<p>✓ 都支持。可写 <code>LIMIT(MUL(x, 0.5), 0, 100)</code> 或 <code>LIMIT(x * 0.5, 0, 100)</code> 或 <code>(x / 250) ^ 2</code>。中间变量 <code>$xxx</code> 在表达式里也通用。</p>
 
 <p style="margin-top:24px;color:#888;font-size:11px;border-top:1px dotted #ccc;padding-top:10px">
 按 <span class="kbd">Esc</span> 或点 × 关闭。
@@ -1489,12 +1664,361 @@ function openHelp() {
 function closeHelp() {
   document.getElementById('helpmodal').style.display = 'none';
 }
+
+// ===== 诊断模态 =====
+let _lastDebug = null;
+async function openDebug() {
+  document.getElementById('dbgbody').innerHTML = '<span style="color:#999">载入中...</span>';
+  document.getElementById('dbgmodal').style.display = 'block';
+  try {
+    const r = await fetch('/api/script/debug');
+    const d = await r.json();
+    _lastDebug = d;
+    document.getElementById('dbgbody').innerHTML = renderDebug(d);
+  } catch (e) {
+    document.getElementById('dbgbody').innerHTML = `<span style="color:#c00">载入失败: ${e}</span>`;
+  }
+}
+function closeDebug() { document.getElementById('dbgmodal').style.display = 'none'; }
+
+async function resetState() {
+  if (!confirm('清空 RS/LAG/中间变量 持久状态?\n用于"从头开始"仿真. 当前运行中的循环不受影响, 但本次开始所有锁存重置.')) return;
+  const r = await fetch('/api/script/reset_state', {method: 'POST'});
+  const d = await r.json();
+  setStatus(d.ok ? `✓ ${d.msg}` : '✗ 失败', d.ok ? 'ok' : 'err');
+  openDebug();
+}
+
+async function openSnapshot() {
+  document.getElementById('snapmodal').style.display = 'block';
+  await refreshSnapInfo();
+}
+function closeSnapshot() { document.getElementById('snapmodal').style.display = 'none'; }
+
+async function refreshSnapInfo() {
+  const [infoR, stR] = await Promise.all([
+    fetch('/api/script/state/info?detail=1'),
+    fetch('/api/script/status'),
+  ]);
+  const info = await infoR.json();
+  const st = await stR.json();
+  const box = document.getElementById('snapinfo');
+  const restoreBtn = document.getElementById('snapRestoreBtn');
+  const delBtn = document.getElementById('snapDeleteBtn');
+
+  // 顶部:内存 vs 磁盘对照表
+  const memN = {rs: st.memory_rs_count||0, lag: st.memory_lag_count||0, var: st.memory_var_count||0};
+  const dskN = {rs: info.exists ? info.rs_count : '—',
+                lag: info.exists ? info.lag_count : '—',
+                var: info.exists ? info.var_count : '—'};
+  let html = `<table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:10px;">
+    <tr style="background:#f5f5f5;border-bottom:1px solid #ccc">
+      <th style="text-align:left;padding:4px 8px;width:120px"></th>
+      <th style="text-align:center;padding:4px 8px">RS 触发器</th>
+      <th style="text-align:center;padding:4px 8px">LAG</th>
+      <th style="text-align:center;padding:4px 8px">中间变量 $</th>
+    </tr>
+    <tr style="border-bottom:1px dotted #ddd">
+      <td style="padding:3px 8px;color:#666">💾 当前内存</td>
+      <td style="text-align:center;padding:3px 8px"><b style="color:#048">${memN.rs}</b></td>
+      <td style="text-align:center;padding:3px 8px"><b style="color:#048">${memN.lag}</b></td>
+      <td style="text-align:center;padding:3px 8px"><b style="color:#048">${memN.var}</b></td>
+    </tr>
+    <tr>
+      <td style="padding:3px 8px;color:#666">📸 磁盘镜像</td>
+      <td style="text-align:center;padding:3px 8px"><b style="color:#06a">${dskN.rs}</b></td>
+      <td style="text-align:center;padding:3px 8px"><b style="color:#06a">${dskN.lag}</b></td>
+      <td style="text-align:center;padding:3px 8px"><b style="color:#06a">${dskN.var}</b></td>
+    </tr>
+  </table>`;
+
+  if (!info.exists) {
+    html += `<div style="color:#888;text-align:center;padding:10px">还没有保存过镜像</div>`;
+    box.innerHTML = html;
+    restoreBtn.disabled = true; restoreBtn.style.opacity = 0.4;
+    delBtn.disabled = true; delBtn.style.opacity = 0.4;
+    return;
+  }
+  if (info.error) {
+    html += `<div style="color:#c00">镜像文件存在但读取失败: ${info.error}</div>`;
+    box.innerHTML = html;
+    return;
+  }
+  html += `<div style="color:#888;font-size:11px;margin-bottom:8px">
+    保存时间 <b>${info.saved_at}</b> (${info.age_s} 秒前) ·
+    文件 <code style="font-size:10px">${info.path||'data/state_snapshot.json'}</code> · ${info.size_bytes} B
+  </div>`;
+
+  // 详情表
+  function fmtV(v) {
+    if (v === true) return '<b style="color:#0a0">1</b>';
+    if (v === false) return '<b style="color:#c00">0</b>';
+    if (typeof v === 'number') return Number.isInteger(v) ? v : v.toFixed(3);
+    return String(v);
+  }
+  function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  if ((info.rs_detail || []).length) {
+    html += `<details style="margin-top:10px" open>
+      <summary style="cursor:pointer;color:#048;font-weight:bold;font-size:12px;padding:4px 0">▼ RS 触发器 (${info.rs_detail.length} 个)</summary>
+      <div style="max-height:240px;overflow:auto;border:1px solid #ddd;margin-top:4px">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:monospace">
+          <thead><tr style="background:#f5f5f5;position:sticky;top:0">
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">S (开指令)</th>
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">R (关指令)</th>
+            <th style="text-align:center;padding:3px 6px;width:36px;border-bottom:1px solid #ccc">Q</th>
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">用在</th>
+          </tr></thead><tbody>`;
+    for (const it of info.rs_detail) {
+      const [s, r] = it.args;
+      const users = (it.users || []).map(escH).join('<br>') || '<span style="color:#aaa">(无引用)</span>';
+      html += `<tr style="border-bottom:1px dotted #eee">
+        <td style="padding:2px 6px;white-space:nowrap">${escH(s||'')}</td>
+        <td style="padding:2px 6px;white-space:nowrap">${escH(r||'')}</td>
+        <td style="text-align:center;padding:2px 6px">${fmtV(it.value)}</td>
+        <td style="padding:2px 6px;color:#048">${users}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></details>`;
+  }
+
+  if ((info.lag_detail || []).length) {
+    html += `<details style="margin-top:8px" open>
+      <summary style="cursor:pointer;color:#048;font-weight:bold;font-size:12px;padding:4px 0">▼ LAG 一阶滞后 (${info.lag_detail.length} 个)</summary>
+      <div style="max-height:160px;overflow:auto;border:1px solid #ddd;margin-top:4px">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:monospace">
+          <thead><tr style="background:#f5f5f5;position:sticky;top:0">
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">输入</th>
+            <th style="text-align:right;padding:3px 6px;width:50px;border-bottom:1px solid #ccc">T</th>
+            <th style="text-align:right;padding:3px 6px;width:70px;border-bottom:1px solid #ccc">y</th>
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">用在</th>
+          </tr></thead><tbody>`;
+    for (const it of info.lag_detail) {
+      const users = (it.users || []).map(escH).join('<br>') || '<span style="color:#aaa">(无引用)</span>';
+      html += `<tr style="border-bottom:1px dotted #eee">
+        <td style="padding:2px 6px">${escH(it.args[0]||'')}</td>
+        <td style="text-align:right;padding:2px 6px">${escH(it.args[1]||'')}</td>
+        <td style="text-align:right;padding:2px 6px">${fmtV(it.value)}</td>
+        <td style="padding:2px 6px;color:#048">${users}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></details>`;
+  }
+
+  if (Object.keys(info.var_detail || {}).length) {
+    html += `<details style="margin-top:8px" open>
+      <summary style="cursor:pointer;color:#048;font-weight:bold;font-size:12px;padding:4px 0">▼ 中间变量 $xxx (${Object.keys(info.var_detail).length} 个)</summary>
+      <div style="max-height:160px;overflow:auto;border:1px solid #ddd;margin-top:4px">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:monospace">
+          <thead><tr style="background:#f5f5f5;position:sticky;top:0">
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">变量名</th>
+            <th style="text-align:right;padding:3px 6px;width:80px;border-bottom:1px solid #ccc">当前值</th>
+          </tr></thead><tbody>`;
+    for (const [k, v] of Object.entries(info.var_detail)) {
+      html += `<tr style="border-bottom:1px dotted #eee">
+        <td style="padding:2px 6px;color:#90c"><b>${escH(k)}</b></td>
+        <td style="text-align:right;padding:2px 6px">${fmtV(v)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></details>`;
+  }
+
+  box.innerHTML = html;
+  restoreBtn.disabled = false; restoreBtn.style.opacity = 1;
+  delBtn.disabled = false; delBtn.style.opacity = 1;
+}
+
+async function saveSnapshot() {
+  // 先看内存里实际有多少
+  const st = await (await fetch('/api/script/status')).json();
+  const memN = `RS ${st.memory_rs_count||0} / LAG ${st.memory_lag_count||0} / $var ${st.memory_var_count||0}`;
+  // 先看磁盘上现有镜像有多少
+  const info = await (await fetch('/api/script/state/info')).json();
+  const diskN = info.exists
+    ? `RS ${info.rs_count} / LAG ${info.lag_count} / $var ${info.var_count} (${info.saved_at})`
+    : '(还没有镜像)';
+  const memEmpty = !st.memory_rs_count && !st.memory_lag_count && !st.memory_var_count;
+
+  let prompt = `保存当前内存状态到镜像?\n\n当前内存: ${memN}\n磁盘镜像: ${diskN}\n\n`;
+  if (memEmpty) {
+    prompt += '⚠ 警告: 内存里全是空状态! 保存会用空状态覆盖已有镜像.\n';
+    prompt += '建议先点【▶ 运行】跑一段时间, 让 RS 触发器算出值再保存.\n\n';
+    prompt += '仍要强制保存空状态? (会覆盖磁盘镜像)';
+    if (!confirm(prompt)) return;
+    // 强制保存
+    const r = await fetch('/api/script/state/save', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({force: true})});
+    const d = await r.json();
+    setStatus(d.ok ? `⚠ 已用空状态覆盖镜像` : '✗ ' + d.error, d.ok ? 'warn' : 'err');
+  } else {
+    if (!confirm(prompt + '点确定保存(会覆盖磁盘上的镜像).')) return;
+    const r = await fetch('/api/script/state/save', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'});
+    const d = await r.json();
+    const msg = d.ok ? `✓ 镜像已保存: RS ${d.saved.rs} / LAG ${d.saved.lag} / $var ${d.saved.var}` : '✗ ' + d.error;
+    setStatus(msg, d.ok ? 'ok' : 'err');
+  }
+  await refreshSnapInfo();
+}
+
+async function restoreSnapshot() {
+  const info = await (await fetch('/api/script/state/info')).json();
+  if (!info.exists) return;
+  if (!confirm(`从镜像恢复?\n镜像保存于: ${info.saved_at} (${info.age_s} 秒前)\n含: RS ${info.rs_count} / LAG ${info.lag_count} / $var ${info.var_count}\n\n当前内存状态会被覆盖.`)) return;
+  const r = await fetch('/api/script/state/restore', {method: 'POST'});
+  const d = await r.json();
+  const msg = d.ok ? `✓ 已恢复 (镜像 ${d.saved_at}): RS ${d.restored.rs} / LAG ${d.restored.lag} / $var ${d.restored.var}` : '✗ ' + d.error;
+  setStatus(msg, d.ok ? 'ok' : 'err');
+  await refreshSnapInfo();
+}
+
+async function deleteSnapshot() {
+  if (!confirm('删除镜像文件?\n删除后无法恢复,要重新保存才能再用.')) return;
+  const r = await fetch('/api/script/state/delete', {method: 'POST'});
+  const d = await r.json();
+  setStatus(d.ok ? '✓ 镜像已删除' : '✗ ' + (d.error||''), d.ok ? 'ok' : 'err');
+  await refreshSnapInfo();
+}
+
+function renderDebug(d) {
+  function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function tag(level) {
+    const c = level === 'ERROR' ? '#c00' : level === 'WARNING' ? '#c80' : '#06a';
+    return `<span style="color:${c};font-weight:bold;">${level}</span>`;
+  }
+  function ts(t) {
+    const dt = new Date(t * 1000);
+    return dt.toTimeString().slice(0, 8) + '.' + String(dt.getMilliseconds()).padStart(3, '0');
+  }
+
+  // 顶部状态
+  let html = `<h3 style="margin:0 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px;font-family:sans-serif">▶ 运行状态</h3>`;
+  html += `<pre style="background:#f5f5f5;padding:8px;margin:0;font-size:11px">`;
+  html += `运行中:        ${d.running ? '是' : '否'}\n`;
+  html += `运行时长:      ${d.uptime_s.toFixed(1)}s\n`;
+  html += `周期:          ${d.cycle_count}\n`;
+  html += `OPC 读累计:    ${d.read_count}\n`;
+  html += `OPC 写累计:    ${d.write_count}\n`;
+  html += `脚本对数:      ${d.pairs_count}\n`;
+  html += `OPC URL:       ${d.opc_url}\n`;
+  html += `周期 dt:       ${d.dt}s\n`;
+  html += `最近错:        ${d.last_error || '(无)'}`;
+  html += `</pre>`;
+
+  // 静默跳过 — RHS 读不到导致整对跳过 (最易被忽略的"安静失效")
+  if (d.top_skipped && d.top_skipped.length) {
+    html += `<h3 style="margin:14px 0 8px;border-bottom:2px solid #a0c;padding-bottom:4px;font-family:sans-serif;color:#a0c">⛔ 被跳过的赋值 (${d.top_skipped.length}) — RHS 节点读不到 → 整对赋值无效</h3>`;
+    html += `<div style="background:#faf0fc;padding:8px;font-size:11px">`;
+    html += `<div style="color:#666;margin-bottom:6px;font-size:10px">原因: 右边某个 OPC 节点持续 read=None → 求值时 SkipCycle → LHS 不写 → DCS 不变. 常见: ① SH 段端子 NTVDPU 没暴露读权限 ② OPC 节点拼错 ③ 节点存在但 NTVDPU 卡件未配置.</div>`;
+    html += `<table style="width:100%;border-collapse:collapse;">`;
+    html += `<tr style="background:#f0d6f5"><th style="text-align:left;padding:2px 6px">LHS (被跳的赋值)</th><th style="text-align:left;padding:2px 6px">读不到的源节点</th><th style="text-align:right;padding:2px 6px;width:60px">次数</th></tr>`;
+    for (const [lhs, n, cause] of d.top_skipped) {
+      const lhsShort = String(lhs).replace('ns=0;s=', '').replace('.HW.', '.').replace(/\.PV$/, '');
+      const causeShort = String(cause).replace('ns=0;s=', '').replace('.HW.', '.').replace(/\.PV$/, '');
+      html += `<tr style="border-bottom:1px dotted #ecd"><td style="padding:2px 6px"><code>${escH(lhsShort)}</code></td><td style="padding:2px 6px"><code style="color:#a0c">${escH(causeShort)}</code></td><td style="text-align:right;padding:2px 6px;font-weight:bold">${n}</td></tr>`;
+    }
+    html += `</table></div>`;
+  }
+  // 写后未生效 (跟 DCS 实际值对比)
+  if (d.write_ineffective && d.write_ineffective.length) {
+    html += `<h3 style="margin:14px 0 8px;border-bottom:2px solid #c00;padding-bottom:4px;font-family:sans-serif;color:#c00">⚠ 写后未生效 (${d.write_ineffective.length}) — 持续 ≥ 1 秒不一致</h3>`;
+    html += `<div style="background:#fef0f0;padding:8px;font-size:11px">`;
+    html += `<div style="color:#666;margin-bottom:6px;font-size:10px">已扣除 NTVDPU 内部 1 秒写入延迟。这里列出的是<b>真的没写进</b>的. 常见原因: ① AI HR/LR 没暴露 · ② DI 上游被组态驱动 · ③ SH 端子被组态覆盖</div>`;
+    html += `<table style="width:100%;border-collapse:collapse;">`;
+    html += `<tr style="background:#fdd"><th style="text-align:left;padding:2px 6px">节点</th><th style="text-align:right;padding:2px 6px;width:60px">我们写</th><th style="text-align:right;padding:2px 6px;width:60px">DCS 实际</th><th style="text-align:right;padding:2px 6px;width:60px">持续</th></tr>`;
+    for (const it of d.write_ineffective) {
+      const w = it.wrote === true ? '1' : it.wrote === false ? '0' : (typeof it.wrote === 'number' ? it.wrote.toFixed(2) : String(it.wrote));
+      const a = it.actual === true ? '1' : it.actual === false ? '0' : (typeof it.actual === 'number' ? it.actual.toFixed(2) : String(it.actual));
+      const short = it.node.replace('ns=0;s=', '').replace('.HW.', '.').replace(/\.PV$/, '');
+      html += `<tr style="border-bottom:1px dotted #fbb"><td style="padding:2px 6px"><code>${escH(short)}</code></td><td style="text-align:right;padding:2px 6px;color:#0a0;font-weight:bold">${w}</td><td style="text-align:right;padding:2px 6px;color:#c00;font-weight:bold">${a}</td><td style="text-align:right;padding:2px 6px;color:#666">${it.streak || 0}周期</td></tr>`;
+    }
+    html += `</table></div>`;
+  }
+  // pairs 摘要
+  if (d.pairs_summary) {
+    html += `<h3 style="margin:14px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px;font-family:sans-serif">▶ 脚本摘要</h3>`;
+    html += '<div style="display:flex;gap:20px">';
+    html += '<div><b>LHS 分类:</b><br>';
+    for (const [k, v] of Object.entries(d.pairs_summary.lhs_by_type || {})) {
+      html += `  ${escH(k)}: ${v}<br>`;
+    }
+    html += '</div>';
+    html += '<div><b>函数使用:</b><br>';
+    for (const [k, v] of Object.entries(d.pairs_summary.function_usage || {})) {
+      html += `  ${escH(k)}: ${v}<br>`;
+    }
+    html += '</div></div>';
+  }
+
+  // 失败节点 Top
+  if (d.top_read_fail && d.top_read_fail.length) {
+    html += `<h3 style="margin:14px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px;font-family:sans-serif">▶ 读失败 Top 20</h3>`;
+    html += '<pre style="background:#fef0f0;padding:8px;margin:0;font-size:11px">';
+    for (const [node, n] of d.top_read_fail) html += `${String(n).padStart(6)}× ${escH(node)}\n`;
+    html += '</pre>';
+  }
+  if (d.top_write_fail && d.top_write_fail.length) {
+    html += `<h3 style="margin:14px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px;font-family:sans-serif">▶ 写失败 Top 20</h3>`;
+    html += '<pre style="background:#fef0f0;padding:8px;margin:0;font-size:11px">';
+    for (const [node, n] of d.top_write_fail) html += `${String(n).padStart(6)}× ${escH(node)}\n`;
+    html += '</pre>';
+  }
+
+  // 日志
+  html += `<h3 style="margin:14px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px;font-family:sans-serif">▶ 最近日志 (${(d.logs || []).length} 条)</h3>`;
+  html += '<pre style="background:#fafafa;padding:8px;margin:0;font-size:11px;max-height:280px;overflow-y:auto">';
+  for (const e of (d.logs || []).slice().reverse()) {
+    html += `[${ts(e.ts)}] ${tag(e.level)} ${escH(e.logger)}: ${escH(e.msg)}\n`;
+  }
+  html += '</pre>';
+  return html;
+}
+
+function copyDebug() {
+  if (!_lastDebug) return;
+  const d = _lastDebug;
+  // 纯文本格式, 适合贴到聊天
+  let txt = `=== LeDCSSIM 诊断报告 (${new Date().toISOString()}) ===\n\n`;
+  txt += `[运行状态]\n`;
+  txt += `  running=${d.running}, uptime=${d.uptime_s.toFixed(1)}s, cycle=${d.cycle_count}\n`;
+  txt += `  read=${d.read_count}, write=${d.write_count}, pairs=${d.pairs_count}\n`;
+  txt += `  opc=${d.opc_url}, dt=${d.dt}s\n`;
+  txt += `  last_error: ${d.last_error || '(无)'}\n\n`;
+  if (d.pairs_summary) {
+    txt += `[脚本摘要]\n`;
+    txt += `  LHS:  ${JSON.stringify(d.pairs_summary.lhs_by_type)}\n`;
+    txt += `  函数: ${JSON.stringify(d.pairs_summary.function_usage)}\n\n`;
+  }
+  if (d.top_read_fail && d.top_read_fail.length) {
+    txt += `[读失败 Top]\n`;
+    for (const [node, n] of d.top_read_fail) txt += `  ${n}× ${node}\n`;
+    txt += '\n';
+  }
+  if (d.top_write_fail && d.top_write_fail.length) {
+    txt += `[写失败 Top]\n`;
+    for (const [node, n] of d.top_write_fail) txt += `  ${n}× ${node}\n`;
+    txt += '\n';
+  }
+  txt += `[日志 (最近 100 条)]\n`;
+  const ts = t => new Date(t * 1000).toISOString().slice(11, 23);
+  for (const e of d.logs || []) {
+    txt += `  [${ts(e.ts)}] ${e.level} ${e.logger}: ${e.msg}\n`;
+  }
+  navigator.clipboard.writeText(txt).then(() => {
+    setStatus('✓ 诊断报告已复制到剪贴板, 可粘贴', 'ok');
+  }, err => {
+    setStatus('✗ 复制失败: ' + err, 'err');
+  });
+}
 // F1 打开帮助, Esc 关闭, 监听 Ctrl 状态(给 popup 显示连选模式)
 document.addEventListener('keydown', (e) => {
   if (e.key === 'F1') { e.preventDefault(); openHelp(); }
   else if (e.key === 'Escape') {
     if (document.getElementById('helpmodal').style.display === 'block') closeHelp();
     if (document.getElementById('bkmodal').style.display === 'block') closeBackups();
+    if (document.getElementById('dbgmodal').style.display === 'block') closeDebug();
+    if (document.getElementById('snapmodal').style.display === 'block') closeSnapshot();
   }
   // Ctrl/Shift 按下 — popup hdr 切"连选 ON"
   let changed = false;
@@ -1653,10 +2177,21 @@ function renderVals() {
   const roleSel = document.getElementById('fltRole').value;
   const kw = (document.getElementById('fltKw').value || '').toLowerCase().trim();
 
+  function _isDiff(a, b) {
+    if (a === null || b === null || a === undefined || b === undefined) return false;
+    const norm = x => (x === true ? 1 : x === false ? 0 : x);
+    const na = norm(a), nb = norm(b);
+    if (typeof na === 'number' && typeof nb === 'number') return Math.abs(na - nb) > 0.01;
+    return String(na) !== String(nb);
+  }
   const filtered = _valRows.filter(r => {
     if (dpuSel && r.dpu !== dpuSel) return false;
     if (codeSel && r.code !== codeSel) return false;
-    if (roleSel && r.role !== roleSel) return false;
+    if (roleSel === 'diff') {
+      if (!_isDiff(r.writeVal, r.readVal)) return false;
+    } else if (roleSel && r.role !== roleSel) {
+      return false;
+    }
     if (kw && !(r.desc.toLowerCase().includes(kw) || r.short.toLowerCase().includes(kw))) return false;
     return true;
   });
@@ -1672,27 +2207,44 @@ function renderVals() {
     return;
   }
   const shown = filtered.slice(0, 200);
+  // 统一格式: 布尔(true/false) 和小整数 0/1 一律显示 "0" / "1", 其他数字保留 2 位小数
+  function fmtVal(v) {
+    if (v === null || v === undefined) return '';
+    if (v === true)  return '1';
+    if (v === false) return '0';
+    if (typeof v === 'number') {
+      return Number.isInteger(v) ? String(v) : v.toFixed(2);
+    }
+    return String(v);
+  }
+  // 差异判断: 归一到 String 后比 (true=1, false=0, 数字差>0.01 算不同)
+  function isDiff(a, b) {
+    if (a === null || b === null || a === undefined || b === undefined) return false;
+    const norm = x => (x === true ? 1 : x === false ? 0 : x);
+    const na = norm(a), nb = norm(b);
+    if (typeof na === 'number' && typeof nb === 'number') return Math.abs(na - nb) > 0.01;
+    return String(na) !== String(nb);
+  }
   box.innerHTML =
     '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
     '<thead><tr style="background:#f5f5f5;border-bottom:1px solid #ccc;">' +
     '<th style="text-align:left;padding:2px 6px;">tag</th>' +
-    '<th style="padding:2px 6px;width:32px;">角色</th>' +
-    '<th style="text-align:right;padding:2px 6px;width:60px;">值</th>' +
+    '<th style="text-align:right;padding:2px 6px;width:55px;">写入</th>' +
+    '<th style="text-align:right;padding:2px 6px;width:55px;">读取</th>' +
     '</tr></thead><tbody>' +
     shown.map(r => {
-      const roleColor = r.role === '写' ? '#0a0' : '#06a';
-      const roleBg = r.role === '写' ? '#e8f5e8' : '#e8f0fb';
-      const v = (typeof r.val === 'number' && !Number.isInteger(r.val))
-        ? r.val.toFixed(2) : String(r.val);
-      return `<tr style="border-bottom:1px dotted #eee">
+      const wTxt = fmtVal(r.writeVal);
+      const rTxt = fmtVal(r.readVal);
+      const diff = isDiff(r.writeVal, r.readVal);
+      // 差异行:整行淡红底,提示"写了但实际不一致"
+      const rowBg = diff ? 'background:#fef0f0' : '';
+      return `<tr style="border-bottom:1px dotted #eee;${rowBg}">
         <td style="padding:1px 6px;">
           <code style="font-size:10px;color:#048">${r.short}</code>
           ${r.desc ? `<span style="color:#666;font-size:10px;margin-left:4px">${r.desc}</span>` : ''}
         </td>
-        <td style="padding:1px 6px;text-align:center;">
-          <span style="background:${roleBg};color:${roleColor};padding:0 4px;border-radius:2px;font-size:10px;font-weight:bold">${r.role}</span>
-        </td>
-        <td style="padding:1px 6px;text-align:right;font-weight:bold;color:#06a;">${v}</td>
+        <td style="padding:1px 6px;text-align:right;font-weight:bold;color:${wTxt?'#0a0':'#ccc'};">${wTxt || '—'}</td>
+        <td style="padding:1px 6px;text-align:right;font-weight:bold;color:${rTxt?'#06a':'#ccc'};">${rTxt || '—'}</td>
       </tr>`;
     }).join('') +
     '</tbody></table>' +
@@ -1726,9 +2278,20 @@ async function pollStatus() {
       const barWidth = Math.min(100, lp);
       const bar = `<span style="display:inline-block;vertical-align:middle;width:80px;height:8px;background:#eee;border:1px solid #aaa;margin:0 4px;">` +
                   `<span style="display:block;height:100%;width:${barWidth}%;background:${lcolor};"></span></span>`;
+      // 健康度 badge: 静默跳过 / 写后未生效 / 写失败 / 读失败
+      const warns = [];
+      if (s.skipped_pairs > 0)
+        warns.push(`<span onclick="openDebug()" style="cursor:pointer;background:#a0c;color:#fff;padding:1px 6px;border-radius:2px;font-weight:bold;">⛔ ${s.skipped_pairs} 对跳过 (源读不到)</span>`);
+      if (s.write_ineffective > 0)
+        warns.push(`<span onclick="openDebug()" style="cursor:pointer;background:#c00;color:#fff;padding:1px 6px;border-radius:2px;font-weight:bold;">⚠ 写后未生效 ${s.write_ineffective}</span>`);
+      if (s.write_fail_nodes > 0)
+        warns.push(`<span onclick="openDebug()" style="cursor:pointer;background:#c60;color:#fff;padding:1px 6px;border-radius:2px;" title="累计 ${s.write_fail_total} 次">写失败 ${s.write_fail_nodes} 节点</span>`);
+      if (s.read_fail_nodes > 0)
+        warns.push(`<span onclick="openDebug()" style="cursor:pointer;background:#888;color:#fff;padding:1px 6px;border-radius:2px;" title="累计 ${s.read_fail_total} 次">读失败 ${s.read_fail_nodes} 节点</span>`);
+      const warnHtml = warns.length ? '  ' + warns.join(' ') : '';
       html = `${dot} <span class="run">运行中</span>  ` +
              `周期 <b>${s.cycle_count}</b> · 读 <b>${s.read_count}</b> · 写 <b>${s.write_count}</b>  ` +
-             `已运行 ${s.uptime_s.toFixed(1)}s · ${s.pairs_count} 对` +
+             `已运行 ${s.uptime_s.toFixed(1)}s · ${s.pairs_count} 对${warnHtml}` +
              `\n通讯负荷 ${bar}<b style="color:${lcolor}">${lp.toFixed(1)}%</b>` +
              `  (周期实际 <b>${s.avg_cycle_ms}</b>ms / 设定 ${s.dt_ms}ms · 读 ${s.avg_read_ms}ms · 写 ${s.avg_write_ms}ms)`;
       if (s.last_error) html += `\n<span class="err">最近错: ${s.last_error}</span>`;
@@ -1761,13 +2324,15 @@ async function pollStatus() {
         continue;
       }
       dpus.add(dpu);
-      const role = (k in written) ? '写' : '读';
-      const val = (k in written) ? written[k] : readVals[k];
+      const writeVal = (k in written) ? written[k] : null;
+      const readVal  = (k in readVals) ? readVals[k] : null;
+      // role: 同时有写读 = "对比",仅写 = "写",仅读 = "读"
+      const role = (writeVal !== null && readVal !== null) ? '对比'
+                 : (writeVal !== null) ? '写' : '读';
       rows.push({
         full: k, short: shortLabel, dpu, code,
-        // 描述: 脚本里写的优先, 否则用点表 (CSV) 的标准描述
         desc: tagDescMap[k] || symbolsDescMap[k] || '',
-        val, role
+        writeVal, readVal, role,
       });
     }
     rows.sort((a, b) => a.short.localeCompare(b.short));

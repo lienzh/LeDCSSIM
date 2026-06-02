@@ -58,8 +58,13 @@ py -3.12 -m src.cli run --online --duration 60
 ```bash
 # Web 仪表板 + DSL 脚本编辑器 (端口 5002)
 #   - /script 页面: DSL 赋值脚本编辑 + OPC 实时桥接(MVP 主入口)
-#   - 已实现: @ 自动补全 / 中间变量 $xxx / 14 个算法块(RS LAG LIMIT 等) /
-#            自动备份链 / 行号 / 语法高亮 / 帮助 F1
+#   - 已实现: @ 自动补全(连选 Ctrl+Enter) / 中间变量 $xxx /
+#            18 个算法块(RS RS_NOT NOT AND OR ADD SUB MUL DIV
+#                        POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR)/
+#            中缀运算符 + - * / ^ + 嵌套 / 多目标赋值 /
+#            脚本备份(自动)/ 状态镜像(手动, RS/LAG/$var 落盘) /
+#            诊断(状态/失败统计/日志,一键复制) / OPC 自动重连 /
+#            热重启 / 行号 / 语法高亮 / 帮助 F1
 py -3.12 -m src.viewer
 
 # 从 YQ3SIM-IO/*.csv 自动勾选 OPC 通讯(按 KKS 配对规则,改前自动备份)
@@ -228,47 +233,57 @@ tests/  docs/
 DPU3013
 ├── HW                          # 硬件通道
 │   ├── AI010605                # AI 通道(机组功率, 0-990MW)
-│   │   ├── PV                  # 过程值(只读,由 HR/LR 决定)
-│   │   ├── HR                  # 量程上限(可写, Float)
-│   │   └── LR                  # 量程下限(可写, Float)
+│   │   ├── PV                  # 过程值(可直接写,前提:CCMStudio 已暴露)
+│   │   ├── HR                  # 量程上限(也可写, Float)
+│   │   └── LR                  # 量程下限(也可写, Float)
 │   ├── DI030401                # DI 通道
-│   │   ├── PV                  # 开关量(只读, Boolean)
+│   │   ├── PV                  # 开关量(可直接写, Boolean)
 │   │   ├── ALM, ACK, ACFG      # 报警相关
-│   │   ├── SCI, K, B, RSET, EN, SETB, CPV, RPV  # DI 配置参数
-│   │   └── ...                 # 均无法间接控制 PV
+│   │   └── SCI, K, B, ...      # 配置参数(一般不动)
 │   └── ...
 ├── SH0015, SH0021, ...         # 组态图号(约 100 个)
 │   └── {功能块名}
-│       └── PV                  # 功能块输出
+│       └── IN / OUT / PV       # 块端子(IN 一般被组态上游驱动, 写无效)
 └── ...
 ```
 
-### 8.2 AI 通道写入方案 ✅
+### 8.2 AI 通道写入 ✅(可直接写 PV)
 
-**原理**:NTVDPU 对无卡件 AI 通道内置正弦波信号发生器,PV 在 LR~HR 范围内波动。设置 `HR=LR=目标值`,PV 即锁定为该值。
-
-**已验证结论**:
-- 写入 HR/LR 后约 **1 秒**生效,之后 PV 完全稳定
-- 数据类型为 Float(VariantType=10)
-- 128 个 AI 通道,HR/LR 需在 CCMStudio 中配置暴露(目前仅 AI010605 已开通,后续可批量开通 — **不在代码开发范围**)
-- 单通道读写约 1.6ms,远低于 200ms 步长预算
+**结论**(2026-06-02 实测验证):
+- 直接写 `AI.PV` 即生效(NTVDPU 端 CCMStudio 暴露后)
+- **NTVDPU 内部刷新有 ~1 秒延迟** — 写后立即读还是旧值,1 秒后才稳定为新值
+- 数据类型 Float(VariantType=10);Boolean / Int 会被 `OPCClient.write_value` 自动适配
+- 早期的 HR/LR 双写方案(`write_ai_channel`)在某些场景下仍可用作锁定,但**不是必须**
 
 ```python
-# 通过 OPCClient 写 AI 通道
-await client.write_ai_channel("ns=0;s=DPU3013.HW.AI010605", 600.0)
+# 直接写 PV (推荐)
+await client.write_value("ns=0;s=DPU3013.HW.AI010605.PV", 600.0)
 ```
 
-### 8.3 DI 通道写入方案 ❌
+### 8.3 DI 通道写入 ✅(可直接写 PV)
 
-- DI 通道 PV 为 Boolean,直接写入不生效
-- 暴露的所有参数(ALM/ACK/SCI/K/B/RSET/EN/SETB/CPV/RPV)均无法间接控制 PV
-- **DI 通道必须在 CCMStudio 组态层做仿真切换(MUX 二选一)** — 非代码层面可解决
+**结论**(2026-06-02 实测验证,推翻早期"DI 不可写"结论):
+- 直接写 `DI.PV` 即生效,Boolean 类型
+- 跟 AI 一样有 **~1 秒**生效延迟
+- 写后立即读 → 仍是旧值;1 秒后稳定为新值
+- 之前误判"DI 不可写"的原因:对比逻辑没考虑延迟 → viewer 已修正为"持续 ≥ 5 周期(1 秒)不一致才报未生效"
+
+```python
+# 直接写 DI (Boolean)
+await client.write_value("ns=0;s=DPU3044.HW.DI010204.PV", True)
+```
+
+### 8.3a SH 段(组态块端子)写入 ⚠️
+
+- `DPU.SH0xxx.<块名>.IN` / `.OUT` / `.PV` 是组态块端子,不是硬件通道
+- `.IN` **通常被组态上游驱动** — 写入会被下一个扫描周期覆盖,且**当前 NTVDPU 不让外部读**(返回 None)→ viewer 会以 ⛔ "被跳过的赋值" 报出
+- 解决:CCMStudio 端把 `.IN` 上游断线(成为外部可驱动),或改用 `.OUT` 端子,或改写仿真量软点
 
 ### 8.4 读取注意事项
 
 - PV 读取必须 `raise_on_bad_status=False`(无卡件通道状态为 `UncertainInitialValue`)
 - 已封装在 `OPCClient.read_value()` 中
-- **在线模式必须校验 `SourceTimestamp`**:每次读 PV 时记录返回的 SourceTimestamp,如果两个相邻仿真步读到的 SourceTimestamp 完全相同,说明 NTVDPU 尚未处理本框架上一步写入的值(写入到 HR/LR 生效有 ~1s 延迟)。这种情况下要么等待、要么记录"未生效"标记 — 不要把陈旧值当作 DCS 控制逻辑的真实响应。
+- **写入有 ~1 秒生效延迟**:写后立即读还是旧值。viewer 的"写后未生效"判定已加 5 周期(1 秒)宽限期,避免误报。SourceTimestamp 校验可选(实测延迟稳定在 1 秒左右)
 
 ### 8.5 连接建立与重试
 
@@ -298,7 +313,7 @@ await client.write_ai_channel("ns=0;s=DPU3013.HW.AI010605", 600.0)
 - 批量读写用 `read_values` / `write_values`,不逐点同步读写
 - 单点异常捕获记录日志,**不中断整个仿真循环**(一个测点坏不能让整个模型停)
 - PV 读取必须 `read_data_value(raise_on_bad_status=False)`
-- 写 AI 通道用 `OPCClient.write_ai_channel()` 封装(内部写 HR/LR 双值,见第 8.2)
+- AI / DI 通道直接 `write_value(PV)` 即可(见第 8.2/8.3);老的 `write_ai_channel`(HR/LR 双写)仍可用,非必须
 - 在线模式校验 `SourceTimestamp`(见第 8.4)
 - OPC 地址在代码内统一格式:**去 `ns=0;s=`、`s=` 前缀和 DPU 名前缀,大写比较**(防重复和匹配失败,见开发原则第 4 条)
 

@@ -23,10 +23,36 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import List, Tuple, Optional, Union
 
 from src.opc_client.client import OPCClient
+
+
+# ---------- 会话日志环形缓冲 (debug 用, 不影响 stderr 输出) ----------
+_LOG_BUFFER = deque(maxlen=300)
+
+class _BufferHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            _LOG_BUFFER.append({
+                "ts": record.created,
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": self.format(record),
+            })
+        except Exception:
+            self.handleError(record)
+
+_buf_handler = _BufferHandler(level=logging.INFO)
+_buf_handler.setFormatter(logging.Formatter("%(message)s"))
+# 挂到根 logger, 抓所有模块 (asyncua / src.* / 我们自己)
+_root = logging.getLogger()
+if _buf_handler not in _root.handlers:
+    _root.addHandler(_buf_handler)
+# 同时降低 asyncua noise 到 WARNING (避免一周期 100 条 INFO)
+logging.getLogger("asyncua").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +94,86 @@ def short_to_full(s: str) -> str:
 def is_intermediate(s: str) -> bool:
     """是否中间变量(不参与 OPC 读写)"""
     return isinstance(s, str) and s.startswith("$")
+
+
+def _summarize_pairs(pairs) -> dict:
+    """统计 LHS 分类 + 函数使用 (debug 用)"""
+    from collections import Counter
+    lhs_type = Counter()
+    fn_use = Counter()
+    for lhs, rhs in pairs:
+        if isinstance(lhs, str):
+            if lhs.startswith("$"): lhs_type["$中间变量"] += 1
+            elif ".HW." in lhs:
+                m = re.search(r"\.HW\.([A-Z]+)\d+\.PV", lhs)
+                lhs_type[m.group(1) if m else "HW其他"] += 1
+            elif ".SH" in lhs: lhs_type["SH段"] += 1
+            else: lhs_type["其他"] += 1
+        # 递归数函数
+        def walk(node):
+            if isinstance(node, tuple):
+                fn_use[node[0]] += 1
+                for a in node[1]: walk(a)
+        walk(rhs)
+    return {"lhs_by_type": dict(lhs_type), "function_usage": dict(fn_use)}
+
+
+def reset_persistent_state() -> dict:
+    """显式清空持久状态 (RS/LAG/中间变量) — 用户想"从头开始"时调用"""
+    s = _STATE
+    n = {"rs": len(s.rs_state), "lag": len(s.lag_state), "var": len(s.intermediates)}
+    s.rs_state = {}
+    s.lag_state = {}
+    s.intermediates = {}
+    s.last_values = {}
+    s.last_read = {}
+    s.last_written = {}
+    try:
+        _SNAPSHOT_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+    logger.info(f"持久状态已清空: {n}")
+    return n
+
+
+def get_debug() -> dict:
+    """完整 debug 包: 状态 + 摘要 + 失败 + 写后未生效 + 日志"""
+    s = _STATE
+    # 写后未生效: 持续 >= 5 周期不一致 (1 秒, 避开 NTVDPU 写入延迟)
+    GRACE_CYCLES = 5
+    ineffective = []
+    for k, streak in s.ineffective_streak.items():
+        if streak < GRACE_CYCLES:
+            continue
+        if isinstance(k, str) and k.startswith("$"): continue
+        actual = s.last_read.get(k)
+        want = s.last_values.get(k)
+        if actual is None or want is None: continue
+        ineffective.append({"node": k, "wrote": want, "actual": actual, "streak": streak})
+    ineffective.sort(key=lambda x: -x["streak"])
+    return {
+        "running": s.running,
+        "uptime_s": (time.time() - s.started_at) if s.started_at else 0,
+        "cycle_count": s.cycle_count,
+        "read_count": s.read_count,
+        "write_count": s.write_count,
+        "last_error": s.last_error,
+        "opc_url": s.opc_url,
+        "dt": s.dt,
+        "pairs_count": len(s.pairs),
+        "pairs_summary": _summarize_pairs(s.pairs),
+        # 写后未生效 (最严重的问题, 没报错但实际没生效)
+        "write_ineffective": ineffective[:30],
+        # 静默跳过 — RHS 节点读不到导致整对赋值跳过
+        "top_skipped": sorted(
+            [(lhs, s.skip_count[lhs], s.skip_cause.get(lhs, "?"))
+             for lhs in s.skip_count],
+            key=lambda x: -x[1])[:30],
+        # 节点级 OPC 层面失败 (server 直接拒)
+        "top_read_fail": sorted(s.node_read_fail.items(), key=lambda x: -x[1])[:20],
+        "top_write_fail": sorted(s.node_write_fail.items(), key=lambda x: -x[1])[:20],
+        "logs": list(_LOG_BUFFER)[-100:],
+    }
 
 
 def is_ai_target(short_or_full: str) -> bool:
@@ -117,48 +223,181 @@ def _split_top_commas(s: str) -> list:
     return [a for a in args if a]
 
 
-# 支持的函数 + 参数个数
+# 支持的函数 + 参数个数 (int 固定, -1 表示变长)
 FUNC_ARITY = {
     # 锁存/逻辑
     "RS": 2, "RS_NOT": 2, "NOT": 1, "AND": 2, "OR": 2,
     # 算术 (参数: 常数 or 节点)
     "ADD": 2, "SUB": 2, "MUL": 2, "DIV": 2,
+    "POW": 2, "SQRT": 1, "ABS": 1,
     # 取值
     "MAX": 2, "MIN": 2, "LIMIT": 3,
     # 选择: SEL(cond, a, b) — cond 真则 a, 否则 b
     "SEL": 3,
-    # 一阶滞后: LAG(x, T) — y[k] = y[k-1] + dt/T*(x - y[k-1]), 时间常数 T 秒
+    # 一阶滞后: LAG(x, T) — y[k] = y[k-1] + dt/T*(x - y[k-1]), T 秒
     "LAG": 2,
+    # 折线特性 CHAR(x, x0,y0, x1,y1, ..., xN,yN) — 变长, 至少 2 个点
+    "CHAR": -1,
 }
 SUPPORTED_FUNCS = tuple(FUNC_ARITY.keys())
 
 
-def _parse_arg(s: str):
-    """解析一个参数:常数(float)或 OPC 节点(str)"""
-    s = _strip_paren_label(s)
-    try:
-        return float(s)
-    except ValueError:
-        return short_to_full(s)
+# ---------- 表达式 parser(递归下降, 支持中缀 + 嵌套) ----------
+
+_TOKEN_RE = re.compile(r"""
+    \s+
+  | (?P<NUMBER>\d+\.\d+|\d+)
+  | (?P<NODE>DPU\d{4}(?:\.\w+)+)
+  | (?P<VAR>\$[A-Za-z_]\w*)
+  | (?P<FUNC>[A-Z][A-Z_]*)(?=\s*[(（])
+  | (?P<LPAREN>[(（])
+  | (?P<RPAREN>[)）])
+  | (?P<COMMA>[,，])
+  | (?P<POW>\^|\*\*)
+  | (?P<OP>[+\-*/])
+""", re.VERBOSE)
+
+
+def _tokenize(s: str):
+    """切 token. 节点/变量后紧跟 `(...)` 视为描述, 整段跳过"""
+    tokens = []
+    pos = 0
+    while pos < len(s):
+        # 描述区: 上一个是 NODE/VAR, 当前是 ( 或 ( → 吞到匹配的 )
+        if tokens and tokens[-1][0] in ("NODE", "VAR") \
+                and pos < len(s) and s[pos] in "(（":
+            depth = 1
+            end = pos + 1
+            while end < len(s) and depth > 0:
+                if s[end] in "(（": depth += 1
+                elif s[end] in ")）": depth -= 1
+                end += 1
+            if depth == 0:
+                pos = end
+                continue
+            # 括号不闭合 → fall through, 后续会按错处理
+        m = _TOKEN_RE.match(s, pos)
+        if not m:
+            raise ParseError(f"无法解析 {s[pos:pos+12]!r}")
+        pos = m.end()
+        d = m.groupdict()
+        for k, v in d.items():
+            if v is not None:
+                tokens.append((k, v))
+                break
+        # 全是 None 表示空白, 跳过
+    return tokens
+
+
+def _parse_expr(tokens, pos):
+    """expr := term (('+'|'-') term)*"""
+    pos, left = _parse_term(tokens, pos)
+    while pos < len(tokens) and tokens[pos][0] == "OP" and tokens[pos][1] in "+-":
+        op = tokens[pos][1]
+        pos += 1
+        pos, right = _parse_term(tokens, pos)
+        left = ("ADD" if op == "+" else "SUB", [left, right])
+    return pos, left
+
+
+def _parse_term(tokens, pos):
+    """term := factor (('*'|'/') factor)*"""
+    pos, left = _parse_factor(tokens, pos)
+    while pos < len(tokens) and tokens[pos][0] == "OP" and tokens[pos][1] in "*/":
+        op = tokens[pos][1]
+        pos += 1
+        pos, right = _parse_factor(tokens, pos)
+        left = ("MUL" if op == "*" else "DIV", [left, right])
+    return pos, left
+
+
+def _parse_factor(tokens, pos):
+    """factor := unary ('^' factor)?   右结合"""
+    pos, left = _parse_unary(tokens, pos)
+    if pos < len(tokens) and tokens[pos][0] == "POW":
+        pos += 1
+        pos, right = _parse_factor(tokens, pos)
+        left = ("POW", [left, right])
+    return pos, left
+
+
+def _parse_unary(tokens, pos):
+    """unary := '-' unary | primary"""
+    if pos < len(tokens) and tokens[pos][0] == "OP" and tokens[pos][1] == "-":
+        pos += 1
+        pos, inner = _parse_unary(tokens, pos)
+        if isinstance(inner, (int, float)):
+            return pos, -float(inner)
+        return pos, ("SUB", [0.0, inner])
+    if pos < len(tokens) and tokens[pos][0] == "OP" and tokens[pos][1] == "+":
+        pos += 1
+        return _parse_unary(tokens, pos)
+    return _parse_primary(tokens, pos)
+
+
+def _parse_primary(tokens, pos):
+    """primary := NUMBER | NODE | VAR | FUNC '(' args ')' | '(' expr ')'"""
+    if pos >= len(tokens):
+        raise ParseError("表达式意外结束")
+    tk, val = tokens[pos]
+    if tk == "NUMBER":
+        return pos + 1, float(val)
+    if tk == "NODE":
+        return pos + 1, short_to_full(val)
+    if tk == "VAR":
+        return pos + 1, val
+    if tk == "FUNC":
+        fname = val
+        pos += 1
+        if pos >= len(tokens) or tokens[pos][0] != "LPAREN":
+            raise ParseError(f"{fname} 后缺少 '('")
+        pos += 1
+        args = []
+        if pos < len(tokens) and tokens[pos][0] != "RPAREN":
+            pos, a = _parse_expr(tokens, pos)
+            args.append(a)
+            while pos < len(tokens) and tokens[pos][0] == "COMMA":
+                pos += 1
+                pos, a = _parse_expr(tokens, pos)
+                args.append(a)
+        if pos >= len(tokens) or tokens[pos][0] != "RPAREN":
+            raise ParseError(f"{fname} 缺少 ')'")
+        pos += 1
+        if fname not in FUNC_ARITY:
+            raise ParseError(f"未知函数 {fname!r}(支持: {', '.join(SUPPORTED_FUNCS)})")
+        expected = FUNC_ARITY[fname]
+        if expected >= 0 and len(args) != expected:
+            raise ParseError(f"{fname} 需要 {expected} 个参数, 实际 {len(args)}")
+        # 变长: CHAR(x, x0,y0, ..., xN,yN) — 至少 5 参数 (x + 2 对 xy), 总数奇数
+        if expected < 0:
+            if fname == "CHAR" and (len(args) < 5 or len(args) % 2 == 0):
+                raise ParseError(f"CHAR 至少 5 参数 (x, x0,y0, x1,y1), 总数奇数; 实际 {len(args)}")
+        return pos, (fname, args)
+    if tk == "LPAREN":
+        pos += 1
+        pos, expr = _parse_expr(tokens, pos)
+        if pos >= len(tokens) or tokens[pos][0] != "RPAREN":
+            raise ParseError("缺少右括号 ')'")
+        return pos + 1, expr
+    raise ParseError(f"意外 token: {tk} {val!r}")
 
 
 def _parse_rhs(rhs_raw: str):
-    """解析右边:数字 / OPC tag / 函数调用
-       函数 → ('FNAME', [arg1, arg2, ...]),arg 是 float 或 str(node)
-       不支持嵌套(每个参数必须是常数或节点)
+    """解析右边为完整表达式。支持中缀运算符 + 函数嵌套 + 中间变量 + 节点描述。
+    返回:
+      - float                — 常数
+      - str ('ns=0;s=...')   — OPC 节点
+      - str ('$xxx')         — 中间变量
+      - tuple (fname, [args]) — 函数调用 / 运算符(args 可嵌套)
     """
-    rhs = rhs_raw.strip()
-    m = re.match(r'^([A-Z][A-Z_]*)\s*\((.+)\)\s*$', rhs, re.DOTALL)
-    if m:
-        fname = m.group(1)
-        if fname not in FUNC_ARITY:
-            raise ParseError(f"未知函数 {fname!r}(支持: {', '.join(SUPPORTED_FUNCS)})")
-        args = _split_top_commas(m.group(2))
-        expected = FUNC_ARITY[fname]
-        if len(args) != expected:
-            raise ParseError(f"{fname} 需要 {expected} 个参数, 实际 {len(args)}")
-        return (fname, [_parse_arg(a) for a in args])
-    return _parse_arg(rhs)
+    tokens = _tokenize(rhs_raw)
+    if not tokens:
+        raise ParseError("右边为空")
+    pos, result = _parse_expr(tokens, 0)
+    if pos < len(tokens):
+        leftover = tokens[pos]
+        raise ParseError(f"表达式末尾多余 token: {leftover[1]!r}")
+    return result
 
 
 def parse_script(text: str) -> List[Tuple[str, Union[str, float]]]:
@@ -206,17 +445,20 @@ def parse_script(text: str) -> List[Tuple[str, Union[str, float]]]:
         lhs_raw, rhs_raw = stripped.split("=", 1)
         if not lhs_raw.strip() or not rhs_raw.strip():
             raise ParseError(f"第 {ln_no} 行左/右不能为空: {raw!r}")
-        # 左边: 剥描述 → OPC 节点
-        try:
-            lhs_full = short_to_full(_strip_paren_label(lhs_raw))
-        except ValueError as e:
-            raise ParseError(f"第 {ln_no} 行左边无效: {e}")
-        # 右边: 数字 / OPC 节点 / 函数 (如 RS(a, b))
+        # 右边: 数字 / OPC 节点 / 函数 / 表达式
         try:
             rhs_val = _parse_rhs(rhs_raw)
         except (ValueError, ParseError) as e:
             raise ParseError(f"第 {ln_no} 行右边无效: {e}")
-        result.append((lhs_full, rhs_val))
+        # 左边: 支持逗号分隔多目标 (A, B, C = expr 一次写 3 对)
+        # 描述括号里的逗号不切 — _split_top_commas 已尊重括号深度
+        lhs_parts = _split_top_commas(lhs_raw)
+        for lhs_part in lhs_parts:
+            try:
+                lhs_full = short_to_full(_strip_paren_label(lhs_part))
+            except ValueError as e:
+                raise ParseError(f"第 {ln_no} 行左边无效: {e}")
+            result.append((lhs_full, rhs_val))
     return result
 
 
@@ -227,12 +469,15 @@ class _SkipCycle(Exception):
     pass
 
 
-def _resolve(arg, val_by_node: dict, s=None):
+def _resolve(arg, val_by_node: dict, s=None, dt: float = 0.2):
     """参数 → 实际值。
-       str 以 $ 开头  → 中间变量 (从 s.intermediates 取)
-       str 是节点      → OPC 读值
+       tuple           → 嵌套函数, 递归求值
+       str ($xxx)      → 中间变量
+       str (节点)      → OPC 读值
        float           → 常数直返
     """
+    if isinstance(arg, tuple):
+        return _eval_rhs(arg, val_by_node, s, dt)
     if isinstance(arg, str):
         if arg.startswith("$"):
             if s is None or arg not in s.intermediates:
@@ -268,7 +513,7 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
         return None
 
     fname, raw_args = rhs
-    vals = [_resolve(a, val_by_node, s) for a in raw_args]
+    vals = [_resolve(a, val_by_node, s, dt) for a in raw_args]
 
     # 锁存/逻辑
     if fname in ("RS", "RS_NOT"):
@@ -286,12 +531,19 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
         return bool(vals[0]) and bool(vals[1])
     if fname == "OR":
         return bool(vals[0]) or bool(vals[1])
-    # 算术
+    # 单参算术
+    if fname == "SQRT":
+        x = float(vals[0])
+        return x ** 0.5 if x >= 0 else 0.0
+    if fname == "ABS":
+        return abs(float(vals[0]))
+    # 双参算术
     a, b = (float(vals[0]), float(vals[1])) if len(vals) >= 2 else (0.0, 0.0)
     if fname == "ADD": return a + b
     if fname == "SUB": return a - b
     if fname == "MUL": return a * b
     if fname == "DIV": return a / b if b != 0 else 0.0
+    if fname == "POW": return a ** b
     if fname == "MAX": return max(a, b)
     if fname == "MIN": return min(a, b)
     # 限幅
@@ -301,6 +553,23 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
     # 选择
     if fname == "SEL":
         return vals[1] if bool(vals[0]) else vals[2]
+    # 折线特性 CHAR(x, x0,y0, x1,y1, ..., xN,yN)
+    # 端点外取最近值, 段内线性插值
+    if fname == "CHAR":
+        x = float(vals[0])
+        pts = []
+        for i in range(1, len(vals) - 1, 2):
+            pts.append((float(vals[i]), float(vals[i + 1])))
+        pts.sort(key=lambda p: p[0])
+        if x <= pts[0][0]: return pts[0][1]
+        if x >= pts[-1][0]: return pts[-1][1]
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]; x1, y1 = pts[i + 1]
+            if x0 <= x <= x1:
+                if x1 == x0: return y0
+                return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+        return pts[-1][1]
+
     # 一阶滞后 — 冷启动 y0=0, 输入阶跃后按时间常数 T 爬升
     if fname == "LAG":
         x, T = float(vals[0]), float(vals[1])
@@ -310,6 +579,184 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
         s.lag_state[key] = y
         return y
     return None
+
+
+# ---------- 状态镜像 (用户显式保存/恢复, 用于 NTVDPU 重启后手动还原) ----------
+
+_SNAPSHOT_PATH = Path("data/state_snapshot.json")
+
+
+def save_state_snapshot(force: bool = False) -> dict:
+    """显式保存当前 RS/LAG/中间变量到镜像文件 (用户主动调用)
+    JSON 结构清晰: 每个 RS/LAG 条目带 fname/args/value 字段, 便于查看核对
+    force=False 时若内存全空会拒绝, 避免误覆盖已有镜像
+    """
+    import json as _json
+    s = _STATE
+    if not force and not s.rs_state and not s.lag_state and not s.intermediates:
+        return {"ok": False, "error": "内存里 RS/LAG/中间变量 全为空, 拒绝保存(防覆盖). "
+                                       "请先运行脚本让状态算出来, 或加 force 强制保存"}
+    try:
+        _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "saved_at": time.time(),
+            "rs_state": [
+                {"fname": k[0], "args": list(k[1]), "value": v}
+                for k, v in s.rs_state.items()
+            ],
+            "lag_state": [
+                {"fname": k[0], "args": list(k[1]), "value": v}
+                for k, v in s.lag_state.items()
+            ],
+            "intermediates": s.intermediates,
+        }
+        _SNAPSHOT_PATH.write_text(
+            _json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        n = {"rs": len(s.rs_state), "lag": len(s.lag_state), "var": len(s.intermediates)}
+        logger.info(f"状态镜像已保存: {n}")
+        return {"ok": True, "saved": n}
+    except Exception as e:
+        logger.warning(f"保存镜像失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def restore_state_snapshot() -> dict:
+    """从镜像文件恢复 RS/LAG/中间变量"""
+    import json as _json
+    from datetime import datetime
+    s = _STATE
+    if not _SNAPSHOT_PATH.exists():
+        return {"ok": False, "error": "没有镜像文件,先保存"}
+    try:
+        data = _json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        # 兼容旧格式 (dict with key string) + 新格式 (list of dicts)
+        def _build(raw):
+            out = {}
+            if isinstance(raw, list):
+                for it in raw:
+                    out[(it["fname"], tuple(it["args"]))] = it["value"]
+            elif isinstance(raw, dict):
+                # 旧格式: "RS|arg1\x1farg2": value
+                for k, v in raw.items():
+                    parts = k.split("|", 1)
+                    args = tuple(parts[1].split("\x1f")) if len(parts) > 1 and parts[1] else ()
+                    out[(parts[0], args)] = v
+            return out
+        s.rs_state = _build(data.get("rs_state", []))
+        s.lag_state = _build(data.get("lag_state", []))
+        s.intermediates = data.get("intermediates", {})
+        # 清 last_written: 让下周期所有 LHS 强制重写, 把 RS 等状态对应的 OPC 写值真正发出去
+        s.last_written = {}
+        ts = data.get("saved_at", 0)
+        when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        n = {"rs": len(s.rs_state), "lag": len(s.lag_state), "var": len(s.intermediates)}
+        logger.info(f"已从镜像恢复: {n} (镜像保存于 {when})")
+        return {"ok": True, "restored": n, "saved_at": when}
+    except Exception as e:
+        logger.warning(f"恢复失败: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def _index_state_users(pairs):
+    """反向索引: state_key (RS/LAG) → [使用这个 state 的 LHS 短码列表]
+    用于镜像里显示 "这个触发器用在哪几个赋值"
+    """
+    out = {}
+    def _walk(expr, lhs_short, depth=0):
+        if depth > 5: return
+        if not isinstance(expr, tuple): return
+        fname, args = expr
+        if fname in ("RS", "RS_NOT", "LAG"):
+            real_fn = "RS" if fname in ("RS", "RS_NOT") else fname
+            key = (real_fn, tuple(args))
+            out.setdefault(key, []).append(f"{lhs_short} = {fname}(...)")
+        for a in args:
+            _walk(a, lhs_short, depth + 1)
+    for lhs, rhs in pairs:
+        short = lhs if isinstance(lhs, str) and lhs.startswith("$") \
+                else (lhs.replace("ns=0;s=", "").replace(".HW.", ".").replace(".PV", "")
+                      if isinstance(lhs, str) else str(lhs))
+        _walk(rhs, short)
+    return out
+
+
+def get_snapshot_info(with_detail: bool = False) -> dict:
+    """看当前镜像信息. with_detail=True 返回完整模块值用于检查"""
+    import json as _json
+    from datetime import datetime
+    if not _SNAPSHOT_PATH.exists():
+        return {"exists": False}
+    try:
+        data = _json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        ts = data.get("saved_at", 0)
+        rs_raw = data.get("rs_state", [])
+        lag_raw = data.get("lag_state", [])
+        intermediates = data.get("intermediates", {})
+        # 兼容新旧两种格式 (list 新格式 / dict 旧格式)
+        if isinstance(rs_raw, list):
+            rs_count = len(rs_raw)
+        else:
+            rs_count = len(rs_raw)  # dict 也算
+        if isinstance(lag_raw, list):
+            lag_count = len(lag_raw)
+        else:
+            lag_count = len(lag_raw)
+
+        out = {
+            "exists": True,
+            "saved_at": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
+            "age_s": int(time.time() - ts),
+            "rs_count": rs_count,
+            "lag_count": lag_count,
+            "var_count": len(intermediates),
+            "size_bytes": _SNAPSHOT_PATH.stat().st_size,
+            "path": str(_SNAPSHOT_PATH),
+        }
+
+        if with_detail:
+            # 把 OPC 节点路径缩短显示, 便于人眼对照
+            def _short(nid):
+                if isinstance(nid, str):
+                    return nid.replace("ns=0;s=", "").replace(".HW.", ".").replace(".PV", "")
+                return str(nid)
+            # 反向索引 state → [使用它的 LHS 列表]
+            users_index = _index_state_users(_STATE.pairs)
+            def _users_for(fname, args_full):
+                # 注意: rs_state key 是 raw_args (含完整 ns=0;s=...)
+                # users_index key 也是 raw_args, 直接查
+                k = (fname, tuple(args_full))
+                return users_index.get(k, [])
+            def _norm_items(raw):
+                items = []
+                if isinstance(raw, list):
+                    for it in raw:
+                        fname = it.get("fname", "?")
+                        args_full = it.get("args", [])
+                        items.append({
+                            "fname": fname,
+                            "args": [_short(a) for a in args_full],
+                            "value": it.get("value"),
+                            "users": _users_for(fname, args_full),
+                        })
+                elif isinstance(raw, dict):
+                    for k, v in raw.items():
+                        parts = k.split("|", 1)
+                        args_full = parts[1].split("\x1f") if len(parts) > 1 and parts[1] else []
+                        items.append({
+                            "fname": parts[0],
+                            "args": [_short(a) for a in args_full],
+                            "value": v,
+                            "users": _users_for(parts[0], args_full),
+                        })
+                return items
+            out["rs_detail"] = _norm_items(rs_raw)
+            out["lag_detail"] = _norm_items(lag_raw)
+            out["var_detail"] = intermediates
+        return out
+    except Exception as e:
+        return {"exists": True, "error": str(e)}
 
 
 # ---------- 后台运行状态 ----------
@@ -341,9 +788,19 @@ class _State:
         self.intermediates: dict = {}
         # 上次写入值 (用于跳过未变化的写,降低通讯负荷)
         self.last_written: dict = {}
+        # 节点级失败/成功累计 (debug 用)
+        self.node_read_fail: dict = {}     # {node: 累计读失败次数}
+        self.node_write_fail: dict = {}    # {node: 累计写失败次数}
+        self.node_write_ok: dict = {}      # {node: 累计写成功次数}
+        # SkipCycle 跟踪 — 因 RHS 读不到导致整对被跳过 (最常见的"安静失效")
+        self.skip_count: dict = {}         # {lhs: 累计跳过次数}
+        self.skip_cause: dict = {}         # {lhs: 第一个 None 的源节点}
+        # "写后未生效" 持续不一致计数 (NTVDPU 写入有 ~1 秒延迟, 需要稳定判定)
+        self.ineffective_streak: dict = {}  # {lhs: 连续不一致周期数}
 
 
 _STATE = _State()
+# 不自动恢复 — 用户在界面点【🔄 恢复镜像】才恢复 (避免误用陈旧状态)
 
 
 def get_status() -> dict:
@@ -354,11 +811,28 @@ def get_status() -> dict:
     avg_cycle = avg(s.recent_cycle_ms)
     dt_ms = s.dt * 1000
     load_pct = (avg_cycle / dt_ms * 100) if dt_ms > 0 else 0.0
+    # 写后未生效统计 — 必须持续 >= 5 周期 (1秒) 不一致才算
+    # (NTVDPU 写入有内部刷新延迟, 立即对比会误报)
+    GRACE_CYCLES = 5
+    n_write_ineffective = sum(1 for n in s.ineffective_streak.values() if n >= GRACE_CYCLES)
     return {
         "running": s.running,
         "cycle_count": s.cycle_count,
         "read_count": s.read_count,
         "write_count": s.write_count,
+        # 累计次数 + 涉及不同节点数 (区分: 1 个节点持续失败 vs 多个节点偶发失败)
+        "write_fail_total": sum(s.node_write_fail.values()),
+        "write_fail_nodes": len(s.node_write_fail),
+        "read_fail_total": sum(s.node_read_fail.values()),
+        "read_fail_nodes": len(s.node_read_fail),
+        "write_ineffective": n_write_ineffective,
+        # 当前内存里的持久状态计数 (镜像 save 前对比用)
+        "memory_rs_count": len(s.rs_state),
+        "memory_lag_count": len(s.lag_state),
+        "memory_var_count": len(s.intermediates),
+        # 静默跳过 (RHS 读不到, 整对赋值无效) — 最易被忽略
+        "skipped_pairs": len(s.skip_count),
+        "skipped_total": sum(s.skip_count.values()),
         "last_error": s.last_error,
         "started_at": s.started_at,
         "uptime_s": (time.time() - s.started_at) if s.started_at else 0,
@@ -367,7 +841,6 @@ def get_status() -> dict:
         "opc_url": s.opc_url,
         "last_values": s.last_values,
         "last_read": s.last_read,
-        # 实时负荷指标 (最近 20 周期平均)
         "avg_read_ms": round(avg_read, 1),
         "avg_write_ms": round(avg_write, 1),
         "avg_cycle_ms": round(avg_cycle, 1),
@@ -388,17 +861,23 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
         return
     logger.info(f"OPC 已连接, 进入循环 dt={dt}s, {len(pairs)} 对")
 
-    # 预解析:所有右边引用的 OPC 节点 (去重)
-    # 中间变量 ($xxx) 跳过 — 不读 OPC
+    # 自动重连状态: 连续 N 周期全部读不到值 → 视为连接断, 尝试重连
+    consec_fail = 0
+    RECONNECT_THRESHOLD = 10   # 10 周期 (~2 秒) 全失败就重连
+    BACKOFF_AFTER_FAIL = 5     # 重连失败后等 5 秒再试
+
+    # 预解析:所有需要读的 OPC 节点 (去重)
+    # 只收 RHS 引用的节点 — 求值要用. LHS 不读(用户的脚本范围外不浪费 OPC 通讯)
+    def _collect(expr, out):
+        if isinstance(expr, str):
+            if not expr.startswith("$"):
+                out.add(expr)
+        elif isinstance(expr, tuple):
+            for a in expr[1]:
+                _collect(a, out)
     read_set = set()
-    for _, rhs in pairs:
-        if isinstance(rhs, str):
-            if not rhs.startswith("$"):
-                read_set.add(rhs)
-        elif isinstance(rhs, tuple):
-            for a in rhs[1]:
-                if isinstance(a, str) and not a.startswith("$"):
-                    read_set.add(a)
+    for _lhs, rhs in pairs:
+        _collect(rhs, read_set)
     read_nodes = list(read_set)
 
     try:
@@ -413,20 +892,69 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                     raw = await client.read_values(read_nodes)
                     read_ms = (time.perf_counter() - r_t0) * 1000
                     val_by_node = dict(zip(read_nodes, raw))
-                    # 同步到 last_read (只保留非 None)
                     s.last_read = {k: v for k, v in val_by_node.items() if v is not None}
                     s.read_count += len(read_nodes)
+                    # 节点级读失败统计
+                    n_ok = 0
+                    for n, v in val_by_node.items():
+                        if v is None:
+                            s.node_read_fail[n] = s.node_read_fail.get(n, 0) + 1
+                        else:
+                            n_ok += 1
+                    # 自动重连判定: 全部读不到 → 视为连接断
+                    if n_ok == 0:
+                        consec_fail += 1
+                    else:
+                        consec_fail = 0
                 else:
                     val_by_node = {}
 
+                # OPC 自动重连 — NTVDPU 重启 / 网络抖动恢复
+                if consec_fail >= RECONNECT_THRESHOLD:
+                    logger.warning(f"连续 {consec_fail} 周期全部读失败, 重连 OPC")
+                    try: await client.disconnect()
+                    except Exception: pass
+                    client = OPCClient(opc_url)
+                    try:
+                        await client.connect(retry_count=2, retry_interval=2.0)
+                        # 重连后 NTVDPU 端所有值可能被重置, 清 last_written
+                        # 让所有 LHS 强制重写一次, 避免"跳过未变化"误判
+                        s.last_written = {}
+                        logger.info(f"OPC 重连成功, RS/LAG 状态保持, "
+                                    f"last_written 清空 → 下周期所有 LHS 重写")
+                        consec_fail = 0
+                    except Exception as e:
+                        logger.warning(f"OPC 重连失败, 等 {BACKOFF_AFTER_FAIL}s 再试: {e}")
+                        s.last_error = f"OPC 断连: {e}"
+                        await asyncio.sleep(BACKOFF_AFTER_FAIL)
+                        continue   # 跳过本周期的求值/写入
+
                 # 2. 计算每个 lhs 的目标值
-                #    LHS 是 $xxx 中间变量 → 存 intermediates, 不进 writes
-                #    LHS 是 OPC 节点 → 进 writes
                 writes: dict = {}
+                def _node_refs(expr):
+                    if isinstance(expr, str) and not expr.startswith("$"):
+                        yield expr
+                    elif isinstance(expr, tuple):
+                        for a in expr[1]:
+                            yield from _node_refs(a)
                 for lhs, rhs in pairs:
                     try:
                         v = _eval_rhs(rhs, val_by_node, s, dt)
                     except _SkipCycle:
+                        # 整对静默失败 — 记录 lhs + 找出第一个 None 的源
+                        s.skip_count[lhs] = s.skip_count.get(lhs, 0) + 1
+                        if lhs not in s.skip_cause:
+                            for node in _node_refs(rhs):
+                                if val_by_node.get(node) is None:
+                                    s.skip_cause[lhs] = node
+                                    break
+                            else:
+                                # 全是中间变量没值
+                                for a in (rhs[1] if isinstance(rhs, tuple) else []):
+                                    if isinstance(a, str) and a.startswith("$") \
+                                            and a not in s.intermediates:
+                                        s.skip_cause[lhs] = a
+                                        break
                         continue
                     if v is None:
                         continue
@@ -436,11 +964,26 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                     else:
                         writes[lhs] = v
 
-                # 3. 批量写 (只写变化的 + 失败的重试)
-                #    - 值跟上次一样且上次成功 → 跳过
-                #    - 值变化 / 上次失败 → 写
-                writes_changed = {lhs: v for lhs, v in writes.items()
-                                  if s.last_written.get(lhs) != v}
+                # 3. 批量写 (写规则: 实际值不等于目标才写, 避免被组态覆盖时永远不重试)
+                def _eq(a, b):
+                    """归一比较 (True/False/0/1 视为同类)"""
+                    if a is None or b is None: return False
+                    try:
+                        na = 1 if a is True else 0 if a is False else float(a)
+                        nb = 1 if b is True else 0 if b is False else float(b)
+                        return abs(na - nb) < 0.01
+                    except (TypeError, ValueError):
+                        return str(a) == str(b)
+                writes_changed = {}
+                for lhs, v in writes.items():
+                    actual = s.last_read.get(lhs)
+                    if actual is not None and _eq(actual, v):
+                        # DCS 实际值已经等于目标 → 跳过
+                        continue
+                    if actual is None and _eq(s.last_written.get(lhs), v):
+                        # 读不回来 (如 SH 段), 退回 last_written 判定
+                        continue
+                    writes_changed[lhs] = v
                 if writes_changed:
                     w_t0 = time.perf_counter()
                     write_results = await client.write_values(writes_changed)
@@ -449,9 +992,29 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                     for lhs, ok in write_results.items():
                         if ok:
                             s.last_written[lhs] = writes_changed[lhs]
+                            s.node_write_ok[lhs] = s.node_write_ok.get(lhs, 0) + 1
                             n_ok += 1
-                        # 失败的不进 last_written, 下周期自动重试
+                        else:
+                            s.node_write_fail[lhs] = s.node_write_fail.get(lhs, 0) + 1
                     s.write_count += n_ok
+
+                # 4. 写后未生效持续判定 (NTVDPU ~1s 延迟, 持续 5 周期不一致才算)
+                for lhs_n, want in s.last_values.items():
+                    if isinstance(lhs_n, str) and lhs_n.startswith("$"):
+                        continue
+                    actual = s.last_read.get(lhs_n)
+                    if actual is None:
+                        s.ineffective_streak[lhs_n] = 0
+                        continue
+                    try:
+                        w = 1 if want is True else 0 if want is False else float(want)
+                        a = 1 if actual is True else 0 if actual is False else float(actual)
+                        if abs(w - a) > 0.01:
+                            s.ineffective_streak[lhs_n] = s.ineffective_streak.get(lhs_n, 0) + 1
+                        else:
+                            s.ineffective_streak[lhs_n] = 0
+                    except (TypeError, ValueError):
+                        s.ineffective_streak[lhs_n] = 0
 
                 s.cycle_count += 1
                 s.last_error = None
@@ -488,16 +1051,23 @@ def start(pairs: List[Tuple[str, Union[str, float]]],
     s.pairs = pairs
     s.dt = dt
     s.opc_url = opc_url or DEFAULT_OPC_URL
+    # 运行时计数清零, 但持久状态 (rs/lag/中间变量) 不清 —
+    # 用户在线组态/热重启脚本时, RS 锁存等保持的量不丢
     s.cycle_count = 0
     s.read_count = 0
     s.write_count = 0
     s.last_error = None
-    s.last_values = {}
-    s.intermediates = {}
-    s.rs_state = {}
-    s.lag_state = {}
+    # 失败统计每次启动重新累计
+    s.node_read_fail = {}
+    s.node_write_fail = {}
+    s.node_write_ok = {}
+    s.skip_count = {}
+    s.skip_cause = {}
+    s.ineffective_streak = {}
     s.started_at = time.time()
     s.running = True
+    # 持久状态: rs_state / lag_state / intermediates / last_values / last_read / last_written
+    # 均保留. 改脚本后, 旧 key 残留无害 (新脚本用新 key)
 
     def _runner():
         try:
