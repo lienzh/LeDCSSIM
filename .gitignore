@@ -15,7 +15,14 @@ data/
 *~
 
 # 工程数据 / 用户私有
-YQ3SIM-IO/
+# YQ3SIM-IO 整体忽略, 只放行 SIMPLE/简化/*_S.csv (viewer @ 补全数据源)
+YQ3SIM-IO/*
+!YQ3SIM-IO/SIMPLE/
+YQ3SIM-IO/SIMPLE/*
+!YQ3SIM-IO/SIMPLE/简化/
+YQ3SIM-IO/SIMPLE/简化/*
+!YQ3SIM-IO/SIMPLE/简化/*_S.csv
+!YQ3SIM-IO/SIMPLE/简化/*-S.csv
 _pdf_pages/
 config/_OPC_*.md
 
