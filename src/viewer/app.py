@@ -1121,12 +1121,17 @@ mark      { background: #ff8; padding: 0; }
 </div>
 
 <script>
+let _stickyErrUntil = 0;   // 错误信息粘到此时间戳, pollStatus 不覆盖
 function setStatus(msg, cls) {
   // 保留光标位置指示器
   const cp = document.getElementById('cursorpos');
   const cpHtml = cp ? cp.outerHTML : '';
   document.getElementById('status').innerHTML =
     cpHtml + (cls ? `<span class="${cls}">${msg}</span>` : msg);
+  if (cls === 'err') {
+    _stickyErrUntil = Date.now() + 15000;   // 错误持续 15 秒不被定时刷新覆盖
+    try { console.error('[viewer]', msg); } catch(e) {}   // 同步到 DevTools 永久留底
+  }
 }
 
 // ===== 语法高亮 =====
@@ -2301,7 +2306,10 @@ async function pollStatus() {
              (s.cycle_count > 0 ? ` (上次跑了 ${s.cycle_count} 周期, 末次负荷 ${s.load_pct}%)` : '');
       if (s.last_error) html += `\n<span class="err">最近错: ${s.last_error}</span>`;
     }
-    document.getElementById('status').innerHTML = html;
+    // 错误信息 sticky 期间不覆盖 status 区域 (其它 panel 照常更新)
+    if (Date.now() >= _stickyErrUntil) {
+      document.getElementById('status').innerHTML = html;
+    }
     // 实时值 — 合并 last_values(写, LHS) + last_read(读, RHS 源)
     const written = s.last_values || {};
     const readVals = s.last_read || {};
