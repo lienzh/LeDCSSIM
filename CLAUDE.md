@@ -58,13 +58,24 @@ py -3.12 -m src.cli run --online --duration 60
 ```bash
 # Web 仪表板 + DSL 脚本编辑器 (端口 5002)
 #   - /script 页面: DSL 赋值脚本编辑 + OPC 实时桥接(MVP 主入口)
-#   - 已实现: @ 自动补全(连选 Ctrl+Enter) / 中间变量 $xxx /
-#            18 个算法块(RS RS_NOT NOT AND OR ADD SUB MUL DIV
-#                        POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR)/
+#   - 编辑器: @ 自动补全(连选 Ctrl+Enter) / 18 个算法块 (RS RS_NOT NOT AND OR
+#            ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR) /
+#            中间变量 $xxx (LHS/RHS 都可带 (描述) 注释) /
 #            中缀运算符 + - * / ^ + 嵌套 / 多目标赋值 /
-#            脚本备份(自动)/ 状态镜像(手动, RS/LAG/$var 落盘) /
-#            诊断(状态/失败统计/日志,一键复制) / OPC 自动重连 /
-#            热重启 / 行号 / 语法高亮 / 帮助 F1
+#            行号 / 语法高亮 / 鼠标悬停看变量实时值 /
+#            错误标注 (红波浪+底色+悬停看错因) + 全角字符警告 (橙) /
+#            帮助 F1
+#   - 工作流 (运行前 3 步): 📤 下载 (磁盘镜像→内存) → 📥 上载 (工程现状→内存,
+#                              锚定 LAG/RS 状态) → 🔍 预演 (算一周期看风险) → ▶ 运行
+#   - 状态管理: 📤 下载 面板含 💾 保存镜像 / 📤 下载到内存 / 🗑 删除 /
+#                ⏮ 重置初值 (清 LAG/$var, 跟踪脚本输入) / 🔥 清空状态 (核弹级)
+#   - 实时值面板: 右侧 1Hz 刷新, $var 行带 ✏ 改描述同步整脚本所有出现位置
+#   - 工具栏 2 行布局: [加载/保存 | 下载/上载/预演 | 运行/停止]
+#                        [诊断/事件/备份/帮助 | 🔧 初始化 ▾ | OPC: 本地/VM ✎]
+#   - 状态/诊断: 📜 事件 (时间线: 启停/重连/镜像/清状态/端点切换) /
+#                🩺 诊断 (状态/失败统计/日志, 一键复制) / OPC 自动重连 /
+#                热重启 / 错误持久面板 errBox (📋 复制按钮)
+#   - 配置: OPC 端点切换 [本地]/[VM] (持久化, 顶栏 ✎ 改 VM IP)
 py -3.12 -m src.viewer
 
 # 从 YQ3SIM-IO/*.csv 自动勾选 OPC 通讯(按 KKS 配对规则,改前自动备份)
@@ -82,13 +93,51 @@ py -3.12 -m tools.generate_yaml_from_pairs
 **DSL 脚本语法概要** (完整说明按 F1 弹帮助):
 ```
 DPU3013.AI010502 = DPU3013.AQ010101           # OPC 直通
+DPU3013.AI010502(反馈) = DPU3013.AQ010101(指令) # 节点带信号名注释(可读性,解析忽略)
 DPU3013.AI010502 = 50.0                        # 写常数
 DPU3013.DI = RS(DPU3013.DQ开, DPU3013.DQ关)    # SR 锁存
-$tmp = MUL(DPU3013.AQ_tph, 0.2778)             # 中间变量 ($ 前缀, 不读写 OPC)
-DPU3013.AI = LIMIT($tmp, 0, 100)               # 引用中间变量
+$tmp(中间量) = MUL(DPU3013.AQ_tph, 0.2778)     # 中间变量也支持 (描述) 信号名
+DPU3013.AI = LIMIT($tmp(中间量), 0, 100)        # 引用中间变量, 同样可带描述
 DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
 ```
 函数库:`RS/RS_NOT/NOT/AND/OR/ADD/SUB/MUL/DIV/MAX/MIN/LIMIT/SEL/LAG`
+
+**viewer OPC 端点切换**(顶栏 `OPC: [本地] [VM] ✎`):
+- 配置文件:`config/opc_endpoints.yaml`(`.gitignore` 已排除,机器相关)
+  ```yaml
+  mode: local                          # local | vm  (上次选择)
+  local: opc.tcp://127.0.0.1:9440      # NTVDPU 跑在本机
+  vm:    opc.tcp://192.168.31.39:9440  # NTVDPU 跑在虚拟机,LAN IP 视实际改
+  ```
+- 点 [本地] / [VM] → 立即持久化 mode 到 yaml,下次点【▶ 运行】用新地址
+- 点 ✎ → 弹 prompt 改 VM URL(IP 变了不用编辑器,直接 UI 改)
+- **运行中不允许切换**,会提示先点 [■ 停止]
+- yaml 不存在时,首次启动 viewer 会写入默认 `mode=local`
+- API:`GET/POST /api/opc/endpoint`
+
+**viewer 运行前工作流**(📤 下载 / 📥 上载 / 🔍 预演):
+
+| 按钮 | 方向 | 用途 | 何时用 |
+|---|---|---|---|
+| **📤 下载** | 磁盘镜像 → 本项目内存 → (运行后) → 工程 | 把保存的算法状态还原 | 本项目重启 / NTVDPU 重启后 |
+| **📥 上载** | 工程 → 本项目内存 | 锚定 LAG/RS state 到工程现状,第 1 周期写出 = 工程现状,无扰起步 | 工程状态变了 (VM 镜像还原 / CCMStudio 重下组态 / DCS 端被人改) |
+| **🔍 预演** | (无写,仅读+算) | 干运行一周期, 显示每个 OPC LHS 的 (算出 vs DCS 现状 vs 差值 vs 风险) | 上载后, 运行前, 验证脚本逻辑跟工程现状是否一致 |
+
+**上载的 4 步流程**(`runtime.py:reinit_lag_from_dcs`):
+1. 检查 OPC 状态(单独探活,~10ms)
+2. 读 DCS 当前值 — 所有 LHS (LAG/RS 用于锚定) + 所有 RHS 引用的 OPC 节点 (用于面板"读取"列显示)
+3. 无扰跟踪同步:
+   - LAG → `lag_state[key] = DCS 值`(不跨 `$var` 边界,避免温度值塞给煤量 LAG)
+   - RS → `Q = DCS 值`
+   - RS_NOT → `Q = NOT DCS 值`(反算)
+   - `last_written = {}`(强制下周期重写)
+   - 读到的 DCS 值灌进 `last_read`(面板"读取"列立刻反映)
+4. 待用户点【▶ 运行】
+
+**LAG 跟踪初始化**(`_eval_rhs` 默认行为):
+- `y_prev = s.lag_state.get(key, x)` — 首次评估默认 `y_prev = 当前输入 x`
+- 全新启动 LAG 立即稳态(不再从 0 爬升 4-5τ)
+- 已锚定的 LAG(上载后 / 镜像下载后)用锚定值
 
 **当前过渡态(画布代码尚未删除,仅用于回归对比)**:
 ```bash
@@ -290,6 +339,21 @@ await client.write_value("ns=0;s=DPU3044.HW.DI010204.PV", True)
 - 启动时:`asyncua.Client(url=...)` → `await client.connect()`,连接失败按第 10.1 节规则重试
 - 连接对象长期持有,**不要每步都重连**
 - 优雅退出:`await client.disconnect()`(否则 NTVDPU 端 session 会残留,影响下次连接)
+
+### 8.6 NTVDPU 跑在虚拟机里(Bridged / NAT 都可)
+
+viewer 顶栏支持 `[本地] / [VM]` 切换(见第 4 节"viewer OPC 端点切换")。VM 跑 NTVDPU 时网络模式两种都能通,各有取舍:
+
+| 模式 | VM IP 段 | 宿主机连得到 | LAN 上其他机器连得到 | 备注 |
+|---|---|---|---|---|
+| **Bridged**(推荐) | 跟宿主机同 LAN 段(如 `192.168.31.x`) | ✅ | ✅ | VMware: VM Settings → Network Adapter → "Bridged"。注意要在 VM 个体设置里改,不只是 Virtual Network Editor |
+| **NAT** | VMware 内部 `192.168.135.x`(VMnet8) | ✅(经 VMnet8 虚拟网卡) | ❌ 除非配端口转发 | 宿主机 `ipconfig` 看 VMware Network Adapter VMnet8 = `192.168.135.1` |
+
+**踩坑事务性经验**(架构再变也别删):
+- VM 内 `ipconfig` 看 `网关.2 + DHCP.254 + DNS 后缀 localdomain` = VMware NAT 标志,**没真正桥接**;Bridged 的网关/DHCP/DNS 应该是用户真实路由器
+- VM 内防火墙默认拦入站 ICMP(`ping` 不通),但 9440 TCP 通就够 OPC 用
+- VM 重启 / 切网络后 IP 可能变,在 viewer 顶栏 ✎ 改 yaml 里的 `vm:` URL 即可,不用动代码
+- 宿主机 `Test-NetConnection <vm_ip> -Port 9440`,`TcpTestSucceeded = True` 才算通
 
 ## 9. DCS 环境关键约束
 

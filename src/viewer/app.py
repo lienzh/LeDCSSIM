@@ -527,6 +527,8 @@ def api_script_save():
         _make_script_backup("save")
     SCRIPT_PATH.parent.mkdir(exist_ok=True)
     SCRIPT_PATH.write_text(content, encoding="utf-8")
+    rt.log_event("save", f"💾 保存脚本 ({len(content)} 字节, {len(pairs)} 对)",
+                 {"bytes": len(content), "pairs": len(pairs)})
     return jsonify({
         "ok": True,
         "msg": f"已保存 ({len(content)} 字节,解析出 {len(pairs)} 对赋值)",
@@ -539,6 +541,141 @@ def api_script_generate():
     """按工艺规则自动生成脚本 (analog + digital 全部)"""
     text = rt.generate_script_from_tagmap(CONFIG["tagmap"])
     return jsonify({"ok": True, "content": text})
+
+
+def _rewrite_var_desc(content: str, var_name: str, new_desc: str):
+    """对 content 里每个 $var 出现:
+    - 已跟 (...) → 替换括号内描述
+    - 未跟 () → 在后面插入 (新描述)
+    跳过注释 + 跳过"描述括号"内部 (描述定义: `(` 紧跟 NODE/VAR 后, 无空格).
+    数学表达式 (...) 和函数调用 LIMIT(...) 不算描述, 里面的 $var 照常处理.
+    返回 (新内容, 替换次数).
+    """
+    import re as _re
+    out_lines = []
+    total = 0
+    for line in content.split("\n"):
+        if line.lstrip().startswith("#"):
+            out_lines.append(line)
+            continue
+        # 切掉行尾 # 注释
+        cut = -1
+        d = 0
+        for i, ch in enumerate(line):
+            if ch in "([（": d += 1
+            elif ch in ")]）": d = max(0, d - 1)
+            elif ch == "#" and d == 0:
+                if i == 0 or line[i-1].isspace():
+                    cut = i; break
+        code = line[:cut] if cut >= 0 else line
+        tail = line[cut:] if cut >= 0 else ""
+
+        new_code = []
+        i = 0
+        desc_depth = 0   # 仅追踪"描述括号"的深度, 数学/函数 () 不算
+        n = len(code)
+        while i < n:
+            ch = code[i]
+            # 已在描述内部 — 只跟踪括号嵌套, 不找 $var
+            if desc_depth > 0:
+                if ch in "(（": desc_depth += 1
+                elif ch in ")）": desc_depth -= 1
+                new_code.append(ch); i += 1
+                continue
+            # 描述外: 判断当前 ( 是不是描述开始 (紧跟 NODE/VAR 后)
+            if ch in "(（":
+                is_desc = False
+                if i > 0 and (code[i-1].isalnum() or code[i-1] in "$._"):
+                    # 走回去找 token
+                    j = i
+                    while j > 0 and (code[j-1].isalnum() or code[j-1] in "$._"):
+                        j -= 1
+                    token = code[j:i]
+                    # $var 或 DPU... 才算描述; FUNC (全大写) 是函数调用, 不算
+                    if token.startswith("$"):
+                        is_desc = True
+                    elif token.startswith("DPU") and len(token) >= 7:
+                        is_desc = True
+                if is_desc:
+                    desc_depth = 1
+                new_code.append(ch); i += 1
+                continue
+            if ch in ")）":
+                # 描述外的 ) 是表达式收尾, 直接抄
+                new_code.append(ch); i += 1
+                continue
+            # 找 $var
+            if ch == "$":
+                m = _re.match(r"\$[A-Za-z_]\w*", code[i:])
+                if m and m.group(0) == var_name:
+                    end = i + len(var_name)
+                    j = end
+                    while j < n and code[j].isspace():
+                        j += 1
+                    if j < n and code[j] in "(（":
+                        # 已有 (...) 描述, 找配对右括号 (允许嵌套)
+                        op = code[j]; cp = ")" if op == "(" else "）"
+                        k = j + 1; d2 = 1
+                        while k < n and d2 > 0:
+                            if code[k] in "(（": d2 += 1
+                            elif code[k] in ")）": d2 -= 1
+                            k += 1
+                        if d2 == 0:
+                            new_code.append(var_name + "(" + new_desc + ")")
+                            i = k
+                            total += 1
+                            continue
+                    new_code.append(var_name + "(" + new_desc + ")")
+                    i = end
+                    total += 1
+                    continue
+            new_code.append(ch); i += 1
+        out_lines.append("".join(new_code) + tail)
+    return "\n".join(out_lines), total
+
+
+@app.route("/api/script/var/rename_desc", methods=["POST"])
+def api_var_rename_desc():
+    """修改 $var 描述, 在脚本里所有出现位置统一更新.
+    body: {var: "$Vh_A", new_desc: "新描述"}
+    OPC 点的描述不动 (来自点表, 只读).
+    """
+    import re as _re
+    body = request.get_json(force=True) or {}
+    var_name = (body.get("var") or "").strip()
+    new_desc = (body.get("new_desc") or "").strip()
+    if not var_name.startswith("$") or not _re.match(r"^\$[A-Za-z_]\w*$", var_name):
+        return jsonify({"ok": False, "error": f"非法的 $var 名: {var_name!r}"}), 400
+    # 描述里禁用 () 和 # 和换行 (会破坏 parse), 自动替换成全角/空格
+    new_desc = (new_desc
+                .replace("\n", " ").replace("\r", " ")
+                .replace("(", "[").replace(")", "]")
+                .replace("（", "[").replace("）", "]")
+                .replace("#", "＃"))[:60]   # 限 60 字
+    if not SCRIPT_PATH.exists():
+        return jsonify({"ok": False, "error": "config/script.txt 不存在"}), 400
+    content = SCRIPT_PATH.read_text(encoding="utf-8")
+    new_content, count = _rewrite_var_desc(content, var_name, new_desc)
+    if count == 0:
+        return jsonify({"ok": False,
+                        "error": f"脚本里没找到 {var_name} (检查名字大小写, 或 $var 是否已被定义)"}), 404
+    # parse 校验
+    try:
+        rt.parse_script(new_content)
+    except rt.ParseError as e:
+        return jsonify({"ok": False,
+                        "error": f"重命名后脚本 parse 失败: {e}, 已放弃 (脚本未变)"}), 400
+    # 备份 + 写
+    if SCRIPT_PATH.exists():
+        bak = SCRIPT_PATH.with_suffix(".txt.bak")
+        bak.write_text(content, encoding="utf-8")
+        _make_script_backup("rename_desc")
+    SCRIPT_PATH.write_text(new_content, encoding="utf-8")
+    rt.log_event("save",
+                 f"✏ 重命名 {var_name} 描述 → '{new_desc[:20]}{'...' if len(new_desc) > 20 else ''}' ({count} 处)",
+                 {"var": var_name, "count": count, "new_desc": new_desc})
+    return jsonify({"ok": True, "count": count, "new_desc": new_desc,
+                    "msg": f"✏ {var_name} 描述已更新到 {count} 处"})
 
 
 @app.route("/api/script/run", methods=["POST"])
@@ -578,10 +715,103 @@ def api_script_status():
     return jsonify(rt.get_status())
 
 
+@app.route("/api/script/validate", methods=["POST"])
+def api_script_validate():
+    """逐行解析脚本, 返回每行错误 + 警告(不执行). 编辑器用来给错误/警告行染色.
+
+    - errors:   parse 失败 (红波浪 + 浅红底)
+    - warnings: parse 过但可疑 — 当前只查全角字符 (黄波浪 + 浅黄底)
+                 全角 (），：；。 等中文输入法残留, parser 部分接受, 但建议改半角
+    DSL 行行独立, 一行喂 parse_script() 单独 try/catch 就拿到全部错误.
+    """
+    import re as _re
+    body = request.get_json(force=True, silent=True) or {}
+    content = body.get("content")
+    if content is None:
+        return jsonify({"ok": False, "error": "缺少 content"}), 400
+    errors = []
+    warnings = []
+    # 描述括号里的全角不算 — 描述允许任意中文, 否则全是误报
+    DESC_PAREN_RE = _re.compile(r"\([^()（）]*\)|（[^()（）]*）")
+    FULLWIDTH_CHARS = "（），；：。？！"
+    for i, line in enumerate(content.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            rt.parse_script(line)
+        except rt.ParseError as e:
+            msg = str(e)
+            msg = msg.replace("第 1 行格式错", "格式错")\
+                     .replace("第 1 行左/右不能为空", "左/右不能为空")\
+                     .replace("第 1 行左边无效", "左边无效")\
+                     .replace("第 1 行右边无效", "右边无效")
+            errors.append({"line": i, "msg": msg})
+            continue
+        except Exception as e:
+            errors.append({"line": i, "msg": str(e)})
+            continue
+        # 警告: 全角字符. 但描述括号里的全角不算, 先把描述抠掉再扫
+        # 行尾 # 注释里的也不算
+        cmt_idx = -1
+        depth = 0
+        for j, ch in enumerate(line):
+            if ch in "([（": depth += 1
+            elif ch in ")]）": depth = max(0, depth - 1)
+            elif ch == "#" and depth == 0 and (j == 0 or line[j-1].isspace()):
+                cmt_idx = j; break
+        code_part = line[:cmt_idx] if cmt_idx >= 0 else line
+        # 反复抠掉描述括号 (含嵌套, 用 while 直到没得抠)
+        scan = code_part
+        while True:
+            new = DESC_PAREN_RE.sub("", scan)
+            if new == scan: break
+            scan = new
+        bads = [c for c in scan if c in FULLWIDTH_CHARS]
+        if bads:
+            uniq = "".join(sorted(set(bads)))
+            warnings.append({"line": i,
+                "msg": f"全角字符 {uniq} (建议改半角, 否则容易混乱)"})
+    return jsonify({"ok": True,
+                    "errors": errors, "count": len(errors),
+                    "warnings": warnings, "warn_count": len(warnings)})
+
+
+@app.route("/api/opc/endpoint")
+def api_opc_endpoint_get():
+    """读 OPC 端点配置 (mode + 两个 URL + 当前 url + 是否在跑)"""
+    cfg = rt.get_endpoint_config()
+    cfg["running"] = rt.get_status().get("running", False)
+    return jsonify(cfg)
+
+
+@app.route("/api/opc/endpoint", methods=["POST"])
+def api_opc_endpoint_set():
+    """切换 mode + 可选更新 vm_url. 在跑时拒绝, 让用户先停"""
+    body = request.get_json(force=True, silent=True) or {}
+    mode = body.get("mode")
+    vm_url = body.get("vm")
+    if rt.get_status().get("running"):
+        return jsonify({"ok": False,
+                        "error": "OPC 循环在运行, 请先点【■ 停止】再切换端点"}), 409
+    try:
+        cfg = rt.set_endpoint_mode(mode, vm_url=vm_url)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    cfg["running"] = False
+    return jsonify({"ok": True, **cfg})
+
+
 @app.route("/api/script/debug")
 def api_script_debug():
     """完整 debug 包 (状态/摘要/失败 top/日志), 用于沟通调试"""
     return jsonify(rt.get_debug())
+
+
+@app.route("/api/script/events")
+def api_script_events():
+    """事件时间线 (启停/重连/镜像/清状态等), 新→旧"""
+    return jsonify({"events": rt.get_events()})
 
 
 @app.route("/api/script/reset_state", methods=["POST"])
@@ -590,6 +820,26 @@ def api_script_reset_state():
     n = rt.reset_persistent_state()
     return jsonify({"ok": True, "cleared": n,
                     "msg": f"已清: RS {n['rs']} / LAG {n['lag']} / $var {n['var']}"})
+
+
+@app.route("/api/script/reinit", methods=["POST"])
+def api_script_reinit():
+    """初始化跟踪态 — 清 LAG/$var/last_written, 保留 RS 锁存和镜像文件"""
+    n = rt.reinit_tracking_state()
+    return jsonify({"ok": True, "cleared": n,
+                    "msg": f"已重置初值: LAG {n['lag']} / $var {n['var']} 清 (RS 锁存保留, 镜像保留)"})
+
+
+@app.route("/api/script/reinit_from_dcs", methods=["POST"])
+def api_script_reinit_from_dcs():
+    """从 DCS 读当前值, 把直接写 OPC 的 LAG 的 lag_state 设为 DCS 值 (VM 镜像还原后用)"""
+    return jsonify(rt.reinit_lag_from_dcs())
+
+
+@app.route("/api/script/dryrun_preview", methods=["POST"])
+def api_script_dryrun_preview():
+    """干运行预演: 读 DCS 现状 → 算一遍 → 报告 (computed vs actual vs diff vs risk)"""
+    return jsonify(rt.dryrun_preview())
 
 
 @app.route("/api/script/state/save", methods=["POST"])
@@ -866,6 +1116,21 @@ header a:hover { text-decoration: underline; }
 .toolbar button.stop:hover { background: #a00; }
 .toolbar button:hover { background: #eee; }
 .toolbar .sep { width: 1px; background: #ccc; height: 22px; }
+.toolbar .grp-label { font-size: 10px; color: #888; margin-right: 2px;
+                       text-transform: uppercase; letter-spacing: 0.3px; user-select: none; }
+.toolbar.toolbar-2nd { padding: 6px 12px; background: #f8f8f8; border-top: 0; }
+.toolbar.toolbar-2nd button { font-size: 11px; padding: 4px 10px; }
+.toolbar.toolbar-2nd .grp-label { font-size: 9.5px; }
+/* 下拉折叠菜单 (低频按钮组) */
+.dropdown-wrap { position: relative; display: inline-block; }
+.dropdown-menu { position: absolute; top: calc(100% + 2px); left: 0; z-index: 200;
+                  background: #fff; border: 1px solid #888;
+                  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                  min-width: 150px; padding: 4px 0; }
+.dropdown-menu button { display: block; width: 100%; text-align: left;
+                        border: 0; border-radius: 0; background: transparent;
+                        padding: 6px 14px; font-size: 11px; cursor: pointer; }
+.dropdown-menu button:hover { background: #eef6ff; }
 #status { padding: 6px 12px; min-height: 22px; font-size: 11px;
           background: #f8f8f8; border-bottom: 1px solid #ddd;
           font-family: monospace; white-space: pre-wrap; }
@@ -898,6 +1163,8 @@ header a:hover { text-decoration: underline; }
   overflow: auto;
 }
 .hl-layer { pointer-events: none; color: #222; background: transparent; }
+/* token 区域 (hl-tag/hl-var, 都带 data-token) 启用 pointer-events, 让悬停 elementFromPoint 拿得到 */
+.hl-layer [data-token] { pointer-events: auto; cursor: help; }
 #editor { background: transparent; color: transparent; caret-color: #000; z-index: 2; }
 /* 染色 */
 .hl-comment { color: #888; font-style: italic; }
@@ -909,7 +1176,17 @@ header a:hover { text-decoration: underline; }
 .hl-desc    { color: #888; }
 .hl-op      { color: #000; font-weight: bold; }
 .hl-mathop  { color: #c06; font-weight: bold; }   /* + - * / ^ */
-.hl-bad     { background: #fde; }   /* 解析失败行整行底色 */
+.hl-bad     { background: #fcc;                            /* 浅红底, 一眼可见 */
+              text-decoration: underline wavy #c00;        /* 红色波浪下划线 */
+              text-decoration-skip-ink: none; }
+.hl-warn    { background: #ffd;                            /* 浅黄底, 警告整行(给 errBadge 用) */
+              text-decoration: underline wavy #c90;        /* 橙色波浪下划线 */
+              text-decoration-skip-ink: none; }
+/* 字符级警告: 单个全角字符画红+橙底, 鼠标悬停看是哪个 */
+.hl-warn-char { background: #fb3; color: #900; font-weight: bold;
+                border: 1px solid #c60; border-radius: 2px;
+                padding: 0 1px; margin: 0 -1px;
+                cursor: help; }
 .values-panel { padding: 8px 12px; }
 .values-panel h3 { margin: 0 0 6px; font-size: 12px; border-bottom: 1px solid #000;
                    padding-bottom: 3px; }
@@ -979,24 +1256,73 @@ mark      { background: #ff8; padding: 0; }
   <b>快速</b>:<code>@关键词</code> 补全 · <code>Ctrl+G</code> 跳行 · <code>Ctrl+/</code> 注释 · <code>F1</code> 完整帮助
   · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR</code>
 </div>
+<!-- ────── 第 1 行: 工作流 (编辑 → 状态准备 → 运行) ────── -->
 <div class="toolbar">
-  <button onclick="loadScript()">⟳ 加载</button>
-  <button onclick="saveScript()">💾 保存</button>
+  <span class="grp-label">编辑</span>
+  <button onclick="loadScript()" title="把 config/script.txt 内容载到编辑器">⟳ 加载</button>
+  <button onclick="saveScript()" title="编辑器内容保存到 config/script.txt (自动备份)">💾 保存</button>
   <span class="sep"></span>
-  <button class="primary" onclick="runIt()">▶ 运行(保存并启动 OPC 循环)</button>
-  <button class="stop" onclick="stopIt()">■ 停止</button>
+
+  <span class="grp-label">运行准备</span>
+  <button onclick="openSnapshot()"
+          style="background:#06a;color:#fff;border:1px solid #06a"
+          title="下载: 把磁盘保存的算法状态 (RS/LAG/$var) 送回本项目内存, 跑起来后写入工程. 用在本项目重启 / NTVDPU 重启后. 模态框含保存/删除/清空等管理.">📤 下载</button>
+  <button onclick="syncLagFromDcs()"
+          style="background:#a06;color:#fff;border:1px solid #a06"
+          title="上载: 读取工程当前值, 把所有 LAG/RS 初值锚到工程现状. 用在工程状态变了 (VM 镜像还原 / CCMStudio 重下) 之后. 必须 OPC 循环已停.">📥 上载</button>
+  <button onclick="dryrunPreview()"
+          style="background:#0a8;color:#fff;border:1px solid #0a8"
+          title="预演: 读 DCS 现状 → 用脚本算一周期 → 显示 (算出 vs DCS 现状 vs 差值 vs 风险). 建议先 📥 上载 → 🔍 预演 → ▶ 运行.">🔍 预演</button>
   <span class="sep"></span>
-  <button onclick="genSample()" title="按白名单自动生成样本脚本(电机/阀门段)">📝 生成样本</button>
-  <button onclick="reloadSymbols()" title="点表 CSV 改了后重新加载 (无需重启)">🔄 刷新点表</button>
-  <span class="sep"></span>
-  <button onclick="openBackups()">📚 备份历史</button>
-  <button onclick="openSnapshot()" title="RS/LAG/中间变量 镜像 — NTVDPU 重启前保存, 重启后恢复">📸 状态镜像</button>
-  <button onclick="openDebug()" title="运行状态 / 失败统计 / 日志 (沟通时复制)">🩺 诊断</button>
-  <button onclick="openHelp()" title="DSL 语法 / 函数 / 快捷键 (F1)">❓ 帮助</button>
-  <button onclick="syncFromOPC()" title="从 NTVDPU 浏览实际点表(兜底, CSV 没同步时用)"
-          style="color:#888;border-color:#bbb">🔌 OPC 浏览</button>
+
+  <span class="grp-label">执行</span>
+  <button class="primary" onclick="runIt()" title="保存编辑器内容 + 启动 OPC 循环 (热重启)">▶ 运行</button>
+  <button class="stop" onclick="stopIt()" title="停 OPC 循环, 内存状态保留">■ 停止</button>
 </div>
-<div id="status"><span id="cursorpos" onclick="gotoLine()" title="点击跳到指定行 (Ctrl+G)">行 1 列 1 · 共 0 行</span>就绪</div>
+
+<!-- ────── 第 2 行: 查看 + 工程辅助 + 端点 ────── -->
+<div class="toolbar toolbar-2nd">
+  <span class="grp-label">查看</span>
+  <button onclick="openDebug()" title="运行状态 / 失败统计 / 日志 (沟通时复制)">🩺 诊断</button>
+  <button onclick="openEvents()" title="事件时间线: 启停 / 重连 / 镜像 / 清状态 / 端点切换">📜 事件</button>
+  <button onclick="openBackups()" title="脚本时间戳备份历史 (每次保存自动留底)">📚 备份</button>
+  <button onclick="openHelp()" title="DSL 语法 / 函数 / 快捷键 (F1)">❓ 帮助</button>
+  <span class="sep"></span>
+
+  <span class="grp-label">工程</span>
+  <div class="dropdown-wrap">
+    <button onclick="toggleDropdown('engDrop', event)" title="工程初始化辅助 (建脚本时用, 日常用不上)">
+      🔧 初始化 ▾
+    </button>
+    <div id="engDrop" class="dropdown-menu" style="display:none">
+      <button onclick="genSample(); closeDropdown('engDrop')"
+              title="按白名单自动生成样本脚本 (电机/阀门段)">📝 生成样本</button>
+      <button onclick="reloadSymbols(); closeDropdown('engDrop')"
+              title="点表 CSV 改了后重新加载 (无需重启)">🔄 刷新点表</button>
+      <button onclick="syncFromOPC(); closeDropdown('engDrop')"
+              title="从 NTVDPU 浏览实际点表 (兜底, CSV 没同步时用)">🔌 OPC 浏览</button>
+    </div>
+  </div>
+  <span class="sep"></span>
+
+  <span class="grp-label">OPC 端点</span>
+  <button id="btnEpLocal" onclick="setEndpoint('local')"
+          title="连本机的 NTVDPU (opc.tcp://127.0.0.1:9440)">本地</button>
+  <button id="btnEpVm" onclick="setEndpoint('vm')"
+          title="连虚拟机里的 NTVDPU (默认 192.168.31.39:9440, 改地址用[✎])">VM</button>
+  <button onclick="editVmIp()" title="改 VM 的 IP/端口" style="padding:4px 8px">✎</button>
+  <span id="epUrl" style="font-size:10px;color:#888;font-family:monospace"></span>
+</div>
+<div id="status"><span id="cursorpos" onclick="gotoLine()" title="点击跳到指定行 (Ctrl+G)">行 1 列 1 · 共 0 行</span><span id="errBadge" onclick="gotoFirstErr()" title="点击跳到第一处错误行" style="display:none;background:#c33;color:#fff;padding:1px 8px;margin-right:6px;border-radius:3px;cursor:pointer;font-weight:bold"></span>就绪</div>
+<div id="errBox" style="display:none;background:#fee;border-bottom:1px solid #fcc;
+     padding:6px 12px;font-family:monospace;font-size:11px;color:#900;
+     user-select:text;white-space:pre-wrap;word-break:break-all">
+  <button onclick="copyErr()" title="复制错误到剪贴板"
+          style="float:right;font-size:10px;padding:2px 6px;cursor:pointer">📋 复制</button>
+  <button onclick="closeErr()" title="关掉"
+          style="float:right;font-size:10px;padding:2px 6px;margin-right:4px;cursor:pointer">×</button>
+  <span id="errMsg"></span>
+</div>
 <div class="main">
   <section style="padding:0">
     <div class="ed-wrap">
@@ -1014,19 +1340,19 @@ mark      { background: #ff8; padding: 0; }
     </h3>
     <div style="display:flex;gap:6px;margin-bottom:6px;font-size:11px;align-items:center;">
       <label>DPU
-        <select id="fltDpu" onchange="renderVals()" style="font-size:11px;padding:1px 3px;">
+        <select id="fltDpu" onchange="renderValsForced()" style="font-size:11px;padding:1px 3px;">
           <option value="">全部</option>
         </select>
       </label>
       <label>类型
-        <select id="fltCode" onchange="renderVals()" style="font-size:11px;padding:1px 3px;">
+        <select id="fltCode" onchange="renderValsForced()" style="font-size:11px;padding:1px 3px;">
           <option value="">全部</option>
           <option value="AI">AI</option><option value="AQ">AQ</option>
           <option value="DI">DI</option><option value="DQ">DQ</option>
         </select>
       </label>
       <label>角色
-        <select id="fltRole" onchange="renderVals()" style="font-size:11px;padding:1px 3px;">
+        <select id="fltRole" onchange="renderValsForced()" style="font-size:11px;padding:1px 3px;">
           <option value="">全部</option>
           <option value="对比">同时有写+读</option>
           <option value="写">仅写入(LHS)</option>
@@ -1034,7 +1360,7 @@ mark      { background: #ff8; padding: 0; }
           <option value="diff">写读不一致 ⚠</option>
         </select>
       </label>
-      <input id="fltKw" placeholder="描述关键字..." oninput="renderVals()"
+      <input id="fltKw" placeholder="描述关键字..." oninput="renderValsForced()"
              style="flex:1;font-size:11px;padding:1px 4px;">
     </div>
     <div id="vals" style="overflow:auto;"><div style="color:#999">未运行</div></div>
@@ -1077,6 +1403,54 @@ mark      { background: #ff8; padding: 0; }
   </div>
 </div>
 
+<!-- 预演风险评估模态框 -->
+<div id="dryrunmodal" style="display:none; position:fixed; inset:0; z-index:2400;
+     background:rgba(0,0,0,.4);" onclick="if(event.target===this) closeDryrun()">
+  <div style="background:#fff; max-width:1100px; margin:30px auto; padding:0;
+       box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:90vh; display:flex; flex-direction:column;">
+    <div style="background:#111; color:#eee; padding:8px 14px; display:flex;
+         justify-content:space-between; align-items:center;">
+      <b>🔍 干运行预演 — 算出来要写的 vs DCS 现状 vs 风险评估</b>
+      <span>
+        <button onclick="dryrunPreview()" style="font-size:11px;padding:3px 10px;background:#06a;color:#fff;border:0;cursor:pointer;">⟳ 重新预演</button>
+        <span style="cursor:pointer;font-size:18px;margin-left:10px" onclick="closeDryrun()">×</span>
+      </span>
+    </div>
+    <div id="dryrunsummary" style="padding:6px 14px; background:#f5f5f5; font-size:11px; border-bottom:1px solid #ddd;"></div>
+    <div style="padding:4px 14px; background:#fafafa; font-size:11px; border-bottom:1px solid #eee;">
+      筛选:
+      <label><input type="checkbox" id="drFltRisk" checked onchange="renderDryrun()"> 🔴 风险</label>
+      <label><input type="checkbox" id="drFltWarn" checked onchange="renderDryrun()"> 🟠 警告</label>
+      <label><input type="checkbox" id="drFltInfo" checked onchange="renderDryrun()"> 🟡 一般</label>
+      <label><input type="checkbox" id="drFltOk" onchange="renderDryrun()"> 🟢 一致</label>
+      <label><input type="checkbox" id="drFltNoAct" onchange="renderDryrun()"> ⚪ 无读值</label>
+      <input id="drFltKw" type="text" placeholder="关键字..."
+             oninput="renderDryrun()" style="font-size:11px;padding:1px 5px;margin-left:8px;width:140px">
+    </div>
+    <div id="dryrunbody" style="overflow-y:auto; padding:0; font-size:11px;
+         line-height:1.45; color:#222; font-family:'Consolas',monospace;"></div>
+  </div>
+</div>
+
+<!-- 事件时间线模态框 -->
+<div id="evtmodal" style="display:none; position:fixed; inset:0; z-index:2250;
+     background:rgba(0,0,0,.4);" onclick="if(event.target===this) closeEvents()">
+  <div style="background:#fff; max-width:780px; margin:40px auto; padding:0;
+       box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:85vh; display:flex; flex-direction:column;">
+    <div style="background:#111; color:#eee; padding:8px 14px; display:flex;
+         justify-content:space-between; align-items:center;">
+      <b>📜 事件时间线 — 新→旧 (近 200 条, 仅当前 viewer 会话内存)</b>
+      <span>
+        <button onclick="refreshEvents()" style="font-size:11px;padding:3px 10px;
+                background:#06a;color:#fff;border:0;cursor:pointer;">⟳ 刷新</button>
+        <span style="cursor:pointer;font-size:18px;margin-left:10px" onclick="closeEvents()">×</span>
+      </span>
+    </div>
+    <div id="evtbody" style="overflow-y:auto; padding:6px 0; font-size:11px;
+         line-height:1.5; color:#222; font-family:'Consolas',monospace;"></div>
+  </div>
+</div>
+
 <!-- 状态镜像模态框 -->
 <div id="snapmodal" style="display:none; position:fixed; inset:0; z-index:2300;
      background:rgba(0,0,0,.4);" onclick="if(event.target===this) closeSnapshot()">
@@ -1084,21 +1458,24 @@ mark      { background: #ff8; padding: 0; }
        box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:85vh; display:flex; flex-direction:column;">
     <div style="background:#048; color:#fff; padding:8px 14px; display:flex;
          justify-content:space-between; align-items:center;">
-      <b>📸 状态镜像 — RS / LAG / 中间变量</b>
+      <b>📤 下载 — 状态镜像管理 (RS / LAG / 中间变量)</b>
       <span style="cursor:pointer;font-size:18px;" onclick="closeSnapshot()">×</span>
     </div>
     <div style="padding:8px 14px; background:#fffce0; color:#666; font-size:11px; border-bottom:1px solid #eec">
-      用于 NTVDPU 重启等场景:<b>重启前</b>点【💾 保存镜像】留底,<b>重启后</b>点【🔄 恢复镜像】把锁存状态拉回来。
+      用于 NTVDPU 重启等场景:<b>重启前</b>点【💾 保存镜像】留底,<b>重启后</b>点【📤 下载镜像】把锁存状态写回工程。
       镜像文件:<code>data/state_snapshot.json</code>。
     </div>
     <div id="snapinfo" style="padding:12px 14px; overflow-y:auto; flex:1;"></div>
     <div style="padding:8px 14px; border-top:1px solid #eee; display:flex; gap:8px; flex-wrap:wrap">
       <button onclick="saveSnapshot()" style="background:#048;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px">💾 保存镜像</button>
-      <button id="snapRestoreBtn" onclick="restoreSnapshot()" style="background:#06a;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px">🔄 恢复镜像</button>
+      <button id="snapRestoreBtn" onclick="restoreSnapshot()" style="background:#06a;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px"
+              title="下载: 把磁盘镜像加载进本项目内存, 跑起来后所有 LHS 强制重写一遍, 等于把保存的状态送回工程">📤 下载镜像</button>
       <button id="snapDeleteBtn" onclick="deleteSnapshot()" style="background:#999;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px">🗑 删除镜像</button>
       <span style="flex:1"></span>
+      <button onclick="reinitState()" style="background:#06a;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px;margin-right:6px"
+              title="改了脚本系数后用: 清 LAG/$var, 让滞后块按【跟踪脚本输入】重新初始化 (RS 锁存保留)">⏮ 重置初值</button>
       <button onclick="resetState()" style="background:#c60;color:#fff;border:0;padding:6px 14px;cursor:pointer;font-size:12px"
-              title="清空当前内存 RS/LAG/中间变量 — 从头开始仿真">🔥 清空状态</button>
+              title="核弹级: 清 RS/LAG/$var + 删镜像 — 从头开始仿真">🔥 清空状态</button>
     </div>
   </div>
 </div>
@@ -1131,7 +1508,75 @@ function setStatus(msg, cls) {
   if (cls === 'err') {
     _stickyErrUntil = Date.now() + 15000;   // 错误持续 15 秒不被定时刷新覆盖
     try { console.error('[viewer]', msg); } catch(e) {}   // 同步到 DevTools 永久留底
+    showErr(msg);                           // 同步到 errBox (可选中/复制, 持久到关掉)
   }
+}
+
+// ===== 错误持久面板 (可复制) =====
+function showErr(msg) {
+  const box = document.getElementById('errBox');
+  const span = document.getElementById('errMsg');
+  if (!box || !span) return;
+  // 文本化 (去掉 HTML 标记, 便于复制原始内容)
+  const tmp = document.createElement('div'); tmp.innerHTML = msg;
+  const text = (tmp.textContent || tmp.innerText || msg).trim();
+  span.textContent = text;
+  box.style.display = 'block';
+}
+function closeErr() { document.getElementById('errBox').style.display = 'none'; }
+async function copyErr() {
+  const txt = document.getElementById('errMsg').textContent || '';
+  try {
+    await navigator.clipboard.writeText(txt);
+    setStatus('✓ 已复制错误到剪贴板', 'ok');
+  } catch (e) {
+    // 退路: 旧浏览器
+    const ta = document.createElement('textarea');
+    ta.value = txt; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    setStatus('✓ 已复制 (兼容模式)', 'ok');
+  }
+}
+
+// ===== OPC 端点切换 (本地 / VM) =====
+let _epCfg = null;   // {mode, local, vm, url, running}
+async function refreshEndpoint() {
+  try {
+    const r = await fetch('/api/opc/endpoint');
+    _epCfg = await r.json();
+    const bl = document.getElementById('btnEpLocal');
+    const bv = document.getElementById('btnEpVm');
+    const url = document.getElementById('epUrl');
+    if (bl) bl.className = (_epCfg.mode === 'local') ? 'primary' : '';
+    if (bv) bv.className = (_epCfg.mode === 'vm') ? 'primary' : '';
+    if (url) url.textContent = _epCfg.url || '';
+  } catch(e) { /* 忽略 */ }
+}
+async function setEndpoint(mode) {
+  const r = await fetch('/api/opc/endpoint', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode: mode}),
+  });
+  const d = await r.json();
+  if (!d.ok) { setStatus('✗ ' + d.error, 'err'); return; }
+  await refreshEndpoint();
+  setStatus(`✓ OPC 端点切到 [${mode==='vm'?'VM':'本地'}] ${d.url} — 下次点【▶ 运行】生效`, 'ok');
+}
+async function editVmIp() {
+  if (!_epCfg) await refreshEndpoint();
+  const cur = (_epCfg && _epCfg.vm) || 'opc.tcp://192.168.31.39:9440';
+  const v = prompt('VM 的 OPC URL (含协议+端口):', cur);
+  if (!v) return;
+  const r = await fetch('/api/opc/endpoint', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode: (_epCfg && _epCfg.mode) || 'local', vm: v.trim()}),
+  });
+  const d = await r.json();
+  if (!d.ok) { setStatus('✗ ' + d.error, 'err'); return; }
+  await refreshEndpoint();
+  setStatus(`✓ VM URL 已更新: ${d.vm}`, 'ok');
 }
 
 // ===== 语法高亮 =====
@@ -1171,11 +1616,11 @@ function colorPart(s) {
   out = out.replace(/(（[^）]*）|\([^()]*\))/g, '<span class="hl-desc">$1</span>');
   // 函数名 (大写跟着左括号)
   out = out.replace(FN_RE, '<span class="hl-fn">$1</span>');
-  // 中间变量 $xxx
-  out = out.replace(/\$[A-Za-z_]\w*/g, m => `<span class="hl-var">${m}</span>`);
-  // 短码 DPU3013.XXX[.YYY...]
+  // 中间变量 $xxx — data-token 让悬停 elementFromPoint 直接拿到, 不用算坐标
+  out = out.replace(/\$[A-Za-z_]\w*/g, m => `<span class="hl-var" data-token="${m}">${m}</span>`);
+  // 短码 DPU3013.XXX[.YYY...] — 同上
   out = out.replace(/\bDPU\d{4}(?:\.[A-Z]+\d*[A-Z]*\w*)+/g,
-                    m => `<span class="hl-tag">${m}</span>`);
+                    m => `<span class="hl-tag" data-token="${m}">${m}</span>`);
   // 数字 (整数 / 小数 / 负数)
   out = out.replace(/(?<![\w.])(-?\d+(?:\.\d+)?)\b/g,
                     '<span class="hl-num">$1</span>');
@@ -1204,6 +1649,10 @@ function scheduleLineNums() {
   _lnTimer = setTimeout(() => { _lnTimer = null; updateLineNums(); }, 120);
 }
 
+// 解析错误/警告: {行号 → 文本}, 由 validateScript() 维护
+let _errLines = new Map();
+let _warnLines = new Map();
+
 function runHighlight() {
   const ed = document.getElementById('editor');
   const hl = document.getElementById('hl');
@@ -1222,8 +1671,87 @@ function runHighlight() {
     return;
   }
   const lines = val.split('\n');
-  hl.innerHTML = lines.map(hlLine).join('\n');
+  hl.innerHTML = lines.map((raw, i) => {
+    let lineHtml = hlLine(raw);
+    const lineNo = i + 1;
+    if (_errLines.has(lineNo)) {
+      const msg = _errLines.get(lineNo).replace(/"/g, '&quot;');
+      return `<span class="hl-bad" title="✗ ${msg}">${lineHtml}</span>`;
+    }
+    if (_warnLines.has(lineNo)) {
+      // 字符级: 每个全角字符单独 hl-warn-char (描述括号 hl-desc 跨度内的全角不标 — 那里允许中文)
+      lineHtml = markFullwidthChars(lineHtml);
+    }
+    return lineHtml;
+  }).join('\n');
   hl.scrollTop = ed.scrollTop; hl.scrollLeft = ed.scrollLeft;
+}
+
+// 把行 HTML 里的全角字符单独标 (避开 hl-desc 描述跨度 — 描述里允许中文)
+// 输入是 hlLine 已染色的 HTML, 全角字符要么在 hl-desc 里(跳), 要么在裸文本里(标)
+const FULLWIDTH_NAME = {
+  '（': '左括号 (=半角 \"(\")',
+  '）': '右括号 (=半角 \")\")',
+  '，': '逗号 (=半角 \",\")',
+  '；': '分号 (=半角 \";\")',
+  '：': '冒号 (=半角 \":\")',
+  '。': '句号 (=半角 \".\")',
+  '？': '问号 (=半角 \"?\")',
+  '！': '叹号 (=半角 \"!\")',
+};
+function markFullwidthChars(html) {
+  // 用 token re 一次扫: 整段 hl-desc span 或 单个全角字符
+  const re = /<span class="hl-desc">[\s\S]*?<\/span>|[（），；：。？！]/g;
+  return html.replace(re, m => {
+    if (m.startsWith('<')) return m;        // 保留描述跨度不动
+    const name = FULLWIDTH_NAME[m] || m;
+    return `<span class="hl-warn-char" title="⚠ 全角 ${name}">${m}</span>`;
+  });
+}
+
+// ===== 组态错误标注 (每行单独解析, 错的行底色 + 鼠标悬停看错因) =====
+async function validateScript() {
+  const c = document.getElementById('editor').value || '';
+  try {
+    const r = await fetch('/api/script/validate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: c})
+    });
+    const d = await r.json();
+    const em = new Map(); for (const e of (d.errors   || [])) em.set(e.line, e.msg);
+    const wm = new Map(); for (const w of (d.warnings || [])) wm.set(w.line, w.msg);
+    // 没有变化就别重渲, 省 CPU
+    let same = em.size === _errLines.size && wm.size === _warnLines.size;
+    if (same) for (const [k, v] of em) if (_errLines.get(k) !== v) { same = false; break; }
+    if (same) for (const [k, v] of wm) if (_warnLines.get(k) !== v) { same = false; break; }
+    if (!same) {
+      _errLines = em;
+      _warnLines = wm;
+      _lastHlText = null;   // 强制下一次 runHighlight 重渲
+      runHighlight();
+    }
+    // 错误 + 警告 badge (不打扰: 都 0 就清掉)
+    const badge = document.getElementById('errBadge');
+    if (badge) {
+      const parts = [];
+      if (em.size > 0) parts.push(`<span style="background:#c33;color:#fff;padding:1px 8px;border-radius:3px;font-weight:bold;cursor:pointer" onclick="gotoFirstErr()" title="点击跳到第一处">✗ ${em.size} 错(行 ${[...em.keys()].slice(0,5).join(',')}${em.size>5?'...':''})</span>`);
+      if (wm.size > 0) parts.push(`<span style="background:#c90;color:#fff;padding:1px 8px;border-radius:3px;font-weight:bold;cursor:pointer" onclick="gotoFirstWarn()" title="点击跳到第一处 (全角字符等)">⚠ ${wm.size} 警告(行 ${[...wm.keys()].slice(0,5).join(',')}${wm.size>5?'...':''})</span>`);
+      if (parts.length) {
+        badge.innerHTML = parts.join(' ');
+        badge.style.display = '';
+        badge.style.background = 'transparent';
+        badge.style.padding = '0';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  } catch(e) { /* 网络错忽略 */ }
+}
+
+let _valTimer = null;
+function scheduleValidate() {
+  if (_valTimer) clearTimeout(_valTimer);
+  _valTimer = setTimeout(() => { _valTimer = null; validateScript(); }, 600);
 }
 
 // ===== 行号 + 光标位置 =====
@@ -1439,6 +1967,8 @@ async function stopIt() {
   const r = await fetch('/api/script/stop', {method: 'POST'});
   const d = await r.json();
   setStatus(d.ok ? `■ ${d.msg}` : d.msg, d.ok ? 'ok' : '');
+  // 立刻拉一次状态, 不等 1 秒轮询 — 否则切端点又被拦 "请先停止"
+  pollStatus();
 }
 
 // ===== 帮助文档 =====
@@ -1488,6 +2018,18 @@ DPU3003.AI010101 = $fw_safe</pre>
 <p>类型不强制:<code>real / bool</code> 都行,根据右边函数返回类型自动适配。
 <b>使用顺序</b>:先 <code>$x = ...</code>(赋值)后引用;同周期内顺序计算。
 如果"用了之后再赋值"会有一拍延迟(用上一周期的值),工程上一般可接受。</p>
+
+<p><b>信号名注释</b>:跟 OPC 节点一样,中间变量也支持 <code>$xxx(描述)</code> 写法 — 括号里随便写中文,解析器自动忽略,纯可读性:</p>
+<pre># 带名字, 维护时一眼看明白每个变量代表什么物理量
+$Vh_A(A磨进口热风调门指令) = DPU3002.AQ010402(A磨进口热风电动调节风门指令)
+$Vc_A(A磨进口冷风调门指令) = DPU3002.AQ010403(A磨进口冷风电动调节风门指令)
+$M_A(A给煤机给煤指令)      = DPU3002.AQ010401(A给煤机给煤指令)
+
+# LHS / RHS 都可以带, 也可以只 LHS 带 RHS 不带
+$Vsum_A(总有效风量) = $Vh_A(热风) + $Vc_A(冷风) * 0.5
+
+# 描述里的逗号不会被当多目标切分
+$Tmix(混合温度, 加权平均) = ADD(MUL($Vh_A, 200), MUL($Vc_A, 25)) / ($Vh_A + $Vc_A)</pre>
 
 <h2>2. 函数库</h2>
 <p>右边支持函数调用。<b>参数可以是常数或 OPC 节点,不支持嵌套</b>(嵌套用多行+中间 LHS 暂存)。</p>
@@ -1609,20 +2151,77 @@ DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)
 </ul>
 <p>反悔随时在【📚 备份历史】里找时间戳还原。</p>
 
-<h2>7. 状态镜像(RS / LAG / 中间变量)</h2>
-<p>跟脚本备份不同 —— 这里备的是 <b>运行时锁存状态</b>(RS 触发器的 Q 值、LAG 滤波器的累积值、$中间变量 当前值)。
-用于 <b>NTVDPU 试用授权重启</b> 等场景:重启前保存,重启后恢复。</p>
-<ul>
-<li>入口:工具栏【📸 状态镜像】</li>
-<li>文件:<code>data/state_snapshot.json</code>(可 VS Code 直接打开看)</li>
-<li>【💾 保存镜像】:把当前内存状态落盘。<b>空内存自动拦截</b>,防误覆盖</li>
-<li>【🔄 恢复镜像】:从磁盘读回,同时清 last_written(让所有 LHS 重写一次)</li>
-<li>【🗑 删除镜像】 / 【🔥 清空状态】(清内存)</li>
-<li>详情表显示每个 RS/LAG/$var 的当前值 + <b>"用在哪几个赋值行"</b>(便于核对)</li>
-</ul>
-<p><b>NTVDPU 重启场景</b>:viewer 也加了 <b>OPC 自动重连</b>(连续 10 周期读失败触发);重连成功后,如果 DCS 端 DQ 输入都是 0(开/关脉冲已结束),RS 的 Q 从内存里取,自动写回 DCS — 不必每次手动恢复镜像。镜像主要是 viewer 进程也被重启的兜底。</p>
+<h2>7. 运行前工作流(下载 / 上载 / 预演)</h2>
+<p>正常运行 ▶ 前一般要做的 3 步,从左到右就是工具栏顺序:</p>
 
-<h2>8. 诊断面板</h2>
+<table>
+  <tr><th>按钮</th><th>方向</th><th>用途</th><th>何时用</th></tr>
+  <tr><td><b style="background:#06a;color:#fff;padding:1px 8px">📤 下载</b></td>
+      <td>磁盘镜像 → 内存 → (运行后) → 工程</td>
+      <td>把保存的算法历史状态还原回来</td>
+      <td>本项目 viewer 重启 / NTVDPU 重启后</td></tr>
+  <tr><td><b style="background:#a06;color:#fff;padding:1px 8px">📥 上载</b></td>
+      <td>工程 → 本项目内存</td>
+      <td>读 DCS 当前值, 锚定 LAG/RS state, 第 1 周期写出 = 工程现状 → 无扰起步</td>
+      <td>工程状态变了 (VM 镜像还原 / CCMStudio 重下组态 / DCS 端被人改 AI)</td></tr>
+  <tr><td><b style="background:#0a8;color:#fff;padding:1px 8px">🔍 预演</b></td>
+      <td>(只读+算, 不写)</td>
+      <td>干运行一周期, 显示每个 OPC LHS 的 (算出 vs DCS 现状 vs 差值 vs 风险)</td>
+      <td>上载后, 运行前, 验证脚本</td></tr>
+</table>
+
+<h3>📤 下载(状态镜像管理)</h3>
+<p>镜像 = <b>运行时锁存状态</b>(RS 触发器 Q 值 / LAG 累积值 / $var 当前值)。文件 <code>data/state_snapshot.json</code>(VS Code 可直接打开看)。点 📤 下载打开管理面板:</p>
+<ul>
+<li>【💾 保存镜像】 — 当前内存状态落盘。<b>空内存自动拦截</b>,防误覆盖。前一份留 <code>.bak</code></li>
+<li>【📤 下载镜像】 — 磁盘 → 内存。清 last_written → 跑起来后所有 LHS 强制重写一次,等于把保存状态"下载"回工程</li>
+<li>【🗑 删除镜像】 — 删磁盘文件</li>
+<li>【⏮ 重置初值】 — 清 LAG/$var 内存,RS 保留,镜像保留 → 下周期 LAG 跟踪脚本输入立即稳态(改了脚本系数想立即看新稳态时用)</li>
+<li>【🔥 清空状态】 — 核弹级:清 RS/LAG/$var + 删镜像</li>
+<li>详情表显示每个 RS/LAG/$var 当前值 + <b>"用在哪几个赋值行"</b></li>
+</ul>
+
+<h3>📥 上载(4 步无扰跟踪起步)</h3>
+<ol>
+<li>检查 OPC 状态(单独探活, ~10ms,不通直接给清晰错)</li>
+<li>读 DCS 当前值 — 所有 LHS(用于锚定 LAG/RS state)+ 所有 RHS 引用的 OPC 节点(灌进面板"读取"列)</li>
+<li>无扰跟踪同步:
+  <ul>
+  <li>LAG: <code>lag_state[key] = DCS 值</code>(<b>不跨 $var 边界</b>,避免温度值塞给煤量 LAG)</li>
+  <li>RS: <code>Q = DCS 值</code></li>
+  <li>RS_NOT: <code>Q = NOT DCS 值</code>(反算,因为 RS_NOT 输出 = NOT Q)</li>
+  <li><code>last_written = {}</code>(强制下周期重写)</li>
+  <li>读到的 DCS 值灌进 <code>last_read</code> — 右侧"实时值"面板"读取"列立刻反映</li>
+  </ul>
+</li>
+<li>等用户点【▶ 运行】, 第 1 周期写出 = DCS 现状 → 0 跳变, 后续按各 τ 平滑过渡到算法目标</li>
+</ol>
+<p><b>前置</b>:OPC 循环必须已停(避免抢 NTVDPU session)。</p>
+
+<h3>🔍 预演(风险评估)</h3>
+<p>读 DCS 现状 → 用脚本算一周期 → 比较"算出来要写的" vs "DCS 现在的实际值" → 评估风险:</p>
+<ul>
+<li><b style="color:#c00">🔴 风险</b>(差 ≥ 50%) — 大概率公式错 / 量纲不对 / 写死常数跟 DCS 量级不一致</li>
+<li><b style="color:#c80">🟠 警告</b>(差 10-50%) — 可能锚定不到位 / 单位换算缺失</li>
+<li><b style="color:#a80">🟡 一般</b>(差 1-10%) — 小偏差, 通常无害</li>
+<li><b style="color:#080">🟢 一致</b>(差 &lt; 1%) — 公式跟 DCS 现状吻合,运行安全</li>
+<li><b style="color:#888">⚪ 无读值</b> — DCS 不返回 / 节点不存在</li>
+</ul>
+<p><b>判定容忍度</b>:LAG/RS 类(预期已被 📥 上载锚定)更严格(0.5% / 5%);其他类宽松(1% / 10% / 50%)。</p>
+<p><b>推荐序列</b>:📥 上载 → 🔍 预演 → 检查 🔴 / 🟠 项 → 没问题 → ▶ 运行;有问题 → 改脚本 → 重新预演直到清零。</p>
+
+<h2>8. NTVDPU / VM 重启场景</h2>
+<p>viewer 加了 <b>OPC 自动重连</b>(连续 10 周期读失败触发);重连成功后内存 RS/LAG/$var 状态保留, last_written 自动清空 → 下周期所有 LHS 强制重写一次。所以 NTVDPU 只重启 / 试用授权 2h 重启 → <b>不需要手动干预</b>。</p>
+<p>需要手动操作的情况:</p>
+<table>
+  <tr><th>场景</th><th>动作</th></tr>
+  <tr><td>仅 NTVDPU 试用授权重启,viewer 没动</td><td>无需操作, OPC 自动重连接管</td></tr>
+  <tr><td>viewer 进程也重启了</td><td>📤 下载 → 拉回上次保存的内存状态 → ▶ 运行</td></tr>
+  <tr><td>VM 镜像还原(NTVDPU 端 AI 跳了)</td><td>📥 上载 → 锚定到工程现状 → ▶ 运行</td></tr>
+  <tr><td>CCMStudio 重下了组态,逻辑变了</td><td>📥 上载 + 🔍 预演 双管齐下</td></tr>
+</table>
+
+<h2>9. 诊断面板</h2>
 <p>【🩺 诊断】 — 一键收集运行状态 / 失败统计 / 日志,沟通时点【📋 复制全部】贴给同事。</p>
 <p>状态栏会出现的 badge(直接点开打开诊断):</p>
 <ul>
@@ -1632,7 +2231,64 @@ DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)
 <li><b style="background:#888;color:#fff;padding:0 4px">读失败 N 节点</b> — OPC 节点不存在 / 卡件未连</li>
 </ul>
 
-<h2>9. 常见问题</h2>
+<h2>10. 事件时间线 / 错误标注 / 配置项</h2>
+
+<h3>📜 事件 (工具栏)</h3>
+<p>显式事件时间线(新→旧, 仅当前 viewer 进程内存,最近 200 条)。记录:</p>
+<ul>
+<li>▶ 启动 / ■ 停止 OPC 循环</li>
+<li>🔗 OPC 重连成功 / ⚠ OPC 断连</li>
+<li>📸 镜像保存 / 📤 下载镜像 / 🔥 清空状态 / ⏮ 重置初值</li>
+<li>📥 上载 (含 LAG/RS 同步个数)</li>
+<li>💾 保存脚本 / ✏ 重命名 $var 描述</li>
+<li>🔌 OPC 端点切换</li>
+</ul>
+<p>用法:数据"调变" / 系统行为不符预期时,先翻一下 📜 事件,确认是不是热重启 / 自动重连 / 锚定操作引起的。</p>
+
+<h3>错误标注(parse 校验,自动后台跑)</h3>
+<p>编辑器输入 600ms 后自动校验,错的行直接在编辑器里标:</p>
+<ul>
+<li><span style="background:#fcc;text-decoration:underline wavy #c00;padding:0 4px">红波浪 + 浅红底</span> — parse 错(无 =, 未知函数, 括号不闭等), 悬停看错因</li>
+<li><span style="background:#fb3;color:#900;border:1px solid #c60;border-radius:2px;padding:0 2px">单字符黄红框</span> — 全角字符(<code>（），；：。？！</code> 中文输入法残留),悬停看是哪个</li>
+<li>顶部 badge: <span style="background:#c33;color:#fff;padding:0 6px;border-radius:2px;font-weight:bold;font-size:10px">✗ N 错(行 X,Y...)</span> + <span style="background:#c90;color:#fff;padding:0 6px;border-radius:2px;font-weight:bold;font-size:10px">⚠ N 警告</span> — 点击跳到第一处</li>
+</ul>
+
+<h3>$var 描述同步编辑 (右侧实时值面板)</h3>
+<p>$var 行右边有 ✏ 按钮,点开改描述,自动同步到脚本里<b>所有出现位置</b>(LHS + 所有 RHS 引用),自动备份。OPC 点 (DPU.XXX) 没 ✏ — 它们的描述从 CSV 点表来,只读。</p>
+
+<h3>悬停看变量实时值</h3>
+<p>鼠标放任意 <code>$var</code> 或 <code>DPU.XXX</code> 上,200ms 后弹浮窗显示:</p>
+<ul>
+<li><code>$var = 25.345 (中间变量)</code></li>
+<li><code>DPU.AI = 写: 60.30  读: 60.30</code></li>
+<li><code>DPU.DI = 写: TRUE  读: TRUE</code></li>
+</ul>
+<p>用浏览器 DOM 元素探测(<code>data-token</code> 属性 + elementFromPoint),换行/中文/Tab 都不会偏。</p>
+
+<h3>OPC 端点切换 (工具栏: OPC 本地 / VM)</h3>
+<p>配置文件 <code>config/opc_endpoints.yaml</code>(机器相关,<code>.gitignore</code> 排除):</p>
+<pre>mode: local                          # local | vm  (上次选择)
+local: opc.tcp://127.0.0.1:9440      # NTVDPU 跑在本机
+vm:    opc.tcp://192.168.31.39:9440  # NTVDPU 跑在虚拟机, LAN IP 视实际改</pre>
+<p>点 [本地] / [VM] 立即持久化 + 下次点 ▶ 运行 用新地址。点 ✎ 改 VM URL(IP 变了不用打开 yaml,UI 直接改)。<b>运行中不允许切换</b>,会提示先停。</p>
+
+<h3>实时值面板的智能刷新</h3>
+<ul>
+<li>OPC 停止时不重写 HTML(数据没变,省 CPU,不破坏选中)</li>
+<li>用户在面板里选中文字时跳过那一帧(不冲掉选中)</li>
+<li>筛选框改变时强制重渲(<code>renderValsForced</code>)</li>
+</ul>
+
+<h3>🔧 初始化(工程辅助下拉,低频)</h3>
+<p>工具栏第 2 行【🔧 初始化 ▾】下拉里:</p>
+<ul>
+<li>📝 生成样本 — 按白名单自动生成样本脚本(电机/阀门段)</li>
+<li>🔄 刷新点表 — 点表 CSV 改了后重新加载 @ 补全数据(无需重启)</li>
+<li>🔌 OPC 浏览 — 从 NTVDPU 浏览实际点表(兜底, CSV 没同步时用)</li>
+</ul>
+<p>这些一般只在工程初次建立时用,日常用不到所以折叠收纳。</p>
+
+<h2>11. 常见问题</h2>
 <h3>Q: @ 搜不到点?</h3>
 <p>① 中文输入法 — 拼音期间不弹,选完字才搜。② 该点不在已扫的 DPU CSV 里 — 点【🔄 刷新点表】。③ 关键词太严,试 <b>空格分多个词</b>(<code>@A给煤 启</code>)。</p>
 
@@ -1649,7 +2305,7 @@ DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)
 <p><code>DPU.SH0xxx.PROxxxxx.IN</code> 是组态块输入端子,NTVDPU 通常 <b>不让外部读这种节点</b>(返回 None)→ 整对赋值被静默跳过(⛔ badge)。解决:CCMStudio 把 IN 上游断线,或改用同块的 <code>.OUT</code> 端子。</p>
 
 <h3>Q: NTVDPU 试用授权到期重启怎么办?</h3>
-<p>① 重启前点【📸 状态镜像 → 💾 保存镜像】留底。② NTVDPU 重启时 viewer 会自动重连(连续 10 周期读失败触发,日志可见)。③ 重连后内存 RS/LAG 状态保留,last_written 自动清空 → 下周期所有 LHS 重写一次。④ 如果 viewer 进程也被重启了,点【🔄 恢复镜像】拉回保存时的状态。</p>
+<p>看 <b>第 8 节</b>(NTVDPU / VM 重启场景) — 简版:仅 NTVDPU 重启不用管(自动重连),viewer 自己被重启了点 📤 下载,VM 镜像还原后点 📥 上载。</p>
 
 <h3>Q: 镜像里 RS 全是 0?</h3>
 <p>说明你保存时内存里就没有 RS 状态(可能 viewer 刚重启 / 脚本没运行 / 全部 SkipCycle 中)。先【▶ 运行】跑一会儿让 RS 算出值,再保存。<b>空内存保存已被拦截</b>,防止误覆盖。</p>
@@ -1686,12 +2342,222 @@ async function openDebug() {
 }
 function closeDebug() { document.getElementById('dbgmodal').style.display = 'none'; }
 
+// ===== 事件时间线 =====
+async function openEvents() {
+  document.getElementById('evtmodal').style.display = 'block';
+  await refreshEvents();
+}
+function closeEvents() { document.getElementById('evtmodal').style.display = 'none'; }
+
+const EVT_STYLE = {
+  'run':       { bg: '#e6f4ea', color: '#0a0', label: '运行' },
+  'stop':      { bg: '#eee',    color: '#555', label: '停止' },
+  'opc':       { bg: '#e0f0ff', color: '#06a', label: 'OPC' },
+  'opc-err':   { bg: '#fee',    color: '#c33', label: 'OPC 错' },
+  'snapshot':  { bg: '#fff4d6', color: '#a60', label: '镜像' },
+  'state':     { bg: '#fde',    color: '#c33', label: '状态' },
+  'save':      { bg: '#f0f0f0', color: '#444', label: '保存' },
+  'endpoint':  { bg: '#e0f0ff', color: '#06a', label: '端点' },
+  'error':     { bg: '#fcc',    color: '#900', label: '错' },
+};
+function _fmtTs(ts) {
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function _ageStr(ts) {
+  const dt = Date.now() / 1000 - ts;
+  if (dt < 60) return `${dt.toFixed(0)}s 前`;
+  if (dt < 3600) return `${(dt / 60).toFixed(0)}m 前`;
+  return `${(dt / 3600).toFixed(1)}h 前`;
+}
+async function refreshEvents() {
+  const body = document.getElementById('evtbody');
+  body.innerHTML = '<div style="padding:20px;color:#999">载入中...</div>';
+  try {
+    const r = await fetch('/api/script/events');
+    const d = await r.json();
+    const evs = d.events || [];
+    if (!evs.length) {
+      body.innerHTML = '<div style="padding:30px;color:#999;text-align:center">还没事件 — 启动 / 保存镜像 / 切端点 后会出现在这里</div>';
+      return;
+    }
+    body.innerHTML = evs.map(e => {
+      const s = EVT_STYLE[e.category] || { bg: '#f5f5f5', color: '#666', label: e.category };
+      const detail = (e.detail && Object.keys(e.detail).length)
+        ? `<div style="color:#888;font-size:10px;margin-top:2px;margin-left:78px">${
+            Object.entries(e.detail).map(([k, v]) =>
+              `${k}=${JSON.stringify(v).replace(/"/g, '')}`).join(' · ')
+          }</div>` : '';
+      return `<div style="padding:5px 14px;border-bottom:1px solid #f0f0f0;display:flex;align-items:flex-start;gap:10px;">
+        <span style="color:#888;font-size:10px;min-width:60px">${_fmtTs(e.ts)}</span>
+        <span style="background:${s.bg};color:${s.color};padding:1px 6px;border-radius:2px;
+              font-size:10px;font-weight:bold;min-width:42px;text-align:center">${s.label}</span>
+        <div style="flex:1">
+          <div>${e.msg}</div>
+          ${detail}
+        </div>
+        <span style="color:#aaa;font-size:10px;white-space:nowrap">${_ageStr(e.ts)}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = `<div style="padding:20px;color:#c00">载入失败: ${e}</div>`;
+  }
+}
+
 async function resetState() {
   if (!confirm('清空 RS/LAG/中间变量 持久状态?\n用于"从头开始"仿真. 当前运行中的循环不受影响, 但本次开始所有锁存重置.')) return;
   const r = await fetch('/api/script/reset_state', {method: 'POST'});
   const d = await r.json();
   setStatus(d.ok ? `✓ ${d.msg}` : '✗ 失败', d.ok ? 'ok' : 'err');
-  openDebug();
+  await refreshSnapInfo();   // 跟其他几个状态操作一致, 不再跳到诊断面板
+}
+
+async function reinitState() {
+  if (!confirm('重置初值?\n\n· 清掉 LAG 一阶滞后内存 → 下周期所有 LAG 跟踪当前输入立即稳态(不再爬升)\n· 清掉 $中间变量 → 下周期按脚本重新计算\n· 清掉 last_written 写缓存 → 强制重写一遍同步 DCS\n· 保留 RS 锁存(开/关命令历史不丢)\n· 保留磁盘镜像文件\n\n适用: 改了脚本系数后想立即看到新稳态, 不想等 LAG 慢慢爬过去')) return;
+  const r = await fetch('/api/script/reinit', {method: 'POST'});
+  const d = await r.json();
+  setStatus(d.ok ? `⏮ ${d.msg}` : '✗ 失败', d.ok ? 'ok' : 'err');
+  openSnapshot();   // 刷新面板看清空效果
+}
+
+// ===== 下拉折叠菜单 (低频按钮组) =====
+function toggleDropdown(id, ev) {
+  // 先关其他所有下拉
+  document.querySelectorAll('.dropdown-menu').forEach(m => {
+    if (m.id !== id) m.style.display = 'none';
+  });
+  const d = document.getElementById(id);
+  if (d) d.style.display = (d.style.display === 'none' || d.style.display === '') ? 'block' : 'none';
+  if (ev) ev.stopPropagation();
+}
+function closeDropdown(id) {
+  const d = document.getElementById(id);
+  if (d) d.style.display = 'none';
+}
+// 点击外部 → 关掉所有下拉
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.dropdown-wrap')) {
+    document.querySelectorAll('.dropdown-menu').forEach(m => m.style.display = 'none');
+  }
+});
+
+// ===== 🔍 干运行预演 =====
+let _dryrunData = null;
+async function dryrunPreview() {
+  document.getElementById('dryrunmodal').style.display = 'block';
+  document.getElementById('dryrunbody').innerHTML =
+    '<div style="padding:30px;color:#999;text-align:center">读 DCS 中, 模拟一周期...</div>';
+  document.getElementById('dryrunsummary').innerHTML = '';
+  try {
+    const r = await fetch('/api/script/dryrun_preview', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) {
+      document.getElementById('dryrunbody').innerHTML =
+        `<div style="padding:30px;color:#c00;text-align:center">✗ ${d.error}</div>`;
+      return;
+    }
+    _dryrunData = d;
+    // 汇总
+    const s = d.summary;
+    document.getElementById('dryrunsummary').innerHTML =
+      `读 ${s.nodes_read} 节点 · 算 ${s.total} 个 OPC LHS · ` +
+      `<span style="color:#c00;font-weight:bold">🔴 风险 ${s.risk}</span> · ` +
+      `<span style="color:#c80;font-weight:bold">🟠 警告 ${s.warning}</span> · ` +
+      `<span style="color:#a80">🟡 一般 ${s.info}</span> · ` +
+      `<span style="color:#080">🟢 一致 ${s.ok}</span> · ` +
+      `<span style="color:#888">⚪ 无读值 ${s.no_actual + s.non_numeric}</span> · ` +
+      `跳过 ${s.skipped}`;
+    renderDryrun();
+  } catch (e) {
+    document.getElementById('dryrunbody').innerHTML =
+      `<div style="padding:30px;color:#c00">载入失败: ${e}</div>`;
+  }
+}
+function closeDryrun() { document.getElementById('dryrunmodal').style.display = 'none'; }
+
+function renderDryrun() {
+  if (!_dryrunData) return;
+  const items = _dryrunData.items;
+  const showRisk = document.getElementById('drFltRisk').checked;
+  const showWarn = document.getElementById('drFltWarn').checked;
+  const showInfo = document.getElementById('drFltInfo').checked;
+  const showOk   = document.getElementById('drFltOk').checked;
+  const showNoAct= document.getElementById('drFltNoAct').checked;
+  const kw = (document.getElementById('drFltKw').value || '').toLowerCase().trim();
+  const filtered = items.filter(it => {
+    if (it.risk === 'risk' && !showRisk) return false;
+    if (it.risk === 'warning' && !showWarn) return false;
+    if (it.risk === 'info' && !showInfo) return false;
+    if (it.risk === 'ok' && !showOk) return false;
+    if ((it.risk === 'no_actual' || it.risk === 'non_numeric') && !showNoAct) return false;
+    if (kw) {
+      const desc = (tagDescMap[it.lhs] || '').toLowerCase();
+      if (!(it.lhs_short.toLowerCase().includes(kw) ||
+            (it.kind||'').toLowerCase().includes(kw) ||
+            desc.includes(kw))) return false;
+    }
+    return true;
+  });
+  const styleByRisk = {
+    risk:     { bg: '#fee', color: '#c00', label: '🔴 风险' },
+    warning:  { bg: '#fff3e0', color: '#c80', label: '🟠 警告' },
+    info:     { bg: '#fffce0', color: '#a80', label: '🟡 一般' },
+    ok:       { bg: '#f0f7f0', color: '#080', label: '🟢 一致' },
+    no_actual:{ bg: '#f5f5f5', color: '#888', label: '⚪ 无读值' },
+    non_numeric:{bg:'#f5f5f5', color:'#888', label: '⚪ 非数值' },
+  };
+  function fmtNum(v) {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+    if (typeof v === 'number') return v.toFixed(3);
+    return String(v);
+  }
+  // 描述从 tagDescMap (脚本里 (信号名称) 解析得来), 没有就空
+  if (Object.keys(tagDescMap).length === 0) rebuildDescMap();
+  const rows = filtered.slice(0, 500).map(it => {
+    const sty = styleByRisk[it.risk] || styleByRisk.ok;
+    const diffStr = (it.diff === null || it.diff === undefined) ? '—'
+                   : (it.diff >= 0 ? '+' : '') + it.diff.toFixed(3);
+    const relStr = (it.rel === null || it.rel === undefined) ? '' : ` (${(it.rel*100).toFixed(2)}%)`;
+    const desc = tagDescMap[it.lhs] || '';
+    return `<tr style="background:${sty.bg};border-bottom:1px solid #eee">
+      <td style="padding:3px 8px"><span style="color:${sty.color};font-weight:bold">${sty.label}</span></td>
+      <td style="padding:3px 8px"><code style="color:#048">${it.lhs_short}</code></td>
+      <td style="padding:3px 8px;color:#222">${desc}</td>
+      <td style="padding:3px 8px;color:#888">${it.kind}</td>
+      <td style="padding:3px 8px;text-align:right"><b>${fmtNum(it.computed)}</b></td>
+      <td style="padding:3px 8px;text-align:right;color:#06a">${fmtNum(it.actual)}</td>
+      <td style="padding:3px 8px;text-align:right;color:${sty.color}"><b>${diffStr}</b>${relStr}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('dryrunbody').innerHTML =
+    `<table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:#222;color:#eee;position:sticky;top:0;">
+        <th style="padding:5px 8px;text-align:left;width:78px">风险</th>
+        <th style="padding:5px 8px;text-align:left;width:170px">LHS 短码</th>
+        <th style="padding:5px 8px;text-align:left">信号名称</th>
+        <th style="padding:5px 8px;text-align:left;width:60px">类型</th>
+        <th style="padding:5px 8px;text-align:right;width:90px">算出 (写入)</th>
+        <th style="padding:5px 8px;text-align:right;width:90px">DCS 现状</th>
+        <th style="padding:5px 8px;text-align:right;width:160px">差 (相对)</th>
+      </tr></thead><tbody>${rows}</tbody></table>` +
+    (filtered.length > 500 ? `<div style="padding:6px 12px;color:#999">... 还有 ${filtered.length-500} 项, 加筛选缩小</div>` : '');
+}
+
+async function syncLagFromDcs() {
+  if (!confirm('上载?\n\n方向: 工程 (NTVDPU) → 本项目\n\n4 步流程:\n  1. 检查 OPC 状态 (确认工程可达, 不行直接给清晰错误)\n  2. 读 DCS 当前值 — 所有直接写 OPC 的 LHS (含 LAG / RS / RS_NOT)\n  3. 无扰跟踪处理:\n       · LAG (含嵌套, 穿过 $var/LIMIT 等): lag_state = DCS 值\n       · RS (合位/开位等): Q = DCS 值\n       · RS_NOT (跳位/关位等): Q = NOT DCS 值 (反算)\n       · last_written 清空, 第 1 周期强制重写\n  4. 接着点【▶ 运行】, 第 1 周期写出去 = DCS 现状 → 零跳变,\n     后续按各 τ 平滑过渡到算法目标\n\n· 只动 LAG / RS state (RS_NOT 也用同一个 rs_state)\n· $var / 镜像文件 / 配置 都不变\n· 普通编辑保存的工作流不受影响\n\n前置: OPC 循环必须已停\n典型场景: VM 镜像还原 / CCMStudio 重下组态 / DCS 端被人工改过')) return;
+  setStatus('📥 正在 4 步上载 (OPC 检查 → 读 → 无扰同步 → 待运行)...', 'run');
+  const r = await fetch('/api/script/reinit_from_dcs', {method: 'POST'});
+  const d = await r.json();
+  if (d.ok) {
+    setStatus(`📥 上载完成:\n${d.msg}`, 'ok');
+    // 拉新 status (含刚灌进的 last_read), 强制刷一次面板 (停止状态下 panel 被冻结 skip)
+    await pollStatus();
+    renderValsForced();
+  } else {
+    setStatus(`✗ ${d.msg || d.error}`, 'err');
+  }
 }
 
 async function openSnapshot() {
@@ -1870,10 +2736,10 @@ async function saveSnapshot() {
 async function restoreSnapshot() {
   const info = await (await fetch('/api/script/state/info')).json();
   if (!info.exists) return;
-  if (!confirm(`从镜像恢复?\n镜像保存于: ${info.saved_at} (${info.age_s} 秒前)\n含: RS ${info.rs_count} / LAG ${info.lag_count} / $var ${info.var_count}\n\n当前内存状态会被覆盖.`)) return;
+  if (!confirm(`下载镜像?\n方向: 磁盘镜像 → 本项目内存 → (运行后) 工程\n镜像保存于: ${info.saved_at} (${info.age_s} 秒前)\n含: RS ${info.rs_count} / LAG ${info.lag_count} / $var ${info.var_count}\n\n当前内存状态会被覆盖.`)) return;
   const r = await fetch('/api/script/state/restore', {method: 'POST'});
   const d = await r.json();
-  const msg = d.ok ? `✓ 已恢复 (镜像 ${d.saved_at}): RS ${d.restored.rs} / LAG ${d.restored.lag} / $var ${d.restored.var}` : '✗ ' + d.error;
+  const msg = d.ok ? `📤 已下载 (镜像 ${d.saved_at}): RS ${d.restored.rs} / LAG ${d.restored.lag} / $var ${d.restored.var}` : '✗ ' + d.error;
   setStatus(msg, d.ok ? 'ok' : 'err');
   await refreshSnapInfo();
 }
@@ -2176,7 +3042,30 @@ async function syncFromOPC() {
   }
 }
 
+// 停止时筛选框变了要强制重渲一次, 否则界面不响应 (inline onchange/oninput 调 renderValsForced)
+let _forceVals = false;
+function renderValsForced() { _forceVals = true; renderVals(); }
+
+// 检查用户是否正在该 DOM 区域选中文字 — 是的话, 跳过本次刷新, 不打扰复制
+function _hasActiveSelectionIn(el) {
+  if (!el) return false;
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+  try {
+    const r = sel.getRangeAt(0);
+    if (r.toString().length === 0) return false;
+    return el.contains(r.startContainer) || el.contains(r.endContainer);
+  } catch(e) { return false; }
+}
+
 function renderVals() {
+  // OPC 循环没在跑 → 数据冻结, 没必要重写 HTML (省 CPU + 不破坏选中)
+  // 但筛选条件变了要重渲 (用 _forceVals 标记)
+  if (_lastStatus && _lastStatus.running === false && !_forceVals) return;
+  _forceVals = false;
+  // 用户在面板里有选中文字 → 这一次别重写 HTML, 否则选中会被冲掉无法复制
+  const valBox = document.querySelector('.values-panel') || document.getElementById('valTbl')?.parentElement;
+  if (_hasActiveSelectionIn(valBox)) return;
   const dpuSel = document.getElementById('fltDpu').value;
   const codeSel = document.getElementById('fltCode').value;
   const roleSel = document.getElementById('fltRole').value;
@@ -2243,10 +3132,18 @@ function renderVals() {
       const diff = isDiff(r.writeVal, r.readVal);
       // 差异行:整行淡红底,提示"写了但实际不一致"
       const rowBg = diff ? 'background:#fef0f0' : '';
+      // $var 行加 ✏ 按钮: 改描述 → 后端同步到脚本所有出现位置
+      const isVar = r.short.startsWith('$');
+      const editBtn = isVar
+        ? `<span onclick="editVarDesc('${r.short.replace(/'/g,"\\'")}', '${(r.desc||'').replace(/'/g,"\\'")}')"
+                style="cursor:pointer;color:#06a;margin-left:6px;font-size:10px;user-select:none"
+                title="✏ 改 ${r.short} 描述 (统一生效到脚本里所有出现位置)">✏</span>`
+        : '';
       return `<tr style="border-bottom:1px dotted #eee;${rowBg}">
         <td style="padding:1px 6px;">
           <code style="font-size:10px;color:#048">${r.short}</code>
           ${r.desc ? `<span style="color:#666;font-size:10px;margin-left:4px">${r.desc}</span>` : ''}
+          ${editBtn}
         </td>
         <td style="padding:1px 6px;text-align:right;font-weight:bold;color:${wTxt?'#0a0':'#ccc'};">${wTxt || '—'}</td>
         <td style="padding:1px 6px;text-align:right;font-weight:bold;color:${rTxt?'#06a':'#ccc'};">${rTxt || '—'}</td>
@@ -2254,6 +3151,31 @@ function renderVals() {
     }).join('') +
     '</tbody></table>' +
     (filtered.length > 200 ? `<div style="color:#999;padding:4px 6px;font-size:10px">... 还有 ${filtered.length - 200} 项,加筛选缩小范围</div>` : '');
+}
+
+async function editVarDesc(varName, currentDesc) {
+  const v = prompt(`修改 ${varName} 的描述\n` +
+                   `(会同步到脚本里所有出现位置: LHS + 所有 RHS 引用)\n\n` +
+                   `禁用字符 ( ) # 换行 会自动替换`,
+                   currentDesc || '');
+  if (v === null) return;                       // 用户取消
+  if (v.trim() === (currentDesc || '').trim()) return;  // 没改
+  const r = await fetch('/api/script/var/rename_desc', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({var: varName, new_desc: v.trim()})
+  });
+  const d = await r.json();
+  if (!d.ok) { setStatus('✗ ' + d.error, 'err'); return; }
+  // 重新加载脚本到编辑器
+  await loadScript();
+  rebuildDescMap();
+  updateLineNums();
+  scheduleHighlight();
+  validateScript();
+  setStatus(`✏ ${d.msg}`, 'ok');
+  // 立刻刷一次实时值面板, 让新描述马上显示
+  pollStatus();
 }
 
 function refillDpuFilter(dpus) {
@@ -2271,6 +3193,7 @@ async function pollStatus() {
   try {
     const r = await fetch('/api/script/status');
     const s = await r.json();
+    _lastStatus = s;   // 缓存给悬停 tooltip 用 (零接口/零延迟)
     let html;
     if (s.running) {
       const dot = s.last_error ? '<span class="dot err"></span>' : '<span class="dot run"></span>';
@@ -2307,8 +3230,10 @@ async function pollStatus() {
       if (s.last_error) html += `\n<span class="err">最近错: ${s.last_error}</span>`;
     }
     // 错误信息 sticky 期间不覆盖 status 区域 (其它 panel 照常更新)
-    if (Date.now() >= _stickyErrUntil) {
-      document.getElementById('status').innerHTML = html;
+    // 用户正在 status 里选中文字, 也别重写, 否则复制不动
+    const statusEl = document.getElementById('status');
+    if (Date.now() >= _stickyErrUntil && !_hasActiveSelectionIn(statusEl)) {
+      statusEl.innerHTML = html;
     }
     // 实时值 — 合并 last_values(写, LHS) + last_read(读, RHS 源)
     const written = s.last_values || {};
@@ -2590,17 +3515,141 @@ function insertAC(opts) {
   scheduleHighlight();
 }
 
+// ===== 悬停看变量实时值 =====
+// 设计:
+//   - 数据: 1Hz pollStatus 已经把 last_values/last_read 拉到前端 → 悬停时纯 Map 查
+//   - 探测: 高亮层里每个 token (hl-var/hl-tag) 都有 data-token 属性, mousemove
+//           时临时关 textarea 的 pointer-events, 用 elementFromPoint 直接拿那个
+//           span. 浏览器替我处理换行 / CJK / tab / 滚动 / padding, 永远不会偏.
+let _lastStatus = null;
+let _hoverTip = null;
+let _hoverTimer = null;
+
+function _findTokenAt(ed, e) {
+  // 临时屏蔽 textarea, 让 hl-layer 里有 pointer-events:auto 的 [data-token] span 露出来
+  const orig = ed.style.pointerEvents;
+  ed.style.pointerEvents = 'none';
+  let target;
+  try {
+    target = document.elementFromPoint(e.clientX, e.clientY);
+  } finally {
+    ed.style.pointerEvents = orig;
+  }
+  if (target && target.dataset && target.dataset.token) return target.dataset.token;
+  return null;
+}
+
+// 短码 → OPC 完整节点 (跟 backend short_to_full 对齐)
+function _shortToFull(short) {
+  if (short.startsWith('$')) return short;
+  const parts = short.split('.');
+  if (parts.length === 2) return `ns=0;s=${parts[0]}.HW.${parts[1]}.PV`;  // HW 单段
+  return `ns=0;s=${short}`;  // SH 多段
+}
+
+function _formatVal(v) {
+  if (v === null || v === undefined) return '<i style="color:#888">未读到</i>';
+  if (typeof v === 'boolean') return v ? '<b style="color:#0a0">TRUE</b>' : '<b style="color:#c33">FALSE</b>';
+  if (typeof v === 'number') return `<b style="color:#06a">${v.toFixed(3)}</b>`;
+  return String(v);
+}
+
+function _lookupValue(token) {
+  if (!_lastStatus) return { found: false, html: '<i style="color:#888">尚未运行 / 无数据</i>' };
+  const lv = _lastStatus.last_values || {};
+  const lr = _lastStatus.last_read   || {};
+  if (token.startsWith('$')) {
+    // $var 的值实际上是写到 last_values 里 (key 就是 $name), 不在 intermediates
+    if (token in lv) return { found: true,
+        html: `${_formatVal(lv[token])} <span style="color:#888">(中间变量)</span>` };
+    return { found: false,
+        html: '<i style="color:#888">未求值 (本周期上游断了 / 还没赋值)</i>' };
+  }
+  const full = _shortToFull(token);
+  const written = lv[full];
+  const read    = lr[full];
+  const parts = [];
+  if (written !== undefined) parts.push(`写: ${_formatVal(written)}`);
+  if (read    !== undefined) parts.push(`读: ${_formatVal(read)}`);
+  if (parts.length === 0) return { found: false,
+      html: '<i style="color:#888">该点未在脚本中, 或本周期未读/写</i>' };
+  return { found: true, html: parts.join(' &nbsp; ') };
+}
+
+function _showTip(e, html, token) {
+  if (!_hoverTip) {
+    _hoverTip = document.createElement('div');
+    _hoverTip.id = 'varTip';
+    _hoverTip.style.cssText = 'position:fixed;z-index:9999;background:#222;color:#fff;' +
+      'padding:6px 10px;font-family:"Consolas",monospace;font-size:11px;border-radius:3px;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,0.4);pointer-events:none;max-width:480px;' +
+      'line-height:1.5;white-space:nowrap';
+    document.body.appendChild(_hoverTip);
+  }
+  _hoverTip.innerHTML = `<span style="color:#fc6">${token}</span> = ${html}`;
+  _hoverTip.style.display = 'block';
+  // 放鼠标右下 16px, 避免遮住光标
+  let x = e.clientX + 16, y = e.clientY + 16;
+  // 防止跑出右边/下边
+  const rect = _hoverTip.getBoundingClientRect();
+  if (x + rect.width  > window.innerWidth)  x = window.innerWidth  - rect.width  - 8;
+  if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
+  _hoverTip.style.left = x + 'px';
+  _hoverTip.style.top  = y + 'px';
+}
+function _hideTip() {
+  if (_hoverTip) _hoverTip.style.display = 'none';
+}
+
+function _bindHover() {
+  const ed = document.getElementById('editor');
+  if (!ed) return;
+  // 缓存最后一次的鼠标坐标 + token, 鼠标几乎没动就不重查
+  let _lastX = -1, _lastY = -1, _lastToken = null;
+  ed.addEventListener('mousemove', (e) => {
+    // 鼠标在同一格内反复触发, 不重做
+    if (Math.abs(e.clientX - _lastX) < 3 && Math.abs(e.clientY - _lastY) < 3) return;
+    _lastX = e.clientX; _lastY = e.clientY;
+    if (_hoverTimer) clearTimeout(_hoverTimer);
+    _hoverTimer = setTimeout(() => {
+      _hoverTimer = null;
+      const token = _findTokenAt(ed, e);
+      if (!token) {
+        _lastToken = null;
+        _hideTip();
+        return;
+      }
+      // 同一 token 反复悬停, 已显示就别重渲
+      if (token === _lastToken && _hoverTip && _hoverTip.style.display === 'block') {
+        _showTip(e, _lookupValue(token).html, token);   // 只更新位置 + 值
+        return;
+      }
+      _lastToken = token;
+      const { html } = _lookupValue(token);
+      _showTip(e, html, token);
+    }, 150);
+  });
+  ed.addEventListener('mouseleave', () => {
+    if (_hoverTimer) { clearTimeout(_hoverTimer); _hoverTimer = null; }
+    _lastToken = null;
+    _hideTip();
+  });
+  ed.addEventListener('scroll', () => { _lastToken = null; _hideTip(); }, { passive: true });
+  ed.addEventListener('keydown', () => { _lastToken = null; _hideTip(); });
+}
+
 (function bindAC() {
   const ed = document.getElementById('editor');
   // 中文输入法 (IME) composition 期间, input 事件值是拼音,不要 fuzzy
   let composing = false;
   ed.addEventListener('compositionstart', () => { composing = true; });
-  ed.addEventListener('compositionend',   () => { composing = false; scheduleAC(); scheduleLineNums(); scheduleHighlight(); });
+  ed.addEventListener('compositionend',   () => { composing = false; scheduleAC(); scheduleLineNums(); scheduleHighlight(); scheduleValidate(); });
   ed.addEventListener('input',  (e) => {
     if (composing) return;
     scheduleAC();          // fuzzy 50ms 后
     scheduleLineNums();    // 行号+光标 80ms 后
     scheduleHighlight();   // 高亮 80ms 后
+    scheduleValidate();    // 组态错误标注 600ms 后
   });
   // scroll 事件高频, 只同步行号 + 高亮层 scrollTop, 不做任何重算
   ed.addEventListener('scroll', () => {
@@ -2672,8 +3721,27 @@ function insertAC(opts) {
   }, 150));
 })();
 
-loadScript().then(() => { updateLineNums(); runHighlight(); });
+function _gotoLine(lineNo) {
+  const ed = document.getElementById('editor');
+  const lines = (ed.value || '').split('\n');
+  let off = 0;
+  for (let i = 0; i < lineNo - 1; i++) off += lines[i].length + 1;
+  ed.focus();
+  ed.setSelectionRange(off, off + (lines[lineNo - 1] || '').length);
+}
+function gotoFirstErr() {
+  if (!_errLines.size) return;
+  _gotoLine(Math.min(...[..._errLines.keys()]));
+}
+function gotoFirstWarn() {
+  if (!_warnLines.size) return;
+  _gotoLine(Math.min(...[..._warnLines.keys()]));
+}
+
+loadScript().then(() => { updateLineNums(); runHighlight(); validateScript(); });
 loadSymbols();
+refreshEndpoint();
+_bindHover();
 setInterval(pollStatus, 1000);
 pollStatus();
 </script>

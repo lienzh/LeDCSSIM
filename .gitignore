@@ -25,6 +25,7 @@ YQ3SIM-IO/SIMPLE/简化/*
 !YQ3SIM-IO/SIMPLE/简化/*-S.csv
 _pdf_pages/
 config/_OPC_*.md
+config/opc_endpoints.yaml
 
 # 自动生成 / 备份
 config/script_backups/
@@ -35,3 +36,7 @@ config/*.generated.yaml
 _chk*.py
 _scan*.py
 _check*.py
+
+# 第三方二进制 / DCS 工程文件 (不进源码仓库)
+enetopcua.exe
+CCS-W.trv

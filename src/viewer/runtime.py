@@ -30,6 +30,29 @@ from typing import List, Tuple, Optional, Union
 from src.opc_client.client import OPCClient
 
 
+# ---------- 显式事件日志 (用户视角时间线: 启停/重连/镜像/清状态等) ----------
+_EVENT_BUF = deque(maxlen=200)
+
+def log_event(category: str, msg: str, detail: Optional[dict] = None) -> None:
+    """记一条显式事件 (用户视角时间线, 不同于 _LOG_BUFFER 抓 logging 噪声).
+
+    category: run / stop / opc / opc-err / snapshot / state / save / endpoint / error
+    msg:      一句话, 带 emoji 前缀给 UI 用色
+    detail:   可选字典, 给 expand 时看
+    """
+    _EVENT_BUF.append({
+        "ts": time.time(),
+        "category": category,
+        "msg": msg,
+        "detail": detail or {},
+    })
+
+
+def get_events() -> list:
+    """返回最近事件 (新→旧, 跟 deque 顺序相反, UI 显示从近到远)"""
+    return list(reversed(_EVENT_BUF))
+
+
 # ---------- 会话日志环形缓冲 (debug 用, 不影响 stderr 输出) ----------
 _LOG_BUFFER = deque(maxlen=300)
 
@@ -56,8 +79,77 @@ logging.getLogger("asyncua").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# 默认 OPC URL(可被 set_url 覆盖)
-DEFAULT_OPC_URL = "opc.tcp://localhost:9440"
+# OPC 端点配置 — 由 config/opc_endpoints.yaml 驱动 (mode=local|vm)
+# 顶栏切换按钮调 set_endpoint_mode() 更新 + 持久化
+_ENDPOINT_PATH = Path("config/opc_endpoints.yaml")
+_ENDPOINT_DEFAULT = {
+    "mode": "local",
+    "local": "opc.tcp://127.0.0.1:9440",
+    "vm":    "opc.tcp://192.168.31.39:9440",
+}
+
+
+def _load_endpoint_config() -> dict:
+    """读 opc_endpoints.yaml, 缺字段就拿默认补齐, 文件不存在写入默认"""
+    import yaml as _yaml
+    cfg = dict(_ENDPOINT_DEFAULT)
+    if _ENDPOINT_PATH.exists():
+        try:
+            doc = _yaml.safe_load(_ENDPOINT_PATH.read_text(encoding="utf-8")) or {}
+            for k in ("mode", "local", "vm"):
+                if isinstance(doc.get(k), str) and doc[k].strip():
+                    cfg[k] = doc[k].strip()
+        except Exception as e:
+            logger.warning(f"读取 {_ENDPOINT_PATH} 失败, 用默认: {e}")
+    else:
+        try:
+            _ENDPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _ENDPOINT_PATH.write_text(
+                "# OPC 端点选择 — viewer 顶栏 [本地] [VM] 切换写这里\n"
+                "mode: local\n"
+                f"local: {cfg['local']}\n"
+                f"vm:    {cfg['vm']}\n",
+                encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"写入 {_ENDPOINT_PATH} 失败: {e}")
+    if cfg["mode"] not in ("local", "vm"):
+        cfg["mode"] = "local"
+    return cfg
+
+
+def get_endpoint_config() -> dict:
+    """返回 {mode, local, vm, url} — url 是当前 mode 对应的 URL"""
+    cfg = _load_endpoint_config()
+    cfg["url"] = cfg[cfg["mode"]]
+    return cfg
+
+
+def set_endpoint_mode(mode: str, vm_url: Optional[str] = None) -> dict:
+    """切模式 + 持久化. 返回新的 config (含 url 字段)"""
+    import yaml as _yaml
+    if mode not in ("local", "vm"):
+        raise ValueError(f"mode 必须是 local | vm, 收到 {mode!r}")
+    cfg = _load_endpoint_config()
+    cfg["mode"] = mode
+    if vm_url and vm_url.strip():
+        cfg["vm"] = vm_url.strip()
+    try:
+        _ENDPOINT_PATH.write_text(
+            "# OPC 端点选择 — viewer 顶栏 [本地] [VM] 切换写这里\n"
+            f"mode: {cfg['mode']}\n"
+            f"local: {cfg['local']}\n"
+            f"vm:    {cfg['vm']}\n",
+            encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"持久化 {_ENDPOINT_PATH} 失败: {e}")
+    cfg["url"] = cfg[cfg["mode"]]
+    log_event("endpoint", f"🔌 OPC 端点切到 [{'VM' if mode == 'vm' else '本地'}] {cfg['url']}",
+              {"mode": mode, "url": cfg["url"]})
+    return cfg
+
+
+# 默认 OPC URL(start() 不传 opc_url 时, 读 endpoint 配置)
+DEFAULT_OPC_URL = "opc.tcp://127.0.0.1:9440"   # 仅作 import-time 占位; 真正用的是 get_endpoint_config()
 
 # 短码正则:  DPU + 4位数字 + . + 字母数字组合
 SHORTCODE_RE = re.compile(r"^DPU\d{4}\.[A-Z][\w.]*$")   # 支持多段: DPU3013.SH0500.PRO21120.IN
@@ -118,6 +210,346 @@ def _summarize_pairs(pairs) -> dict:
     return {"lhs_by_type": dict(lhs_type), "function_usage": dict(fn_use)}
 
 
+def reinit_tracking_state() -> dict:
+    """初始化"跟踪态" — 清 LAG / $var / last_written, 保留 RS 锁存和镜像文件.
+
+    场景: 改了脚本系数 / 想让分离器温度从 0 爬变成立即跟踪当前燃水比 / 等等
+    下周期所有 LAG 用 'y_prev = 当前 x' 初始化 (见 _eval_rhs 注释), 立即稳态.
+    RS 锁存保留 — 它们是事件状态 (开/关命令的历史), 不该当作初值清掉.
+    """
+    s = _STATE
+    n = {"lag": len(s.lag_state), "var": len(s.intermediates),
+         "written": len(s.last_written)}
+    s.lag_state = {}
+    s.intermediates = {}
+    s.last_written = {}
+    logger.info(f"跟踪状态已重置: {n}")
+    log_event("state", f"⏮ 重置初值 (LAG {n['lag']} / $var {n['var']} 清, RS {len(s.rs_state)} 保留)", n)
+    return n
+
+
+def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
+    """上载: 工程 → 本项目. 4 步无扰跟踪起步.
+
+    Step 1. 检查 OPC 状态 (连不通直接给清晰错误, 不再等读 retry)
+    Step 2. 读 DCS 当前值 (所有直接写 OPC 的 LHS — 含 LAG / RS / RS_NOT)
+    Step 3. 无扰跟踪处理:
+         - LAG (含嵌套, 走 RHS 树穿过 $var/LIMIT 等): lag_state = DCS 值
+         - RS:     Q = DCS 值       (rs_state)
+         - RS_NOT: Q = NOT DCS 值   (因为输出是 NOT Q, 反算 Q)
+         - last_written 清空, 强制下周期重写一遍同步 DCS
+    Step 4. 用户接着点【▶ 运行】, 正常读写循环跑起来,
+            第 1 周期写出去 = DCS 现状 → 零跳变, 后续按各 τ 平滑过渡到算法目标.
+
+    前置: OPC 循环已停 (避免跟运行中的 connect 抢 NTVDPU session).
+    典型场景: VM 镜像还原 / CCMStudio 重下组态 / 工程 AI 被人工改过 之后.
+    """
+    import asyncio
+    s = _STATE
+    if s.running:
+        return {"ok": False, "error": "OPC 循环在运行, 请先点【■ 停止】再上载"}
+
+    # s.pairs 只有点过 ▶ 运行 才填; 首次启动直接调本接口时为空 — 从 script.txt 重新 parse
+    pairs = s.pairs
+    if not pairs:
+        script_path = Path("config/script.txt")
+        if not script_path.exists():
+            return {"ok": False,
+                    "error": "config/script.txt 不存在, 先编辑器里点【💾 保存】"}
+        try:
+            content = script_path.read_text(encoding="utf-8")
+            pairs = parse_script(content)
+        except Exception as e:
+            return {"ok": False, "error": f"脚本解析失败: {e}"}
+        if not pairs:
+            return {"ok": False, "error": "脚本为空 (全是注释?)"}
+
+    url = opc_url or get_endpoint_config()["url"]
+    import time as _time
+    steps = []
+
+    # ════════ Step 1: 检查 OPC 状态 ════════
+    t0 = _time.perf_counter()
+    async def _probe():
+        client = OPCClient(url)
+        await client.connect(retry_count=2, retry_interval=1.0)
+        try: await client.disconnect()
+        except Exception: pass
+    try:
+        asyncio.run(_probe())
+    except Exception as e:
+        log_event("opc-err", f"✗ 上载 Step 1 — OPC 不通 ({url}): {e}")
+        return {"ok": False, "step": 1, "error": f"OPC 不通 ({url}): {e}",
+                "msg": f"✗ Step 1 OPC 检查失败: {e}"}
+    probe_ms = (_time.perf_counter() - t0) * 1000
+    steps.append(f"✓ Step 1: OPC 通 ({url}, {probe_ms:.0f}ms)")
+
+    # ════════ Step 2: 收集要读的 LHS + 状态 keys (LAG 含嵌套, RS 含 RS_NOT 反相) ════════
+    var_defs = {lhs: rhs for lhs, rhs in pairs
+                if isinstance(lhs, str) and lhs.startswith("$")}
+
+    def _collect_lag_keys(expr, depth=0):
+        """走 RHS 树收集 LAG state key, 但**不跨 $var 边界**.
+
+        Why: 跨 $var 等于跨物理量级. 例如:
+            DPU.TC = LAG($T_sep, 10)                     ← 温度 °C
+            $T_sep = LIMIT(LAG($T_sep_static, 120), ...)  ← 温度
+            $T_sep_static = ... + 2200 * ($M_coal_tot / ...)
+            $M_coal_tot = LAG(sum_of_AI, 120)            ← 煤量 t/h
+
+        把所有 LAG 都锚到 TC 的 DCS 值 (472°C) 是错的 —
+        $M_coal_tot LAG 不应该用 472 当初值. 不跨 $var 后:
+            - TC 的外层 LAG → 锚 (LHS = DCS TC) ✓
+            - $T_sep 里的 LAG → 不锚 (它跟外层 LAG 量级相同, 用 track-init 就行)
+            - $M_coal_tot 的 LAG → 不锚, track-init = sum_of_DCS_AI 当前读
+        $M_coal_tot 不再"温度起步漂到煤量", 而是直接从合理量级起步.
+        """
+        if depth > 12: return []
+        keys = []
+        if isinstance(expr, tuple):
+            fname, args = expr
+            if fname == "LAG":
+                keys.append(("LAG", _make_hashable(args)))
+            for a in args:
+                keys.extend(_collect_lag_keys(a, depth + 1))
+        # 不跨 $var (原来这里会 recurse into var_defs[expr], 现已删除)
+        return keys
+
+    # 对每个 OPC LHS 收集: LAG (递归) + RS (顶层, 含 RS_NOT)
+    lhs_lag_keys = {}   # {lhs_full: [lag_key, ...]}
+    lhs_rs = {}         # {lhs_full: (rs_key, inverted)}  inverted=True 表示 RS_NOT
+    for lhs, rhs in pairs:
+        if not isinstance(lhs, str) or lhs.startswith("$"):
+            continue
+        lag_keys = _collect_lag_keys(rhs)
+        if lag_keys:
+            lhs_lag_keys[lhs] = lag_keys
+        if isinstance(rhs, tuple):
+            if rhs[0] == "RS":
+                lhs_rs[lhs] = (("RS", _make_hashable(rhs[1])), False)
+            elif rhs[0] == "RS_NOT":
+                lhs_rs[lhs] = (("RS", _make_hashable(rhs[1])), True)
+
+    # 除了 LHS 锚定用的节点, 也把脚本里所有 RHS 引用的 OPC 节点一起读
+    # (跟正常 OPC 循环一样收集 read_set), 让面板"读取"列在停止状态下也能看到全貌
+    def _collect_rhs_opc(expr, out):
+        if isinstance(expr, str):
+            if expr.startswith("ns="):
+                out.add(expr)
+        elif isinstance(expr, tuple):
+            for a in expr[1]:
+                _collect_rhs_opc(a, out)
+    rhs_opc = set()
+    for _lhs, rhs in pairs:
+        _collect_rhs_opc(rhs, rhs_opc)
+    nodes_to_read = sorted(set(lhs_lag_keys.keys()) | set(lhs_rs.keys()) | rhs_opc)
+    if not nodes_to_read:
+        log_event("state", "📥 上载 Step 2 — 脚本里没有 LHS=LAG/RS(...) 的直接写, 跳过")
+        return {"ok": True, "synced_lag": 0, "synced_rs": 0,
+                "msg": "脚本里没有 LHS=LAG/RS(...) 直接写, 无需同步"}
+
+    steps.append(f"  收集到 {len(lhs_lag_keys)} 个 LAG-LHS + {len(lhs_rs)} 个 RS-LHS (合并去重 {len(nodes_to_read)} 个 OPC 节点)")
+
+    # ════════ Step 3: 读 DCS 当前值 + 无扰跟踪处理 ════════
+    t0 = _time.perf_counter()
+    async def _read():
+        client = OPCClient(url)
+        await client.connect(retry_count=3, retry_interval=2.0)
+        try:
+            vals = await client.read_values(nodes_to_read)
+            return dict(zip(nodes_to_read, vals))
+        finally:
+            try: await client.disconnect()
+            except Exception: pass
+    try:
+        val_map = asyncio.run(_read())
+    except Exception as e:
+        log_event("error", f"✗ 上载 Step 2 — DCS 读取失败: {e}")
+        return {"ok": False, "step": 2, "error": f"读 DCS 失败: {e}",
+                "msg": f"✗ Step 2 读 DCS 失败: {e}"}
+    read_ms = (_time.perf_counter() - t0) * 1000
+    no_val = sum(1 for v in val_map.values() if v is None)
+    steps.append(f"✓ Step 2: 读 {len(nodes_to_read)} 个 LHS DCS 当前值 ({read_ms:.0f}ms, {no_val} 读不到)")
+
+    # 无扰跟踪: LAG (含嵌套) + RS (含 RS_NOT 反相)
+    synced_lag = 0
+    synced_rs = 0
+    anchored_lag = set()
+    for lhs_full, keys in lhs_lag_keys.items():
+        v = val_map.get(lhs_full)
+        if v is None: continue
+        v_float = float(v)
+        for k in keys:
+            if k not in anchored_lag:
+                s.lag_state[k] = v_float
+                anchored_lag.add(k)
+                synced_lag += 1
+    anchored_rs = set()
+    for lhs_full, (rs_key, inverted) in lhs_rs.items():
+        v = val_map.get(lhs_full)
+        if v is None: continue
+        if rs_key in anchored_rs: continue
+        # RS_NOT 输出 = NOT Q, 所以从 LHS 反算 Q = NOT LHS
+        q = (not bool(v)) if inverted else bool(v)
+        s.rs_state[rs_key] = q
+        anchored_rs.add(rs_key)
+        synced_rs += 1
+
+    # 清 last_written, 强制下周期重写一遍同步 DCS
+    s.last_written = {}
+    # 把刚才读到的 DCS 现状直接灌进 last_read, 右侧"实时值"面板就能反映 (否则面板还是上次跑停残留)
+    for node, v in val_map.items():
+        if v is not None:
+            try: s.last_read[node] = float(v)
+            except (TypeError, ValueError):
+                try: s.last_read[node] = v   # 非数值 (bool 等) 原样存
+                except Exception: pass
+    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG (含嵌套) + {synced_rs} 个 RS (含 RS_NOT 反相), last_written 清空, {len(val_map)} 节点的 DCS 读值灌进面板")
+    steps.append("✓ Step 4: 现在可以点【▶ 运行】, 第 1 周期写出去 = DCS 现状, 后续按 τ 平滑过渡")
+
+    log_event("state",
+              f"📥 上载: LAG {synced_lag} (含嵌套) + RS {synced_rs} (含 RS_NOT) ← 工程当前值",
+              {"synced_lag": synced_lag, "synced_rs": synced_rs,
+               "no_val": no_val, "url": url, "probe_ms": int(probe_ms), "read_ms": int(read_ms)})
+    return {"ok": True,
+            "synced_lag": synced_lag, "synced_rs": synced_rs,
+            "no_val": no_val,
+            "lhs_count": len(nodes_to_read),
+            "msg": "\n".join(steps)}
+
+
+def dryrun_preview(opc_url: Optional[str] = None) -> dict:
+    """干运行预演: 读 DCS 现状 → 用脚本算一遍 → 对每个 OPC LHS 报告
+    (算出来要写的值 vs DCS 现在的实际值 vs 差值 vs 风险等级).
+
+    用法:
+    - 状态量 (LAG/RS): 已被 upload 锚到 DCS → 算出 ≈ DCS, diff 应该 0
+    - 非状态量 (SEL/直通/算术): diff 大 = 公式 bug 或量纲不一致
+    - 前置: OPC 循环已停; 建议先点 上载 把 lag_state/rs_state 锚好
+    """
+    import asyncio
+    s = _STATE
+    if s.running:
+        return {"ok": False, "error": "OPC 循环在运行, 请先点【■ 停止】再预演"}
+    pairs = s.pairs
+    if not pairs:
+        sp = Path("config/script.txt")
+        if not sp.exists():
+            return {"ok": False, "error": "config/script.txt 不存在"}
+        try:
+            pairs = parse_script(sp.read_text(encoding="utf-8"))
+        except ParseError as e:
+            return {"ok": False, "error": f"脚本 parse 失败: {e}"}
+    url = opc_url or get_endpoint_config()["url"]
+
+    # 收集所有 OPC 节点 (LHS + RHS)
+    all_opc = set()
+    def _collect(expr):
+        if isinstance(expr, str):
+            if expr.startswith("ns="): all_opc.add(expr)
+        elif isinstance(expr, tuple):
+            for a in expr[1]: _collect(a)
+    for lhs, rhs in pairs:
+        if isinstance(lhs, str) and lhs.startswith("ns="):
+            all_opc.add(lhs)
+        _collect(rhs)
+
+    # 读 DCS
+    async def _read():
+        client = OPCClient(url)
+        await client.connect(retry_count=2, retry_interval=1.0)
+        try:
+            nodes = sorted(all_opc)
+            vals = await client.read_values(nodes)
+            return dict(zip(nodes, vals))
+        finally:
+            try: await client.disconnect()
+            except Exception: pass
+    try:
+        val_map = asyncio.run(_read())
+    except Exception as e:
+        return {"ok": False, "error": f"OPC 读失败: {e}"}
+
+    # 模拟一个周期 (用当前 lag_state/rs_state 副本, intermediates 从空算起)
+    class _Sim: pass
+    sim = _Sim()
+    sim.lag_state = dict(s.lag_state)
+    sim.rs_state = dict(s.rs_state)
+    sim.intermediates = {}
+
+    def _classify(rhs):
+        if isinstance(rhs, tuple): return rhs[0]
+        if isinstance(rhs, (int, float)): return "const"
+        if isinstance(rhs, str): return "var" if rhs.startswith("$") else "direct"
+        return "?"
+
+    def _risk(diff_rel, kind):
+        # 状态量: 锚定后算出 ≈ DCS, 容忍度更紧
+        if kind in ("LAG", "RS", "RS_NOT"):
+            if diff_rel < 0.005: return "ok"
+            if diff_rel < 0.05:  return "info"
+            return "warning"
+        # 非状态量: 容忍度宽
+        if diff_rel < 0.01: return "ok"
+        if diff_rel < 0.1:  return "info"
+        if diff_rel < 0.5:  return "warning"
+        return "risk"
+
+    results = []
+    skipped = 0
+    for lhs, rhs in pairs:
+        try:
+            v = _eval_rhs(rhs, val_map, sim, dt=0.2)
+        except _SkipCycle:
+            skipped += 1; continue
+        if v is None: continue
+        if isinstance(lhs, str) and lhs.startswith("$"):
+            sim.intermediates[lhs] = v
+            continue
+        # OPC LHS
+        actual = val_map.get(lhs)
+        kind = _classify(rhs)
+        item = {
+            "lhs": lhs,
+            "lhs_short": lhs.replace("ns=0;s=", "").replace(".HW.", ".").replace(".PV", ""),
+            "kind": kind,
+        }
+        if isinstance(v, bool):
+            item["computed"] = bool(v); item["computed_num"] = 1.0 if v else 0.0
+        elif isinstance(v, (int, float)):
+            item["computed"] = float(v); item["computed_num"] = float(v)
+        else:
+            item["computed"] = str(v); item["computed_num"] = None
+        if isinstance(actual, bool):
+            item["actual"] = bool(actual); item["actual_num"] = 1.0 if actual else 0.0
+        elif isinstance(actual, (int, float)):
+            item["actual"] = float(actual); item["actual_num"] = float(actual)
+        elif actual is None:
+            item["actual"] = None; item["actual_num"] = None
+        else:
+            item["actual"] = str(actual); item["actual_num"] = None
+        # 计算 diff + 风险
+        if item["computed_num"] is not None and item["actual_num"] is not None:
+            diff = item["computed_num"] - item["actual_num"]
+            item["diff"] = diff
+            denom = max(abs(item["actual_num"]), 1.0)
+            item["rel"] = abs(diff) / denom
+            item["risk"] = _risk(item["rel"], kind)
+        else:
+            item["diff"] = None; item["rel"] = None
+            item["risk"] = "no_actual" if item["actual"] is None else "non_numeric"
+        results.append(item)
+
+    # 排序: 风险大在前
+    risk_order = {"risk": 0, "warning": 1, "info": 2, "non_numeric": 3, "no_actual": 4, "ok": 5}
+    results.sort(key=lambda x: (risk_order.get(x.get("risk", "ok"), 99), -(x.get("rel") or 0)))
+
+    summary = {"total": len(results), "skipped": skipped, "url": url, "nodes_read": len(val_map)}
+    for r in ("risk", "warning", "info", "non_numeric", "no_actual", "ok"):
+        summary[r] = sum(1 for x in results if x.get("risk") == r)
+    return {"ok": True, "items": results, "summary": summary}
+
+
 def reset_persistent_state() -> dict:
     """显式清空持久状态 (RS/LAG/中间变量) — 用户想"从头开始"时调用"""
     s = _STATE
@@ -133,6 +565,7 @@ def reset_persistent_state() -> dict:
     except Exception:
         pass
     logger.info(f"持久状态已清空: {n}")
+    log_event("state", f"🔥 清空状态 (RS {n['rs']} / LAG {n['lag']} / $var {n['var']})", n)
     return n
 
 
@@ -490,6 +923,17 @@ def _resolve(arg, val_by_node: dict, s=None, dt: float = 0.2):
     return arg
 
 
+def _make_hashable(x):
+    """把表达式树里的 list 递归转 tuple, 让 RS/LAG state 能用 args 当 key.
+       不修这里 → 当 LAG/RS 的参数是嵌套表达式(ADD/MUL 等)时, raw_args 里
+       带 list 直接 tuple() 还是 unhashable, 抛 'unhashable type: list'."""
+    if isinstance(x, list):
+        return tuple(_make_hashable(e) for e in x)
+    if isinstance(x, tuple):
+        return tuple(_make_hashable(e) for e in x)
+    return x
+
+
 def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
     """计算右边表达式的当前值。
     rhs 形态:
@@ -518,7 +962,7 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
     # 锁存/逻辑
     if fname in ("RS", "RS_NOT"):
         set_v, reset_v = vals
-        key = ("RS", tuple(raw_args))
+        key = ("RS", _make_hashable(raw_args))
         last = s.rs_state.get(key, False)
         if bool(set_v):     q = True
         elif bool(reset_v): q = False
@@ -573,8 +1017,11 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
     # 一阶滞后 — 冷启动 y0=0, 输入阶跃后按时间常数 T 爬升
     if fname == "LAG":
         x, T = float(vals[0]), float(vals[1])
-        key = ("LAG", tuple(raw_args))
-        y_prev = s.lag_state.get(key, 0.0)
+        key = ("LAG", _make_hashable(raw_args))
+        # 首次跟踪初始化: 默认 y_prev=x → 第一周期输出就等于输入, 跳过 N·τ 爬升期.
+        # DCS 厂家算法块的标准做法 — 防止开机时分离器温度从 0 一路爬到 380℃,
+        # 触发越限报警 / 控制器误动.  后续周期照常按 (dt/T) 滞后.
+        y_prev = s.lag_state.get(key, x)
         y = y_prev + (dt / T) * (x - y_prev) if T > 0 else x
         s.lag_state[key] = y
         return y
@@ -598,6 +1045,14 @@ def save_state_snapshot(force: bool = False) -> dict:
                                        "请先运行脚本让状态算出来, 或加 force 强制保存"}
     try:
         _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 防误覆盖: 写新文件前, 若旧文件存在就 mv 到 .bak (上一份永远留底)
+        if _SNAPSHOT_PATH.exists():
+            bak = _SNAPSHOT_PATH.with_suffix(_SNAPSHOT_PATH.suffix + ".bak")
+            try:
+                if bak.exists(): bak.unlink()
+                _SNAPSHOT_PATH.rename(bak)
+            except Exception as e:
+                logger.warning(f"备份旧镜像到 .bak 失败 (继续覆盖写): {e}")
         data = {
             "saved_at": time.time(),
             "rs_state": [
@@ -616,9 +1071,11 @@ def save_state_snapshot(force: bool = False) -> dict:
         )
         n = {"rs": len(s.rs_state), "lag": len(s.lag_state), "var": len(s.intermediates)}
         logger.info(f"状态镜像已保存: {n}")
+        log_event("snapshot", f"📸 镜像保存 (RS {n['rs']} / LAG {n['lag']} / $var {n['var']})", n)
         return {"ok": True, "saved": n}
     except Exception as e:
         logger.warning(f"保存镜像失败: {e}")
+        log_event("error", f"✗ 镜像保存失败: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -631,18 +1088,14 @@ def restore_state_snapshot() -> dict:
         return {"ok": False, "error": "没有镜像文件,先保存"}
     try:
         data = _json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
-        # 兼容旧格式 (dict with key string) + 新格式 (list of dicts)
+        # 镜像现在只有一种格式: list of {fname, args, value}
+        # _make_hashable 递归把 list → tuple, 否则嵌套表达式参数 (如
+        # LAG((MUL,[...]),120) 这种 args) 直接 tuple() 还是带 list, dict key 报
+        # unhashable
         def _build(raw):
             out = {}
-            if isinstance(raw, list):
-                for it in raw:
-                    out[(it["fname"], tuple(it["args"]))] = it["value"]
-            elif isinstance(raw, dict):
-                # 旧格式: "RS|arg1\x1farg2": value
-                for k, v in raw.items():
-                    parts = k.split("|", 1)
-                    args = tuple(parts[1].split("\x1f")) if len(parts) > 1 and parts[1] else ()
-                    out[(parts[0], args)] = v
+            for it in raw or []:
+                out[(it["fname"], _make_hashable(it["args"]))] = it["value"]
             return out
         s.rs_state = _build(data.get("rs_state", []))
         s.lag_state = _build(data.get("lag_state", []))
@@ -653,9 +1106,11 @@ def restore_state_snapshot() -> dict:
         when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
         n = {"rs": len(s.rs_state), "lag": len(s.lag_state), "var": len(s.intermediates)}
         logger.info(f"已从镜像恢复: {n} (镜像保存于 {when})")
+        log_event("snapshot", f"📤 下载镜像 (RS {n['rs']} / LAG {n['lag']} / $var {n['var']}, 保存于 {when})", n)
         return {"ok": True, "restored": n, "saved_at": when}
     except Exception as e:
         logger.warning(f"恢复失败: {e}")
+        log_event("error", f"✗ 镜像恢复失败: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -670,7 +1125,7 @@ def _index_state_users(pairs):
         fname, args = expr
         if fname in ("RS", "RS_NOT", "LAG"):
             real_fn = "RS" if fname in ("RS", "RS_NOT") else fname
-            key = (real_fn, tuple(args))
+            key = (real_fn, _make_hashable(args))
             out.setdefault(key, []).append(f"{lhs_short} = {fname}(...)")
         for a in args:
             _walk(a, lhs_short, depth + 1)
@@ -691,25 +1146,16 @@ def get_snapshot_info(with_detail: bool = False) -> dict:
     try:
         data = _json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
         ts = data.get("saved_at", 0)
-        rs_raw = data.get("rs_state", [])
-        lag_raw = data.get("lag_state", [])
-        intermediates = data.get("intermediates", {})
-        # 兼容新旧两种格式 (list 新格式 / dict 旧格式)
-        if isinstance(rs_raw, list):
-            rs_count = len(rs_raw)
-        else:
-            rs_count = len(rs_raw)  # dict 也算
-        if isinstance(lag_raw, list):
-            lag_count = len(lag_raw)
-        else:
-            lag_count = len(lag_raw)
+        rs_raw = data.get("rs_state") or []
+        lag_raw = data.get("lag_state") or []
+        intermediates = data.get("intermediates") or {}
 
         out = {
             "exists": True,
             "saved_at": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
             "age_s": int(time.time() - ts),
-            "rs_count": rs_count,
-            "lag_count": lag_count,
+            "rs_count": len(rs_raw),
+            "lag_count": len(lag_raw),
             "var_count": len(intermediates),
             "size_bytes": _SNAPSHOT_PATH.stat().st_size,
             "path": str(_SNAPSHOT_PATH),
@@ -724,33 +1170,16 @@ def get_snapshot_info(with_detail: bool = False) -> dict:
             # 反向索引 state → [使用它的 LHS 列表]
             users_index = _index_state_users(_STATE.pairs)
             def _users_for(fname, args_full):
-                # 注意: rs_state key 是 raw_args (含完整 ns=0;s=...)
-                # users_index key 也是 raw_args, 直接查
-                k = (fname, tuple(args_full))
+                # users_index key 用 _make_hashable, 这里也得用, 嵌套表达式 args 才匹配得上
+                k = (fname, _make_hashable(args_full))
                 return users_index.get(k, [])
             def _norm_items(raw):
-                items = []
-                if isinstance(raw, list):
-                    for it in raw:
-                        fname = it.get("fname", "?")
-                        args_full = it.get("args", [])
-                        items.append({
-                            "fname": fname,
-                            "args": [_short(a) for a in args_full],
-                            "value": it.get("value"),
-                            "users": _users_for(fname, args_full),
-                        })
-                elif isinstance(raw, dict):
-                    for k, v in raw.items():
-                        parts = k.split("|", 1)
-                        args_full = parts[1].split("\x1f") if len(parts) > 1 and parts[1] else []
-                        items.append({
-                            "fname": parts[0],
-                            "args": [_short(a) for a in args_full],
-                            "value": v,
-                            "users": _users_for(parts[0], args_full),
-                        })
-                return items
+                return [{
+                    "fname": it.get("fname", "?"),
+                    "args": [_short(a) for a in it.get("args", [])],
+                    "value": it.get("value"),
+                    "users": _users_for(it.get("fname", "?"), it.get("args", [])),
+                } for it in raw]
             out["rs_detail"] = _norm_items(rs_raw)
             out["lag_detail"] = _norm_items(lag_raw)
             out["var_detail"] = intermediates
@@ -912,6 +1341,8 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                 # OPC 自动重连 — NTVDPU 重启 / 网络抖动恢复
                 if consec_fail >= RECONNECT_THRESHOLD:
                     logger.warning(f"连续 {consec_fail} 周期全部读失败, 重连 OPC")
+                    log_event("opc-err", f"⚠ OPC 断连: 连续 {consec_fail} 周期读失败, 重连中",
+                              {"opc_url": opc_url})
                     try: await client.disconnect()
                     except Exception: pass
                     client = OPCClient(opc_url)
@@ -922,10 +1353,14 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                         s.last_written = {}
                         logger.info(f"OPC 重连成功, RS/LAG 状态保持, "
                                     f"last_written 清空 → 下周期所有 LHS 重写")
+                        log_event("opc", "🔗 OPC 重连成功 (RS/LAG/$var 保留, last_written 清)",
+                                  {"opc_url": opc_url})
                         consec_fail = 0
                     except Exception as e:
                         logger.warning(f"OPC 重连失败, 等 {BACKOFF_AFTER_FAIL}s 再试: {e}")
                         s.last_error = f"OPC 断连: {e}"
+                        log_event("opc-err", f"✗ OPC 重连失败 (等 {BACKOFF_AFTER_FAIL}s 再试)",
+                                  {"opc_url": opc_url, "error": str(e)})
                         await asyncio.sleep(BACKOFF_AFTER_FAIL)
                         continue   # 跳过本周期的求值/写入
 
@@ -1050,7 +1485,8 @@ def start(pairs: List[Tuple[str, Union[str, float]]],
         return False, "已在运行,请先停止"
     s.pairs = pairs
     s.dt = dt
-    s.opc_url = opc_url or DEFAULT_OPC_URL
+    # 优先用调用方指定的 URL; 否则按 endpoint 配置 (mode=local|vm) 解析
+    s.opc_url = opc_url or get_endpoint_config()["url"]
     # 运行时计数清零, 但持久状态 (rs/lag/中间变量) 不清 —
     # 用户在线组态/热重启脚本时, RS 锁存等保持的量不丢
     s.cycle_count = 0
@@ -1082,6 +1518,8 @@ def start(pairs: List[Tuple[str, Union[str, float]]],
 
     s.thread = threading.Thread(target=_runner, daemon=True, name="opc-runtime")
     s.thread.start()
+    log_event("run", f"▶ 启动 OPC 循环 ({len(pairs)} 对, dt={dt*1000:.0f}ms)",
+              {"pairs": len(pairs), "dt_ms": dt * 1000, "opc_url": s.opc_url})
     return True, f"已启动 {len(pairs)} 对,周期 {dt*1000:.0f}ms"
 
 
@@ -1090,6 +1528,8 @@ def stop() -> Tuple[bool, str]:
     if not s.running:
         return False, "未在运行"
     s.running = False
+    log_event("stop", f"■ 停止 OPC 循环 (执行 {s.cycle_count} 周期)",
+              {"cycles": s.cycle_count})
     # 等线程退出(最多 2 秒)
     if s.thread:
         s.thread.join(timeout=2.0)
