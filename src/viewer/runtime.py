@@ -397,6 +397,14 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
 
     # 清 last_written, 强制下周期重写一遍同步 DCS
     s.last_written = {}
+    # 清掉没锚定的 LAG state — 否则旧 run 的残留 y_prev 可能在 LIMIT 门控下卡住, 让锚定值
+    # 传不出去 (典型: DPU.TC = LAG($T_sep, 10); $T_sep = LIMIT(LAG(..., 120), 350, 480).
+    # 外层锚 412, 但内层 LAG 旧残留 273 < 350, LIMIT 钳到 350, 外层 LAG 跌向 350).
+    # 删掉非锚定 key 后下周期默认 y_prev=当前x (跟踪初始化), 算法链合理起步.
+    cleared_lag = 0
+    for k in list(s.lag_state.keys()):
+        if k not in anchored_lag:
+            del s.lag_state[k]; cleared_lag += 1
     # 把刚才读到的 DCS 现状直接灌进 last_read, 右侧"实时值"面板就能反映 (否则面板还是上次跑停残留)
     for node, v in val_map.items():
         if v is not None:
@@ -404,7 +412,27 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
             except (TypeError, ValueError):
                 try: s.last_read[node] = v   # 非数值 (bool 等) 原样存
                 except Exception: pass
-    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG (含嵌套) + {synced_rs} 个 RS (含 RS_NOT 反相), last_written 清空, {len(val_map)} 节点的 DCS 读值灌进面板")
+    # 模拟一周期更新 $var + LHS 显示值 (用 sim 副本 + dt=0, 不影响真实 lag_state/rs_state)
+    # 否则 panel 显示的 $M_X 等中间变量是上次跑停下来的 stale, 跟刚读的 DCS 对不上
+    class _Sim: pass
+    sim = _Sim()
+    sim.lag_state = dict(s.lag_state)   # 用刚锚定的 state
+    sim.rs_state = dict(s.rs_state)
+    sim.intermediates = {}
+    refreshed = 0
+    for lhs, rhs in pairs:
+        try:
+            v = _eval_rhs(rhs, val_map, sim, dt=0.0)   # dt=0 → LAG y_prev 不前进
+        except _SkipCycle:
+            continue
+        if v is None: continue
+        s.last_values[lhs] = v
+        if isinstance(lhs, str) and lhs.startswith("$"):
+            sim.intermediates[lhs] = v   # ★ 关键: 下一对 RHS 用 $var 时要在 sim 里找得到
+            s.intermediates[lhs] = v
+        refreshed += 1
+    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG + {synced_rs} 个 RS, last_written 清空, 非锚 LAG 清 {cleared_lag} 个")
+    steps.append(f"  → 刷新面板显示值: {len(val_map)} 个 DCS 节点 → last_read, 算 {refreshed} 对 LHS → last_values/$var")
     steps.append("✓ Step 4: 现在可以点【▶ 运行】, 第 1 周期写出去 = DCS 现状, 后续按 τ 平滑过渡")
 
     log_event("state",
@@ -1278,9 +1306,10 @@ def get_status() -> dict:
     }
 
 
-async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
+async def _opc_loop(initial_pairs: List[Tuple[str, Union[str, float]]], dt: float,
                     opc_url: str):
     s = _STATE
+    s.pairs = initial_pairs   # 保证 swap 入口拿到同一份
     client = OPCClient(opc_url)
     try:
         await client.connect(retry_count=3, retry_interval=2.0)
@@ -1288,7 +1317,7 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
         s.last_error = f"OPC 连接失败: {e}"
         s.running = False
         return
-    logger.info(f"OPC 已连接, 进入循环 dt={dt}s, {len(pairs)} 对")
+    logger.info(f"OPC 已连接, 进入循环 dt={dt}s, {len(initial_pairs)} 对")
 
     # 自动重连状态: 连续 N 周期全部读不到值 → 视为连接断, 尝试重连
     consec_fail = 0
@@ -1304,16 +1333,28 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
         elif isinstance(expr, tuple):
             for a in expr[1]:
                 _collect(a, out)
-    read_set = set()
-    for _lhs, rhs in pairs:
-        _collect(rhs, read_set)
-    read_nodes = list(read_set)
+    def _rebuild_read_set(pairs_):
+        rs = set()
+        for _lhs, rhs in pairs_:
+            _collect(rhs, rs)
+        return list(rs)
+    # 初始 read_nodes + 引用追踪 (每周期看 s.pairs 是不是被 swap 了)
+    read_nodes = _rebuild_read_set(initial_pairs)
+    last_pairs_ref = initial_pairs
 
     try:
         while s.running:
             cycle_t0 = time.perf_counter()
             read_ms = 0.0
             write_ms = 0.0
+            # ★ 在线下装: 看 s.pairs 是不是被 swap 了 (引用比较, O(1))
+            # 是 → 重算 read_set, 后续步骤用新 pairs. 不停 OPC 连接, 不断流.
+            current_pairs = s.pairs
+            if current_pairs is not last_pairs_ref:
+                read_nodes = _rebuild_read_set(current_pairs)
+                logger.info(f"♻ 在线下装: pairs {len(last_pairs_ref)} → "
+                            f"{len(current_pairs)} 对, read_set → {len(read_nodes)} 节点")
+                last_pairs_ref = current_pairs
             try:
                 # 1. 批量读 (计时)
                 if read_nodes:
@@ -1364,7 +1405,7 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                         await asyncio.sleep(BACKOFF_AFTER_FAIL)
                         continue   # 跳过本周期的求值/写入
 
-                # 2. 计算每个 lhs 的目标值
+                # 2. 计算每个 lhs 的目标值 (用本周期开头捕获的 current_pairs, 避免 mid-cycle swap 错乱)
                 writes: dict = {}
                 def _node_refs(expr):
                     if isinstance(expr, str) and not expr.startswith("$"):
@@ -1372,7 +1413,7 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
                     elif isinstance(expr, tuple):
                         for a in expr[1]:
                             yield from _node_refs(a)
-                for lhs, rhs in pairs:
+                for lhs, rhs in current_pairs:
                     try:
                         v = _eval_rhs(rhs, val_by_node, s, dt)
                     except _SkipCycle:
@@ -1476,6 +1517,38 @@ async def _opc_loop(pairs: List[Tuple[str, Union[str, float]]], dt: float,
         except Exception:
             pass
         logger.info(f"OPC 循环退出, 共 {s.cycle_count} 周期")
+
+
+def swap_pairs(new_pairs: List[Tuple[str, Union[str, float]]]) -> dict:
+    """在线下装 (hot swap): 原子替换 s.pairs, 不停 OPC 循环, 0 断流.
+
+    机制:
+        - _opc_loop 每周期开头都从 s.pairs 取最新引用 (`current_pairs = s.pairs`)
+        - 引用变了 → 重算 read_set, 本周期就用新 pairs 算 LHS
+        - GIL 保证 s.pairs = ... 是原子赋值, 不会读到半个 list
+
+    没在跑时调用 → 等价于直接赋值 s.pairs, 下次点 ▶ 运行用它.
+
+    状态影响:
+        - 旧 LAG/RS key 在 lag_state/rs_state 里残留 (不被引用就不会更新, 无害)
+        - 新 LAG/RS key 没锚定 → 按 _eval_rhs 默认 track-init (y_prev = 当前输入)
+        - last_written 不动 (老 LHS 已经写过的 DCS 端值仍记着; 新 LHS 第 1 周期会强制写)
+    """
+    s = _STATE
+    old_count = len(s.pairs)
+    new_count = len(new_pairs)
+    s.pairs = new_pairs   # GIL 原子赋值, _opc_loop 下个周期开头就拿到
+    if s.running:
+        log_event("run",
+                  f"♻ 在线下装 ({old_count} → {new_count} 对, 0 断流)",
+                  {"old_count": old_count, "new_count": new_count})
+        return {"ok": True, "hot_swapped": True, "old_count": old_count,
+                "new_count": new_count,
+                "msg": f"♻ 在线下装 {old_count} → {new_count} 对, OPC 不停顿"}
+    else:
+        return {"ok": True, "hot_swapped": False, "old_count": old_count,
+                "new_count": new_count,
+                "msg": f"已替换 pairs ({old_count} → {new_count} 对, 待 ▶ 运行)"}
 
 
 def start(pairs: List[Tuple[str, Union[str, float]]],

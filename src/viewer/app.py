@@ -529,10 +529,19 @@ def api_script_save():
     SCRIPT_PATH.write_text(content, encoding="utf-8")
     rt.log_event("save", f"💾 保存脚本 ({len(content)} 字节, {len(pairs)} 对)",
                  {"bytes": len(content), "pairs": len(pairs)})
+    # OPC 循环在跑 → 自动在线下装 (0 断流, 不用点 ▶ 运行)
+    hot_swap_msg = ""
+    hot_swapped = False
+    if rt.get_status().get("running"):
+        swap_result = rt.swap_pairs(pairs)
+        hot_swapped = bool(swap_result.get("hot_swapped"))
+        if hot_swapped:
+            hot_swap_msg = f" · ♻ 在线下装 (0 断流)"
     return jsonify({
         "ok": True,
-        "msg": f"已保存 ({len(content)} 字节,解析出 {len(pairs)} 对赋值)",
+        "msg": f"已保存 ({len(content)} 字节, {len(pairs)} 对赋值){hot_swap_msg}",
         "pairs_count": len(pairs),
+        "hot_swapped": hot_swapped,
     })
 
 
@@ -541,6 +550,26 @@ def api_script_generate():
     """按工艺规则自动生成脚本 (analog + digital 全部)"""
     text = rt.generate_script_from_tagmap(CONFIG["tagmap"])
     return jsonify({"ok": True, "content": text})
+
+
+@app.route("/api/script/swap_pairs", methods=["POST"])
+def api_script_swap_pairs():
+    """在线下装: 不停 OPC 循环, 原子替换 pairs.
+    body 可选 {content}; 不传则从 config/script.txt 读.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    content = body.get("content")
+    if content is None:
+        if not SCRIPT_PATH.exists():
+            return jsonify({"ok": False, "error": "config/script.txt 不存在"}), 400
+        content = SCRIPT_PATH.read_text(encoding="utf-8")
+    try:
+        pairs = rt.parse_script(content)
+    except rt.ParseError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    if not pairs:
+        return jsonify({"ok": False, "error": "脚本为空"}), 400
+    return jsonify(rt.swap_pairs(pairs))
 
 
 def _rewrite_var_desc(content: str, var_name: str, new_desc: str):
@@ -1941,7 +1970,9 @@ async function saveScript() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({content: c})});
   const d = await r.json();
-  setStatus(d.ok ? `✓ ${d.msg}` : `✗ ${d.error}`, d.ok ? 'ok' : 'err');
+  // 在线下装就让用户看到 ♻ 标记 (区别于普通保存)
+  const icon = d.ok ? (d.hot_swapped ? '♻' : '✓') : '✗';
+  setStatus(d.ok ? `${icon} ${d.msg}` : `✗ ${d.error}`, d.ok ? 'ok' : 'err');
   if (d.ok) { rebuildDescMap(); return; }
   // 解析错误 → 自动跳到错误行
   const m = (d.error || '').match(/第\s*(\d+)\s*行/);
