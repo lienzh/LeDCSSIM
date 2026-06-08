@@ -109,11 +109,18 @@ DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
   local: opc.tcp://127.0.0.1:9440      # NTVDPU 跑在本机
   vm:    opc.tcp://192.168.31.39:9440  # NTVDPU 跑在虚拟机,LAN IP 视实际改
   ```
-- 点 [本地] / [VM] → 立即持久化 mode 到 yaml,下次点【▶ 运行】用新地址
+- 点 [本地] / [VM] → 立即持久化 mode 到 yaml + 触发一次探活,下次点【▶ 运行】用新地址
 - 点 ✎ → 弹 prompt 改 VM URL(IP 变了不用编辑器,直接 UI 改)
 - **运行中不允许切换**,会提示先点 [■ 停止]
 - yaml 不存在时,首次启动 viewer 会写入默认 `mode=local`
-- API:`GET/POST /api/opc/endpoint`
+- API:`GET/POST /api/opc/endpoint`(切换),`GET/POST /api/opc/probe`(探活)
+- **唯一真相源**:所有组件(viewer / `src/cli` / `tools/verify_opc`)都从 `opc_endpoints.yaml` 读端点,改一处全局生效;CLI 还可 `--opc-url` 显式覆盖
+- **顶栏 🟢/🔴 实时状态点**:不点【▶ 运行】也能看到当前端点是否可达
+  - 后台 5s 一次 OPC UA HELLO/ACK 协议级探活(不开 session,~10ms)
+  - 🟢 + 延迟 ms = 端口可达且对端是 OPC Server
+  - 🔴 + 错因 = 不通(超时 / 拒绝 / 非 OPC 协议响应)
+  - 点状态点 → 立即重新探一次
+  - **为啥不用纯 TCP**:Tailscale / Meta(198.18/15)等代理会劫持任意 IP 的 TCP connect 让握手成功,必须看应用层 HELLO/ACK 才能戳穿假成功
 
 **viewer 运行前工作流**(📤 下载 / 📥 上载 / 🔍 预演):
 

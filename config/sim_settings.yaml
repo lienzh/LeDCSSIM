@@ -1,16 +1,12 @@
 # 仿真运行设置
+#
+# OPC UA 端点配置不在这里 — 由 config/opc_endpoints.yaml 管理
+# (跟 viewer 顶栏 [本地]/[VM] 切换共享同一份配置, 改一处全局生效)
 
 # 仿真引擎
 engine:
   step_size: 0.2          # 仿真步长, 秒 (200ms)
   log_interval: 10.0      # 状态日志输出间隔, 秒
-
-# OPC UA 连接
-opc:
-  url: "opc.tcp://localhost:9440"
-  timeout: 10.0           # 会话超时, 秒
-  retry_count: 10         # 连接重试次数
-  retry_interval: 3.0     # 重试间隔, 秒
 
 # 数据记录
 recorder:

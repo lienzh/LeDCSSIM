@@ -21,11 +21,14 @@ DSL 语法 (一行一对赋值):
 import asyncio
 import logging
 import re
+import socket
+import struct
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from typing import List, Tuple, Optional, Union
+from urllib.parse import urlparse
 
 from src.opc_client.client import OPCClient
 
@@ -145,11 +148,145 @@ def set_endpoint_mode(mode: str, vm_url: Optional[str] = None) -> dict:
     cfg["url"] = cfg[cfg["mode"]]
     log_event("endpoint", f"🔌 OPC 端点切到 [{'VM' if mode == 'vm' else '本地'}] {cfg['url']}",
               {"mode": mode, "url": cfg["url"]})
+    # 立即探活新端点, UI 不用等下一轮 5s 轮询
+    try: _probe_once_and_store()
+    except Exception: pass
     return cfg
 
 
 # 默认 OPC URL(start() 不传 opc_url 时, 读 endpoint 配置)
 DEFAULT_OPC_URL = "opc.tcp://127.0.0.1:9440"   # 仅作 import-time 占位; 真正用的是 get_endpoint_config()
+
+
+# ---------- OPC 探活 (TCP 级, 不开 OPC session) ----------
+# 后台 5s 自动探一次, UI 可直接读 _PROBE_RESULT 拿最近结果, 不阻塞前端
+_PROBE_RESULT = {
+    "url": None, "mode": None,
+    "ok": None,           # None=尚未探测 / True=通 / False=不通
+    "latency_ms": None,
+    "error": None,
+    "ts": 0.0,            # 上次探测时间戳
+}
+_PROBE_LOCK = threading.Lock()
+_PROBE_THREAD = None
+_PROBE_INTERVAL = 5.0     # 后台探活间隔, 秒
+
+
+def probe_endpoint(url: str, timeout: float = 2.0) -> dict:
+    """OPC UA HELLO/ACK 协议级探活.
+
+    为什么不用纯 TCP: Tailscale / Meta(198.18/15) 等代理接口会劫持任意
+    IP 的 TCP connect, 让 socket 三次握手成功但其实没真到目标. 必须看
+    应用层 (OPC HELLO → ACK) 才能确认对端真是 NTVDPU.
+
+    返回 {ok, latency_ms, error, host, port}
+    - ok=True:  端口可达 + 返回 OPC UA ACK 报文 (确认是 OPC Server)
+    - ok=False: TCP 拒绝/超时, 或 TCP 通但无 OPC 响应 (被代理拦)
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 9440
+    except Exception as e:
+        return {"ok": False, "error": f"URL 解析失败: {e}",
+                "latency_ms": None, "host": None, "port": None}
+
+    # 构造 OPC UA TCP HELLO 报文 (OPC UA Spec Part 6, sec 7.1.2.3)
+    #   Header(8B): "HELF" + UInt32 totalSize
+    #   Body: ProtocolVer(UInt32=0) + RecvBuf + SendBuf + MaxMsg(=0) + MaxChunk(=0)
+    #         + EndpointUrl(Int32 len + UTF-8 字节)
+    url_bytes = url.encode("utf-8")
+    body = struct.pack("<IIIII", 0, 65536, 65536, 0, 0) \
+           + struct.pack("<i", len(url_bytes)) + url_bytes
+    total_size = 8 + len(body)
+    hello_msg = b"HELF" + struct.pack("<I", total_size) + body
+
+    t0 = time.time()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        sock.sendall(hello_msg)
+        # 读应答头 (8 字节: 3 字节 MsgType + 1 字节 ChunkType + UInt32 size)
+        hdr = b""
+        while len(hdr) < 8:
+            chunk = sock.recv(8 - len(hdr))
+            if not chunk:
+                return {"ok": False,
+                        "error": "TCP 通但服务端无 OPC 应答 (可能被代理劫持)",
+                        "latency_ms": None, "host": host, "port": port}
+            hdr += chunk
+        msgtype = hdr[:3]
+        latency = round((time.time() - t0) * 1000, 1)
+        if msgtype == b"ACK":
+            return {"ok": True, "error": None, "latency_ms": latency,
+                    "host": host, "port": port}
+        elif msgtype == b"ERR":
+            return {"ok": False,
+                    "error": "OPC 服务端拒绝 (ERR 响应, 协议版本或缓冲不匹配)",
+                    "latency_ms": latency, "host": host, "port": port}
+        else:
+            return {"ok": False,
+                    "error": f"非 OPC 协议应答 (got {msgtype!r})",
+                    "latency_ms": latency, "host": host, "port": port}
+    except socket.timeout:
+        return {"ok": False,
+                "error": f"超时 (>{timeout:.1f}s) — TCP 通但未返回 OPC ACK, 通常是代理劫持",
+                "latency_ms": None, "host": host, "port": port}
+    except ConnectionRefusedError:
+        return {"ok": False, "error": "连接被拒 (端口未监听 / NTVDPU 未启)",
+                "latency_ms": None, "host": host, "port": port}
+    except OSError as e:
+        return {"ok": False, "error": str(e),
+                "latency_ms": None, "host": host, "port": port}
+    finally:
+        try: sock.close()
+        except Exception: pass
+
+
+def get_probe_status() -> dict:
+    """读最近一次探活结果, 给 UI 用. 不阻塞."""
+    with _PROBE_LOCK:
+        return dict(_PROBE_RESULT)
+
+
+def _probe_once_and_store() -> dict:
+    """探活当前 endpoint, 把结果写入 _PROBE_RESULT, 返回结果."""
+    cfg = get_endpoint_config()
+    res = probe_endpoint(cfg["url"])
+    with _PROBE_LOCK:
+        _PROBE_RESULT.update({
+            "url": cfg["url"],
+            "mode": cfg["mode"],
+            "ok": res["ok"],
+            "latency_ms": res["latency_ms"],
+            "error": res["error"],
+            "ts": time.time(),
+        })
+    return dict(_PROBE_RESULT)
+
+
+def _probe_loop():
+    """后台探活线程 — 每 _PROBE_INTERVAL 秒探一次. 运行中也照探(很快, 无负担)."""
+    while True:
+        try:
+            _probe_once_and_store()
+        except Exception as e:
+            logger.warning(f"探活异常: {e}")
+        time.sleep(_PROBE_INTERVAL)
+
+
+def start_probe_thread() -> None:
+    """启动后台探活. 重复调用安全 (只起一次). viewer 启动时调一次即可."""
+    global _PROBE_THREAD
+    if _PROBE_THREAD is not None and _PROBE_THREAD.is_alive():
+        return
+    _PROBE_THREAD = threading.Thread(target=_probe_loop, daemon=True,
+                                     name="opc-probe")
+    _PROBE_THREAD.start()
+    # 立即先探一次, UI 第一帧就有数据
+    try: _probe_once_and_store()
+    except Exception: pass
 
 # 短码正则:  DPU + 4位数字 + . + 字母数字组合
 SHORTCODE_RE = re.compile(r"^DPU\d{4}\.[A-Z][\w.]*$")   # 支持多段: DPU3013.SH0500.PRO21120.IN

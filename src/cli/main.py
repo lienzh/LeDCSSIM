@@ -11,6 +11,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -18,12 +19,11 @@ from src.engine import GraphRunner, AlgebraicLoopError, TagMap, DataRecorder
 
 
 def _load_sim_settings(path: str) -> dict:
-    """加载 sim_settings.yaml,兼容旧 schema(engine.step_size / opc.url)"""
-    defaults = {
-        "dt": 0.2,
-        "opc_url": "opc.tcp://localhost:9440",
-        "output_csv": "data/run.csv",
-    }
+    """加载 sim_settings.yaml — 只读 dt 和 output_csv.
+
+    OPC URL 不在这里读, 统一从 opc_endpoints.yaml 拿 (跟 viewer 共享端点).
+    """
+    defaults = {"dt": 0.2, "output_csv": "data/run.csv"}
     p = Path(path)
     if not p.exists():
         return defaults
@@ -31,21 +31,30 @@ def _load_sim_settings(path: str) -> dict:
         raw = yaml.safe_load(f) or {}
 
     out = dict(defaults)
-    # 新字段优先,旧字段兜底
     if "dt" in raw:
         out["dt"] = raw["dt"]
     elif "engine" in raw and "step_size" in raw["engine"]:
         out["dt"] = raw["engine"]["step_size"]
-    if "opc_url" in raw:
-        out["opc_url"] = raw["opc_url"]
-    elif "opc" in raw and "url" in raw["opc"]:
-        out["opc_url"] = raw["opc"]["url"]
     if "output_csv" in raw:
         out["output_csv"] = raw["output_csv"]
     elif "recorder" in raw and "output_dir" in raw["recorder"]:
-        # 旧的是目录,补个默认文件名
         out["output_csv"] = str(Path(raw["recorder"]["output_dir"]) / "run.csv")
     return out
+
+
+def _resolve_opc_url(cli_url: Optional[str], log: logging.Logger) -> str:
+    """OPC URL 解析: --opc-url > opc_endpoints.yaml.
+
+    opc_endpoints.yaml 是唯一真相源 — 跟 viewer 顶栏 [本地]/[VM] 共享, 切换即生效.
+    """
+    if cli_url:
+        log.info(f"OPC URL: {cli_url}  (--opc-url 覆盖)")
+        return cli_url
+    from src.viewer.runtime import get_endpoint_config
+    cfg = get_endpoint_config()
+    mode_label = "VM" if cfg["mode"] == "vm" else "本地"
+    log.info(f"OPC URL: {cfg['url']}  (opc_endpoints.yaml, mode={mode_label})")
+    return cfg["url"]
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -64,7 +73,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     settings = _load_sim_settings(args.settings)
     dt: float = float(settings.get("dt", 0.2))
     output_csv: str = settings.get("output_csv", "data/run.csv")
-    opc_url: str = settings.get("opc_url", "opc.tcp://localhost:9440")
+    opc_url: str = _resolve_opc_url(getattr(args, "opc_url", None), log)
 
     recorder = DataRecorder()
 
@@ -175,6 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="仿真时长(秒),默认 30s")
     run.add_argument("--online", action="store_true",
                      help="在线模式连接 NTVDPU OPC UA Server")
+    run.add_argument("--opc-url", dest="opc_url", default=None,
+                     help="显式覆盖 OPC UA Server URL "
+                          "(优先级最高, 不指定则读 config/opc_endpoints.yaml)")
     run.set_defaults(func=_cmd_run)
 
     return p

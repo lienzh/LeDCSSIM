@@ -2,11 +2,16 @@
 """
 OPC 联机验证 - 批量读 tagmap 里所有 in 端 tag, 看通讯是否生效
 
+OPC URL 来源 (按优先级):
+    --opc-url <url>            # 显式覆盖
+    config/opc_endpoints.yaml  # 跟 viewer 共享
+
 输出:
 - 连接状态
 - 每个 in tag 的 (值, SourceTimestamp, 是否成功)
 - 统计: 成功/失败按 DPU 分布
 """
+import argparse
 import asyncio
 import logging
 import sys
@@ -15,22 +20,21 @@ from pathlib import Path
 
 from src.engine import TagMap
 from src.opc_client.client import OPCClient
+from src.viewer.runtime import get_endpoint_config
 
 logging.basicConfig(level=logging.WARNING)  # 静默 INFO 减少噪音
 
-TAGMAP_PATH = "config/tagmap.generated.yaml"
-OPC_URL = "opc.tcp://localhost:9440"
 SAMPLE_N = 6   # 每个 DPU 抽样输出前 N 个详细
 
 
-async def main():
-    tm = TagMap.from_yaml(TAGMAP_PATH)
+async def main(tagmap_path: str, opc_url: str):
+    tm = TagMap.from_yaml(tagmap_path)
     in_tags = tm.tags_by_direction("in")
     out_tags = tm.tags_by_direction("out")
     print(f"tagmap 加载: {len(in_tags)} 个 in tag, {len(out_tags)} 个 out tag")
-    print(f"连接 {OPC_URL} ...")
+    print(f"连接 {opc_url} ...")
 
-    client = OPCClient(OPC_URL)
+    client = OPCClient(opc_url)
     try:
         await client.connect(retry_count=3, retry_interval=2.0)
     except Exception as e:
@@ -111,5 +115,26 @@ async def main():
     return 0
 
 
+def _resolve_url(cli_url):
+    if cli_url:
+        print(f"OPC URL: {cli_url}  (--opc-url 覆盖)")
+        return cli_url
+    cfg = get_endpoint_config()
+    mode_label = "VM" if cfg["mode"] == "vm" else "本地"
+    print(f"OPC URL: {cfg['url']}  (opc_endpoints.yaml, mode={mode_label})")
+    return cfg["url"]
+
+
+def _parse_args():
+    p = argparse.ArgumentParser(description="OPC 联机验证 — 批量读 tagmap in tag")
+    p.add_argument("--tagmap", default="config/tagmap.generated.yaml",
+                   help="tagmap 路径 (默认 config/tagmap.generated.yaml)")
+    p.add_argument("--opc-url", dest="opc_url", default=None,
+                   help="OPC URL 显式覆盖 (不指定则读 config/opc_endpoints.yaml)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    args = _parse_args()
+    url = _resolve_url(args.opc_url)
+    sys.exit(asyncio.run(main(args.tagmap, url)))

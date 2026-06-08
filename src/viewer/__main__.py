@@ -3,6 +3,7 @@
 import argparse
 import sys
 
+from . import app as viewer_app
 from .app import configure, run
 
 
@@ -16,6 +17,8 @@ def main(argv=None) -> int:
     p.add_argument("--tagmap", default=None)
     p.add_argument("--csv", default=None, help="默认 data/run.csv")
     args = p.parse_args(argv)
+    # 把用户原始参数存进 app 模块, /api/viewer/restart 重启时原样传给新进程
+    viewer_app._ORIGINAL_ARGV = list(sys.argv[1:])
     configure(args.models, args.connections, args.tagmap, args.csv)
     run(host=args.host, port=args.port)
     return 0

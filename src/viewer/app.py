@@ -831,6 +831,98 @@ def api_opc_endpoint_set():
     return jsonify({"ok": True, **cfg})
 
 
+@app.route("/api/opc/probe")
+def api_opc_probe():
+    """OPC 端点探活 (TCP 级, 后台 5s 自动探, 此接口读最近结果, 不阻塞).
+
+    返回 {url, mode, ok, latency_ms, error, ts, running}
+    - ok=True: TCP 通 (NTVDPU + 防火墙都没拦)
+    - ok=False: 不通 + error 说明
+    - ok=None: 探活还没跑过 (启动瞬间)
+    """
+    res = rt.get_probe_status()
+    res["running"] = rt.get_status().get("running", False)
+    return jsonify(res)
+
+
+@app.route("/api/opc/probe", methods=["POST"])
+def api_opc_probe_force():
+    """立即重新探活一次 (不等 5s 周期). 切换端点 / 改 VM URL 后用."""
+    res = rt._probe_once_and_store()
+    res["running"] = rt.get_status().get("running", False)
+    return jsonify(res)
+
+
+# 由 __main__.py 在启动时填充 — 重启时原样传给新进程
+_ORIGINAL_ARGV: list = []
+
+
+@app.route("/api/viewer/restart", methods=["POST"])
+def api_viewer_restart():
+    """从 UI 重启 viewer 进程 (改了 Python 代码后, 不用回终端 Ctrl+C).
+
+    流程:
+      1. 校验 OPC 未运行 (运行中拒绝 — 防误操作中断通讯)
+      2. 用相同参数 spawn 一个 detached trampoline 子进程
+      3. trampoline 等 1.5s (给当前进程释放 5002 端口的时间) 后启新 viewer
+      4. 当前进程返回响应, 300ms 后 os._exit(0)
+    """
+    import os
+    import subprocess
+    import threading
+
+    if rt.get_status().get("running"):
+        return jsonify({
+            "ok": False,
+            "error": "OPC 循环在运行, 请先点【■ 停止】再重启"
+        }), 409
+
+    import sys as _sys
+    cwd = os.getcwd()
+    user_args = list(_ORIGINAL_ARGV)
+    inner = [_sys.executable, "-m", "src.viewer"] + user_args
+
+    # 跨平台 detached 启动小桥接进程, 等 1.5s 让父进程释放端口后再起新 viewer
+    py_code = (
+        "import time, subprocess\n"
+        "time.sleep(1.5)\n"
+        f"subprocess.Popen({inner!r}, cwd={cwd!r})\n"
+    )
+    try:
+        if _sys.platform == "win32":
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            subprocess.Popen(
+                [_sys.executable, "-c", py_code],
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True, cwd=cwd,
+            )
+        else:
+            subprocess.Popen(
+                [_sys.executable, "-c", py_code],
+                start_new_session=True, close_fds=True, cwd=cwd,
+            )
+    except Exception as e:
+        return jsonify({"ok": False,
+                        "error": f"派生新进程失败: {e}"}), 500
+
+    rt.log_event("system",
+                 f"↻ 用户从 UI 触发 viewer 重启 (args={user_args})",
+                 {"args": user_args})
+
+    # 返回响应后短暂等待, 然后退出 — 让响应能完整送达浏览器
+    def _bye():
+        import time as _t
+        _t.sleep(0.3)
+        os._exit(0)
+    threading.Thread(target=_bye, daemon=True).start()
+
+    return jsonify({
+        "ok": True,
+        "msg": "viewer 重启中, 约 3 秒后会自动重连"
+    })
+
+
 @app.route("/api/script/debug")
 def api_script_debug():
     """完整 debug 包 (状态/摘要/失败 top/日志), 用于沟通调试"""
@@ -1288,8 +1380,7 @@ mark      { background: #ff8; padding: 0; }
 <!-- ────── 第 1 行: 工作流 (编辑 → 状态准备 → 运行) ────── -->
 <div class="toolbar">
   <span class="grp-label">编辑</span>
-  <button onclick="loadScript()" title="把 config/script.txt 内容载到编辑器">⟳ 加载</button>
-  <button onclick="saveScript()" title="编辑器内容保存到 config/script.txt (自动备份)">💾 保存</button>
+  <button onclick="saveScript()" title="编辑器内容保存到 config/script.txt (自动备份). 想"放弃当前改动回到磁盘版"用 F5 刷新或点【↻ 重启 viewer】">💾 保存</button>
   <span class="sep"></span>
 
   <span class="grp-label">运行准备</span>
@@ -1316,6 +1407,9 @@ mark      { background: #ff8; padding: 0; }
   <button onclick="openEvents()" title="事件时间线: 启停 / 重连 / 镜像 / 清状态 / 端点切换">📜 事件</button>
   <button onclick="openBackups()" title="脚本时间戳备份历史 (每次保存自动留底)">📚 备份</button>
   <button onclick="openHelp()" title="DSL 语法 / 函数 / 快捷键 (F1)">❓ 帮助</button>
+  <button onclick="restartViewer()"
+          title="改了 Python 代码后, 不用回终端 — 重启 viewer 进程, 浏览器自动重连. OPC 必须先停"
+          style="border-color:#a90">↻ 重启 viewer</button>
   <span class="sep"></span>
 
   <span class="grp-label">工程</span>
@@ -1340,6 +1434,9 @@ mark      { background: #ff8; padding: 0; }
   <button id="btnEpVm" onclick="setEndpoint('vm')"
           title="连虚拟机里的 NTVDPU (默认 192.168.31.39:9440, 改地址用[✎])">VM</button>
   <button onclick="editVmIp()" title="改 VM 的 IP/端口" style="padding:4px 8px">✎</button>
+  <span id="epProbe" title="OPC 端点可达性 (TCP 探活, 5s 自动刷新)"
+        style="font-size:11px;font-family:monospace;cursor:pointer;user-select:none"
+        onclick="probeNow()">⏳</span>
   <span id="epUrl" style="font-size:10px;color:#888;font-family:monospace"></span>
 </div>
 <div id="status"><span id="cursorpos" onclick="gotoLine()" title="点击跳到指定行 (Ctrl+G)">行 1 列 1 · 共 0 行</span><span id="errBadge" onclick="gotoFirstErr()" title="点击跳到第一处错误行" style="display:none;background:#c33;color:#fff;padding:1px 8px;margin-right:6px;border-radius:3px;cursor:pointer;font-weight:bold"></span>就绪</div>
@@ -1590,11 +1687,12 @@ async function setEndpoint(mode) {
   const d = await r.json();
   if (!d.ok) { setStatus('✗ ' + d.error, 'err'); return; }
   await refreshEndpoint();
-  setStatus(`✓ OPC 端点切到 [${mode==='vm'?'VM':'本地'}] ${d.url} — 下次点【▶ 运行】生效`, 'ok');
+  refreshProbe();  // 切换后立即拉一次探活结果 (后端 set_endpoint_mode 已触发探活)
+  setStatus(`✓ OPC 端点切到 [${mode==='vm'?'VM':'本地'}] ${d.url}`, 'ok');
 }
 async function editVmIp() {
   if (!_epCfg) await refreshEndpoint();
-  const cur = (_epCfg && _epCfg.vm) || 'opc.tcp://192.168.31.39:9440';
+  const cur = (_epCfg && _epCfg.vm) || 'opc.tcp://192.168.135.142:9440';
   const v = prompt('VM 的 OPC URL (含协议+端口):', cur);
   if (!v) return;
   const r = await fetch('/api/opc/endpoint', {
@@ -1605,7 +1703,78 @@ async function editVmIp() {
   const d = await r.json();
   if (!d.ok) { setStatus('✗ ' + d.error, 'err'); return; }
   await refreshEndpoint();
+  refreshProbe();
   setStatus(`✓ VM URL 已更新: ${d.vm}`, 'ok');
+}
+
+// ===== OPC 端点可达性探活 — 3s 自动刷新 =====
+// 端点旁的 [⏳/🟢/🔴] 状态点, 切换/改 URL 后立即重探一次, 不需用户点【▶ 运行】
+async function refreshProbe() {
+  try {
+    const r = await fetch('/api/opc/probe');
+    const d = await r.json();
+    const el = document.getElementById('epProbe');
+    if (!el) return;
+    if (d.running) {
+      el.textContent = '🟢';
+      el.title = `OPC 循环运行中 — ${d.url}`;
+    } else if (d.ok === true) {
+      el.textContent = `🟢 ${d.latency_ms}ms`;
+      el.title = `端口可达 (${d.host}:${d.port}, 探测 ${d.latency_ms}ms) — 可以点【▶ 运行】`;
+    } else if (d.ok === false) {
+      el.textContent = '🔴';
+      el.title = `不通: ${d.error || '未知错误'}  (${d.url})`;
+    } else {
+      el.textContent = '⏳';
+      el.title = '探活中…';
+    }
+  } catch(e) { /* 忽略 */ }
+}
+async function probeNow() {
+  // 用户主动点状态点 → 立即强制探一次
+  const el = document.getElementById('epProbe');
+  if (el) { el.textContent = '⏳'; el.title = '探活中…'; }
+  try {
+    await fetch('/api/opc/probe', {method: 'POST'});
+  } catch(e) { /* 忽略 */ }
+  refreshProbe();
+}
+setInterval(refreshProbe, 3000);  // 3s 轮询
+
+// ===== UI 重启 viewer 进程 =====
+async function restartViewer() {
+  if (!confirm('重启 viewer 进程?\n\n要求:\n• OPC 循环必须先停止\n• 浏览器会自动重连并刷新 (约 3 秒)\n• 内存里的脚本未保存的部分会丢, 已保存的脚本/状态镜像不受影响')) return;
+  setStatus('⏳ 重启 viewer 中, 等新进程上线...', 'warn');
+  try {
+    const r = await fetch('/api/viewer/restart', {method: 'POST'});
+    if (r.status === 409) {
+      const d = await r.json();
+      setStatus('✗ ' + d.error, 'err');
+      return;
+    }
+    // 收到 200 后, 老进程 300ms 后就会退出 — 之后所有 fetch 会失败直到新进程起来
+  } catch(e) {
+    // 网络异常 — 也可能是老进程已经退了, 没事, 继续轮询新进程
+  }
+  // 轮询新进程: 每 500ms 试一次 /api/script/status, 最多 20 次 (10s)
+  let tries = 0;
+  const maxTries = 20;
+  const probe = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch('/api/script/status', {cache: 'no-cache'});
+      if (r.ok) {
+        clearInterval(probe);
+        setStatus('✓ 新 viewer 已上线, 正在刷新页面...', 'ok');
+        setTimeout(() => location.reload(), 300);
+        return;
+      }
+    } catch(e) { /* 还没起来 */ }
+    if (tries >= maxTries) {
+      clearInterval(probe);
+      setStatus('✗ 重启超时 (10s), 请手动 F5 刷新; 若仍不行回终端看输出', 'err');
+    }
+  }, 500);
 }
 
 // ===== 语法高亮 =====
@@ -2177,7 +2346,6 @@ DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)
 <ul>
 <li>【💾 保存】 → <code>_save</code></li>
 <li>【📝 生成样本】 → <code>_before-gen</code></li>
-<li>【⟳ 加载】(editor 非空) → <code>_before-reload</code></li>
 <li>【📚 备份历史 → 加载】 → <code>_before-restore</code></li>
 </ul>
 <p>反悔随时在【📚 备份历史】里找时间戳还原。</p>
@@ -3772,6 +3940,7 @@ function gotoFirstWarn() {
 loadScript().then(() => { updateLineNums(); runHighlight(); validateScript(); });
 loadSymbols();
 refreshEndpoint();
+refreshProbe();
 _bindHover();
 setInterval(pollStatus, 1000);
 pollStatus();
@@ -3925,4 +4094,6 @@ def run(host: str = "127.0.0.1", port: int = 5002, debug: bool = False) -> None:
     print(f"  tagmap:      {CONFIG['tagmap']}")
     print(f"  csv:         {CONFIG['csv']}")
     print(f"  (Ctrl-C 退出)")
+    # 启动后台 OPC 探活线程 — UI 顶栏的 🟢/🔴 状态点用它
+    rt.start_probe_thread()
     app.run(host=host, port=port, debug=debug, use_reloader=False)
