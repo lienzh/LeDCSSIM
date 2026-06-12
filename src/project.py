@@ -8,10 +8,13 @@
     active: yq3
 缺指针时取 projects/ 下第一个目录 (按名排序); `_` 开头的目录 (如 _templates) 不算工程.
 """
+import logging
 from pathlib import Path
 from typing import List, Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 PROJECTS_ROOT = Path("projects")
 ACTIVE_PTR = Path("config/active_project.yaml")
@@ -42,7 +45,8 @@ class ProjectPaths:
         if self.project_yaml.exists():
             try:
                 meta = yaml.safe_load(self.project_yaml.read_text(encoding="utf-8")) or {}
-            except Exception:
+            except Exception as e:
+                logger.warning(f"解析 {self.project_yaml} 失败, 全部字段走默认: {e}")
                 meta = {}
 
         # 工程显示名, 默认用目录名

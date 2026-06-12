@@ -15,7 +15,8 @@ def test_paths_layout_and_meta(tmp_path, monkeypatch):
     root = tmp_path / "projects" / "demo"
     root.mkdir(parents=True)
     (root / "project.yaml").write_text(
-        "display: 演示工程\nio_dir: SOME/IO\nio_fallback_globs:\n  - OLD/DPU*.csv\n",
+        "display: 演示工程\nio_dir: SOME/IO\nio_full_dir: FULL/IO\n"
+        "io_fallback_globs:\n  - OLD/DPU*.csv\n",
         encoding="utf-8")
     assert prj.list_projects() == ["demo"]
     assert prj.get_active() == "demo"      # 无指针 → 取第一个
@@ -27,6 +28,7 @@ def test_paths_layout_and_meta(tmp_path, monkeypatch):
     assert p.script_backups == root / "script_backups"
     assert p.generated_dir == root / "generated"
     assert p.io_dir == Path("SOME/IO")
+    assert p.io_full_dir == Path("FULL/IO")
     assert p.io_fallback_globs == ["OLD/DPU*.csv"]
     assert p.display == "演示工程"
 
@@ -36,6 +38,8 @@ def test_io_dir_defaults_to_project_io(tmp_path, monkeypatch):
     (tmp_path / "projects" / "bare").mkdir(parents=True)   # 无 project.yaml
     p = prj.paths("bare")
     assert p.io_dir == tmp_path / "projects" / "bare" / "io"
+    assert p.io_full_dir == p.io_dir     # 未配置时 io_full_dir 跟随 io_dir
+    assert p.io_glob == prj.DEFAULT_IO_GLOB
     assert p.display == "bare"
 
 
