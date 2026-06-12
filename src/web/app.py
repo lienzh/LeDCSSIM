@@ -23,6 +23,7 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 MAPPING_FILE = CONFIG_DIR / "opc_mapping.yaml"
 VARIABLES_FILE = CONFIG_DIR / "variables.yaml"
+SCENARIOS_FILE = CONFIG_DIR / "scenarios.yaml"
 MODEL_DIR = CONFIG_DIR / "models"
 MANIFEST_FILE = MODEL_DIR / "_manifest.json"
 
@@ -1258,9 +1259,23 @@ def api_start_sim():
     except Exception as e:
         return jsonify({"error": f"组态解析失败: {e}"}), 400
 
+    # 信号校验：检查画布 tag 与外部信号的匹配
+    available_signals = list(initial_inputs.keys()) if initial_inputs else []
     # 加载 OPC 映射和信号配置
     mapping_data = _load_mapping_raw()
     opc_url = mapping_data.get("server", "opc.tcp://localhost:9440")
+
+    # 在线模式：OPC 映射中的信号也算可用
+    if mode == "online":
+        for sig in mapping_data.get("signals", []):
+            sig_name = sig.get("name", "")
+            if sig_name and sig_name not in available_signals:
+                available_signals.append(sig_name)
+
+    validation = runner.validate(available_signals if available_signals else None)
+    # 错误不阻断启动（仅警告），但返回给前端
+    validation_warnings = validation.get("warnings", [])
+    validation_errors = validation.get("errors", [])
 
     from ..sim_engine import SimEngine
     engine = SimEngine(runner, step_size=step_size)
@@ -1301,11 +1316,16 @@ def api_start_sim():
     _sim_state["thread"] = t
     t.start()
 
-    # 返回图的输入输出信息
+    # 返回图的输入输出信息 + 校验结果
     graph_info = runner.get_info()
-    return jsonify({"ok": True, "mode": mode, "duration": duration,
-                    "inputs": graph_info.get("inputs", []),
-                    "outputs": graph_info.get("outputs", [])})
+    result = {"ok": True, "mode": mode, "duration": duration,
+              "inputs": graph_info.get("inputs", []),
+              "outputs": graph_info.get("outputs", [])}
+    if validation_warnings:
+        result["warnings"] = validation_warnings
+    if validation_errors:
+        result["validation_errors"] = validation_errors
+    return jsonify(result)
 
 
 @app.route("/api/sim/stop", methods=["POST"])
@@ -1385,6 +1405,94 @@ def api_sim_export():
     engine.recorder.to_csv(str(filepath))
     return send_file(str(filepath), as_attachment=True,
                      download_name="simulation_data.csv")
+
+
+# ══════════════════════════════════════════════════════════
+#  工况预设 API
+# ══════════════════════════════════════════════════════════
+
+def _load_scenarios():
+    """加载工况预设配置"""
+    import yaml
+    if not SCENARIOS_FILE.exists():
+        return []
+    with open(SCENARIOS_FILE, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("scenarios", [])
+
+def _save_scenarios(scenarios):
+    """保存工况预设配置"""
+    import yaml
+    with open(SCENARIOS_FILE, "w", encoding="utf-8") as f:
+        yaml.dump({"scenarios": scenarios}, f,
+                   allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+
+@app.route("/api/scenarios", methods=["GET"])
+def api_get_scenarios():
+    """获取所有工况预设"""
+    return jsonify(_load_scenarios())
+
+
+@app.route("/api/scenarios/<scenario_id>", methods=["GET"])
+def api_get_scenario(scenario_id):
+    """获取单个工况预设的 values"""
+    for s in _load_scenarios():
+        if s.get("id") == scenario_id:
+            return jsonify(s)
+    return jsonify({"error": f"工况 '{scenario_id}' 不存在"}), 404
+
+
+@app.route("/api/scenarios", methods=["POST"])
+def api_create_scenario():
+    """新建工况预设"""
+    data = request.json or {}
+    if not data.get("id") or not data.get("name"):
+        return jsonify({"error": "缺少 id 或 name"}), 400
+
+    scenarios = _load_scenarios()
+    # 检查 ID 重复
+    for s in scenarios:
+        if s.get("id") == data["id"]:
+            return jsonify({"error": f"工况 ID '{data['id']}' 已存在"}), 400
+
+    scenarios.append({
+        "id": data["id"],
+        "name": data["name"],
+        "description": data.get("description", ""),
+        "values": data.get("values", {}),
+    })
+    _save_scenarios(scenarios)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scenarios/<scenario_id>", methods=["PUT"])
+def api_update_scenario(scenario_id):
+    """更新工况预设"""
+    data = request.json or {}
+    scenarios = _load_scenarios()
+    for s in scenarios:
+        if s.get("id") == scenario_id:
+            if "name" in data:
+                s["name"] = data["name"]
+            if "description" in data:
+                s["description"] = data["description"]
+            if "values" in data:
+                s["values"] = data["values"]
+            _save_scenarios(scenarios)
+            return jsonify({"ok": True})
+    return jsonify({"error": f"工况 '{scenario_id}' 不存在"}), 404
+
+
+@app.route("/api/scenarios/<scenario_id>", methods=["DELETE"])
+def api_delete_scenario(scenario_id):
+    """删除工况预设"""
+    scenarios = _load_scenarios()
+    new_list = [s for s in scenarios if s.get("id") != scenario_id]
+    if len(new_list) == len(scenarios):
+        return jsonify({"error": f"工况 '{scenario_id}' 不存在"}), 404
+    _save_scenarios(new_list)
+    return jsonify({"ok": True})
 
 
 # ══════════════════════════════════════════════════════════

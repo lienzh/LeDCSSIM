@@ -71,8 +71,8 @@
                 "input_1": {
                   "connections": [
                     {
-                      "node": "7",
-                      "input": "output_1"
+                      "input": "output_1",
+                      "node": "7"
                     }
                   ]
                 }
@@ -97,8 +97,8 @@
                 "input_1": {
                   "connections": [
                     {
-                      "node": "7",
-                      "input": "output_1"
+                      "input": "output_1",
+                      "node": "7"
                     }
                   ]
                 }
@@ -123,8 +123,8 @@
                 "input_1": {
                   "connections": [
                     {
-                      "node": "7",
-                      "input": "output_1"
+                      "input": "output_1",
+                      "node": "7"
                     }
                   ]
                 }
@@ -136,17 +136,16 @@
               "typenode": false
             },
             "7": {
-              "id": 7,
-              "name": "ref_in",
-              "data": {
-                "tag": "MW",
-                "_blockId": "ref_in",
-                "_blockName": "引入点"
-              },
               "class": "cat-signal",
+              "data": {
+                "_blockId": "ref_in",
+                "_blockName": "引入点",
+                "tag": "MW"
+              },
               "html": "<div class=\"sama-node sama-io-block sama-ref\"><span class=\"sama-arrow\">▷ </span><span class=\"sama-tag\">ref_in</span><div class=\"node-value\" data-node-value></div></div>",
-              "typenode": false,
+              "id": 7,
               "inputs": {},
+              "name": "ref_in",
               "outputs": {
                 "output_1": {
                   "connections": [
@@ -166,7 +165,36 @@
                 }
               },
               "pos_x": 342,
-              "pos_y": 293
+              "pos_y": 293,
+              "typenode": false
+            },
+            "8": {
+              "id": 8,
+              "name": "CMP",
+              "data": {
+                "HL": 100,
+                "LL": 0,
+                "_blockId": "CMP",
+                "_blockName": "滞后比较"
+              },
+              "class": "cat-compare",
+              "html": "<div class=\"sama-node sama-func-full\"><div class=\"node-header\"><span class=\"node-instance\">滞后比较</span></div><div class=\"node-body\"><div class=\"port-labels port-labels-in\"><div class=\"port-label\">X</div><div class=\"port-label\">SW</div></div><div class=\"node-center\"><div class=\"node-params\">HL=100 LL=0</div><div class=\"node-type\">CMP</div></div><div class=\"port-labels port-labels-out\"><div class=\"port-label\">Y</div></div></div><div class=\"node-value\" data-node-value></div></div>",
+              "typenode": false,
+              "inputs": {
+                "input_1": {
+                  "connections": []
+                },
+                "input_2": {
+                  "connections": []
+                }
+              },
+              "outputs": {
+                "output_1": {
+                  "connections": []
+                }
+              },
+              "pos_x": 430,
+              "pos_y": 34
             }
           }
         }
@@ -175,11 +203,13 @@
     "meta": {
       "blockDefs": {
         "input": {
+          "algorithm": "OUT = 外部输入值（OPC 读取或手动设定）\n",
           "category": "signal",
           "description": "模型外部输入信号接入点（UI 专用）",
           "id": "input",
           "inputs": 0,
           "name": "输入端子",
+          "notes": "- tag 为空时不参与变量同步\n- 在线模式从 OPC 读取，离线模式使用默认值\n",
           "outputs": 1,
           "params": [
             {
@@ -195,14 +225,26 @@
               "type": "string"
             }
           ],
+          "pins": {
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "信号输出",
+                "sym": "OUT",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "output": {
+          "algorithm": "将 IN 值写出到外部（OPC 写入或数据记录）\n",
           "category": "signal",
           "description": "模型输出信号送出点（UI 专用）",
           "id": "output",
           "inputs": 1,
           "name": "输出端子",
+          "notes": "- tag 为空时不参与变量同步\n- 在线模式写入 OPC，离线模式仅记录数据\n",
           "outputs": 0,
           "params": [
             {
@@ -218,14 +260,26 @@
               "type": "string"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "信号输入",
+                "sym": "IN",
+                "type": "analog"
+              }
+            ],
+            "outputs": []
+          },
           "py_class": null
         },
         "ref_out": {
+          "algorithm": "将 IN 值存储为命名变量，供同名 ref_in 引用\n",
           "category": "signal",
-          "description": "定义中间变量，供引入点引用",
+          "description": "定义中间变量，供引入点引用（跨页信号传递）",
           "id": "ref_out",
           "inputs": 1,
           "name": "引出点",
+          "notes": "- tag 必须唯一，作为跨页变量的定义点\n- 变量来源页以 ref_out 所在页面为准\n",
           "outputs": 0,
           "params": [
             {
@@ -235,14 +289,26 @@
               "type": "string"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "信号输入",
+                "sym": "IN",
+                "type": "analog"
+              }
+            ],
+            "outputs": []
+          },
           "py_class": null
         },
         "ref_in": {
+          "algorithm": "OUT = 同名 ref_out 的当前值\n",
           "category": "signal",
-          "description": "引用已定义的引出点变量",
+          "description": "引用已定义的引出点变量（跨页信号接收）",
           "id": "ref_in",
           "inputs": 0,
           "name": "引入点",
+          "notes": "- tag 必须与某个 ref_out 的 tag 一致\n- 支持跨页引用，点击可跳转到定义页\n",
           "outputs": 1,
           "params": [
             {
@@ -252,9 +318,20 @@
               "type": "string"
             }
           ],
+          "pins": {
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "引用值输出",
+                "sym": "OUT",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "constant": {
+          "algorithm": "OUT = value（设定的常数值）\n",
           "category": "signal",
           "description": "输出固定常数值（UI 专用）",
           "id": "constant",
@@ -269,403 +346,1014 @@
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "常数输出",
+                "sym": "OUT",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
-        "CON": {
+        "comment": {
+          "algorithm": "无计算逻辑，仅用于画布标注说明\n",
           "category": "signal",
-          "description": "输出一个可设定的常数值",
-          "id": "CON",
+          "description": "纯文本注释，不参与仿真计算",
+          "id": "comment",
           "inputs": 0,
-          "name": "常数发生器",
+          "name": "文本注释",
+          "outputs": 0,
+          "params": [
+            {
+              "default": "注释",
+              "key": "text",
+              "label": "注释内容",
+              "type": "string"
+            },
+            {
+              "default": 12,
+              "key": "fontSize",
+              "label": "字号(px)",
+              "type": "number"
+            },
+            {
+              "default": "#64748b",
+              "key": "color",
+              "label": "颜色",
+              "type": "string"
+            }
+          ],
+          "pins": {
+            "inputs": [],
+            "outputs": []
+          },
+          "py_class": null
+        },
+        "DELAY": {
+          "algorithm": "OUT(n) = IN(n-1)\n",
+          "category": "signal",
+          "description": "输出延迟一个仿真周期，用于打断纯代数环路（UI 专用）",
+          "id": "DELAY",
+          "inputs": 1,
+          "name": "一拍延迟",
+          "notes": "- 用于打断纯代数环路，等效 z^(-1)\n- 有状态块（积分器、PID 等）天然打断环路，无需额外插入\n",
           "outputs": 1,
           "params": [
             {
               "default": 0,
-              "key": "value",
-              "label": "常数值",
+              "key": "init",
+              "label": "初始值",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入信号",
+                "sym": "IN",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "延迟输出",
+                "sym": "OUT",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "ADD": {
+          "algorithm": "Y = X1 + X2 + ... + Xn\n",
           "category": "arithmetic",
-          "description": "两路信号相加，OUT = IN1 + IN2",
+          "description": "Y = X1 + X2 + ... + Xn，支持 2~16 路输入",
           "id": "ADD",
           "inputs": 2,
           "name": "加法",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "和",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "SUB": {
+          "algorithm": "Y = X1 - X2 - X3 - ... - Xn\n",
           "category": "arithmetic",
-          "description": "两路信号相减，OUT = IN1 - IN2",
+          "description": "Y = X1 - X2 - X3 - ...，支持 2~16 路输入",
           "id": "SUB",
           "inputs": 2,
-          "name": "减法",
+          "name": "减法器",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "被减数",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "减数",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "差",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "MLT": {
+          "algorithm": "Y = X1 × X2\n",
           "category": "arithmetic",
-          "description": "两路信号相乘，OUT = IN1 * IN2",
+          "description": "Y = X1 × X2",
           "id": "MLT",
           "inputs": 2,
           "name": "乘法",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "被乘数",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "乘数",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "积",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "ML": {
+          "algorithm": "Y = (X1 - X0) × (C + G × X2) + Y0\n",
           "category": "arithmetic",
-          "description": "两路信号相乘（MLT 别名），OUT = IN1 * IN2",
+          "description": "Y = (X1 - X0) × (C + G × X2) + Y0",
           "id": "ML",
           "inputs": 2,
-          "name": "乘法",
-          "outputs": 1,
-          "params": [],
-          "py_class": null
-        },
-        "DIV": {
-          "category": "arithmetic",
-          "description": "两路信号相除，OUT = IN1 / IN2（除零保护）",
-          "id": "DIV",
-          "inputs": 2,
-          "name": "除法",
+          "name": "校正乘法",
           "outputs": 1,
           "params": [
             {
               "default": 0,
-              "key": "zero_out",
-              "label": "除零输出值",
+              "key": "X0",
+              "label": "X轴偏移",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "Y0",
+              "label": "Y轴偏移",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "G",
+              "label": "增益",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "C",
+              "label": "常数项",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "校正积",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "DIV": {
+          "algorithm": "Y = X1 / X2\nX2 = 0 时保持上次输出值\n",
+          "category": "arithmetic",
+          "description": "Y = X1 / X2（非R600C标准，DV的别名）",
+          "id": "DIV",
+          "inputs": 2,
+          "name": "除法",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "被除数",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "除数",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "商",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "ABS": {
+          "algorithm": "Y = |X|\n",
           "category": "arithmetic",
-          "description": "输出输入信号的绝对值，OUT = |IN|",
+          "description": "Y = |X|",
           "id": "ABS",
           "inputs": 1,
           "name": "绝对值",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "绝对值",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "POW": {
+          "algorithm": "Y = X1 ^ X2\nX1=0且X2≤0 或 X1<0 时保持上次值\n",
           "category": "arithmetic",
-          "description": "乘方运算，OUT = IN1 ^ IN2",
+          "description": "Y = X1 ^ X2",
           "id": "POW",
           "inputs": 2,
-          "name": "乘方",
+          "name": "幂",
+          "notes": "- 注意防止 Y 溢出\n",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "底数",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "指数",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "幂",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "SUM": {
+          "algorithm": "SW=1: Y(n) = Y(n-1) + X × Ts（累积）\nSW=0: Y = G × Z（跟踪）\n",
           "category": "arithmetic",
-          "description": "多路信号带系数求和，OUT = K1*IN1 + K2*IN2 + ... + Kn*INn",
+          "description": "累积器，SW=1时Y按X累加；SW=0时Y跟踪G×Z",
           "id": "SUM",
-          "inputs": 4,
-          "name": "多路求和",
+          "inputs": 3,
+          "name": "累积",
+          "notes": "- 非多路求和，是带跟踪的累积器\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
-              "default": 4,
-              "key": "n",
-              "label": "输入数",
-              "type": "number"
-            },
-            {
               "default": 1,
-              "key": "K1",
-              "label": "系数1",
-              "type": "number"
-            },
-            {
-              "default": 1,
-              "key": "K2",
-              "label": "系数2",
-              "type": "number"
-            },
-            {
-              "default": 1,
-              "key": "K3",
-              "label": "系数3",
-              "type": "number"
-            },
-            {
-              "default": 1,
-              "key": "K4",
-              "label": "系数4",
+              "key": "G",
+              "label": "跟踪增益",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "累积输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "跟踪值",
+                "sym": "Z",
+                "type": "digital"
+              },
+              {
+                "name": "自动/跟踪",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "累积输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "AVE": {
+          "algorithm": "Y = (X1 + X2 + ... + Xn) / n\n",
           "category": "arithmetic",
-          "description": "多路信号取平均值，OUT = (IN1 + IN2 + ... + INn) / n",
+          "description": "Y = (X1 + X2 + ... + Xn) / n，支持 2~16 路",
           "id": "AVE",
-          "inputs": 4,
-          "name": "平均值",
+          "inputs": 2,
+          "name": "简单平均",
           "outputs": 1,
           "params": [
             {
-              "default": 4,
+              "default": 2,
               "key": "n",
               "label": "输入数",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "平均值",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "CMP": {
+          "algorithm": "SW=1: 滞后比较，升方向X≥HL→Y=1，降方向X≤LL→Y=0\nSW=0: 简单上限比较，X≥HL→Y=1，X<HL→Y=0\nHL=LL时为简单门限比较\n",
           "category": "compare",
-          "description": "比较两路信号大小，IN1 > IN2 时输出1，否则输出0",
+          "description": "带回差的比较器，X≥HL时Y=1，X≤LL时Y=0",
           "id": "CMP",
           "inputs": 2,
-          "name": "比较器",
+          "name": "滞后比较",
+          "notes": "- HL ≥ LL\n- 周期执行\n",
           "outputs": 1,
           "params": [
             {
+              "default": 100,
+              "key": "HL",
+              "label": "上限值",
+              "type": "number"
+            },
+            {
               "default": 0,
-              "key": "db",
-              "label": "比较死区",
+              "key": "LL",
+              "label": "下限值",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "模式开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "比较结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "AC": {
+          "algorithm": "SW=1(自动): 目标值 = G×X1 + G2×X2 + G3×X3 + B\n  输出按 TR（单位/秒）限速向目标值过渡\n  目标值变化叠加到限速过程中\nSW=0(跟踪): Y = Z\n",
           "category": "compare",
-          "description": "模拟量比较，可设定回差，IN > SP+DB 输出1，IN < SP-DB 输出0",
+          "description": "Y = G×X1 + G2×X2 + G3×X3 + B，切换时按TR限速过渡",
           "id": "AC",
-          "inputs": 2,
-          "name": "模拟比较器",
+          "inputs": 3,
+          "name": "平滑过渡加法器",
+          "notes": "- TR ≥ 0\n- 周期执行\n",
           "outputs": 1,
           "params": [
             {
+              "default": 1,
+              "key": "G",
+              "label": "增益1",
+              "type": "number"
+            },
+            {
               "default": 0,
-              "key": "db",
-              "label": "回差",
+              "key": "G2",
+              "label": "增益2",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "G3",
+              "label": "增益3",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "B",
+              "label": "偏置",
+              "type": "number"
+            },
+            {
+              "default": 10,
+              "key": "TR",
+              "label": "限跟速率(/秒)",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "AC1": {
+          "algorithm": "SW=1(自动): 目标值 = G×X1 + G2×X2 + G3×X3 + B\n  输出按固定速率 TR 向目标值过渡\n  与AC区别：过渡中目标值变化不叠加，速率恒定\nSW=0(跟踪): Y = Z\n",
           "category": "compare",
-          "description": "带多种比较模式的模拟量比较器",
+          "description": "同AC，但过渡期间目标值变化不影响限速率（固定速率）",
           "id": "AC1",
-          "inputs": 2,
-          "name": "模拟比较器1",
+          "inputs": 3,
+          "name": "平滑过渡加法器1",
           "outputs": 1,
           "params": [
             {
-              "default": 0,
-              "key": "mode",
-              "label": "比较模式",
+              "default": 1,
+              "key": "G",
+              "label": "增益1",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "db",
-              "label": "回差",
+              "key": "G2",
+              "label": "增益2",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "G3",
+              "label": "增益3",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "B",
+              "label": "偏置",
+              "type": "number"
+            },
+            {
+              "default": 10,
+              "key": "TR",
+              "label": "限跟速率(/秒)",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "HS": {
+          "algorithm": "Y = MAX(X1, X2, X3)\n被选中的输入对应 Yi=1，其余=0\n相等时低编号优先\n",
           "category": "compare",
-          "description": "多路信号取最大值，OUT = MAX(IN1, IN2, ..., INn)",
+          "description": "Y = MAX(X1, X2, X3)，Yi=1标识被选中的输入",
           "id": "HS",
-          "inputs": 2,
-          "name": "高选",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "输入数",
-              "type": "number"
-            }
-          ],
-          "py_class": "HighSelect"
+          "inputs": 3,
+          "name": "高值选择",
+          "notes": "- 仅用2路时X3为虚输入，Y3为虚输出\n",
+          "outputs": 4,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "最大值",
+                "sym": "Y",
+                "type": "analog"
+              },
+              {
+                "name": "X1被选中",
+                "sym": "Y1",
+                "type": "digital"
+              },
+              {
+                "name": "X2被选中",
+                "sym": "Y2",
+                "type": "digital"
+              },
+              {
+                "name": "X3被选中",
+                "sym": "Y3",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
         },
         "LS": {
+          "algorithm": "Y = MIN(X1, X2, X3)\n被选中的输入对应 Yi=1，其余=0\n",
           "category": "compare",
-          "description": "多路信号取最小值，OUT = MIN(IN1, IN2, ..., INn)",
+          "description": "Y = MIN(X1, X2, X3)，Yi=1标识被选中的输入",
           "id": "LS",
-          "inputs": 2,
-          "name": "低选",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "输入数",
-              "type": "number"
-            }
-          ],
-          "py_class": "LowSelect"
+          "inputs": 3,
+          "name": "低值选择",
+          "outputs": 4,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "最小值",
+                "sym": "Y",
+                "type": "analog"
+              },
+              {
+                "name": "X1被选中",
+                "sym": "Y1",
+                "type": "digital"
+              },
+              {
+                "name": "X2被选中",
+                "sym": "Y2",
+                "type": "digital"
+              },
+              {
+                "name": "X3被选中",
+                "sym": "Y3",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
         },
         "HSG": {
+          "algorithm": "Y = MAX(X1, X2, X3)\n",
           "category": "compare",
-          "description": "高信号选通门，输入高于设定值时输出有效",
+          "description": "Y = MAX(X1, X2, X3)，无选中标志输出",
           "id": "HSG",
-          "inputs": 2,
-          "name": "高信号门",
+          "inputs": 3,
+          "name": "单纯高值选择",
           "outputs": 1,
-          "params": [
-            {
-              "default": 0,
-              "key": "threshold",
-              "label": "门限值",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "最大值",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "LSG": {
+          "algorithm": "Y = MIN(X1, X2, X3)\n",
           "category": "compare",
-          "description": "低信号选通门，输入低于设定值时输出有效",
+          "description": "Y = MIN(X1, X2, X3)，无选中标志输出",
           "id": "LSG",
-          "inputs": 2,
-          "name": "低信号门",
+          "inputs": 3,
+          "name": "单纯低值选择",
           "outputs": 1,
-          "params": [
-            {
-              "default": 0,
-              "key": "threshold",
-              "label": "门限值",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "最小值",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "SEL": {
+          "algorithm": "Xi=1 时 Y=Ki（对应设定值）\n多个Xi同时为1时取编号最小者\n全部为0时Y保持\n",
           "category": "compare",
-          "description": "根据选择信号从多路输入中选择一路输出",
+          "description": "多路数字量选择，Xi=1时Y=Ki，支持4~9路",
           "id": "SEL",
           "inputs": 4,
-          "name": "多路选择器",
+          "name": "选择",
           "outputs": 1,
           "params": [
             {
-              "default": 4,
-              "key": "n",
-              "label": "输入数",
+              "default": 0,
+              "key": "K1",
+              "label": "选择值1",
+              "type": "number"
+            },
+            {
+              "default": 25,
+              "key": "K2",
+              "label": "选择值2",
+              "type": "number"
+            },
+            {
+              "default": 50,
+              "key": "K3",
+              "label": "选择值3",
+              "type": "number"
+            },
+            {
+              "default": 100,
+              "key": "K4",
+              "label": "选择值4",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "选择1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "选择2",
+                "sym": "X2",
+                "type": "digital"
+              },
+              {
+                "name": "选择3",
+                "sym": "X3",
+                "type": "digital"
+              },
+              {
+                "name": "选择4",
+                "sym": "X4",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "选中值",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "NTH": {
+          "algorithm": "SW=1: Y = G0×X + G1×V1 + ... + G(K-1)×V(K-1)\n  计算后移位：V9=V8, ..., V1=X\nSW=0: V1=V2=...=V9=X, 公式仍执行\n",
           "category": "compare",
-          "description": "从多路输入中选择排序后第N大的值输出",
+          "description": "加权FIR滤波器，Y = G0×X + G1×V1 + ... + G(K-1)×V(K-1)",
           "id": "NTH",
-          "inputs": 4,
-          "name": "第N值选择",
+          "inputs": 2,
+          "name": "阶差滤波器",
+          "notes": "- 1 ≤ K ≤ 10\n- 周期执行\n",
           "outputs": 1,
           "params": [
             {
-              "default": 4,
-              "key": "n",
-              "label": "输入数",
+              "default": 3,
+              "key": "K",
+              "label": "阶数",
               "type": "number"
             },
             {
-              "default": 2,
-              "key": "nth",
-              "label": "第N值",
+              "default": 0.5,
+              "key": "G0",
+              "label": "系数G0",
+              "type": "number"
+            },
+            {
+              "default": 0.3,
+              "key": "G1",
+              "label": "系数G1",
+              "type": "number"
+            },
+            {
+              "default": 0.2,
+              "key": "G2",
+              "label": "系数G2",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "滤波输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "HHV": {
+          "algorithm": "由温度T(℃)和压力P(MPa)查IAPWS-IF97水蒸气表\n计算焓值 Y (kJ/kg)\n",
           "category": "compare",
-          "description": "信号超过高高限时输出报警，带回差",
+          "description": "由温度T和压力P计算焓值Y，参照IAPWS-IF97",
           "id": "HHV",
-          "inputs": 1,
-          "name": "高高值报警",
+          "inputs": 2,
+          "name": "焓值计算",
+          "notes": "- 0℃ ≤ T ≤ 800℃\n- 1KPa ≤ P ≤ 100MPa\n",
           "outputs": 1,
-          "params": [
-            {
-              "default": 100,
-              "key": "hh",
-              "label": "高高限",
-              "type": "number"
-            },
-            {
-              "default": 1,
-              "key": "db",
-              "label": "回差",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "温度输入",
+                "sym": "T",
+                "type": "analog"
+              },
+              {
+                "name": "压力输入",
+                "sym": "P",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "焓值输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "VHV": {
+          "algorithm": "由温度T(℃)和压力P(MPa)查IAPWS-IF97\n计算蒸气比容积 Y (m³/kg)\n",
           "category": "compare",
-          "description": "信号超过极高限时输出报警，用于安全联锁",
+          "description": "由温度T和压力P计算蒸气比容积Y，参照IAPWS-IF97",
           "id": "VHV",
-          "inputs": 1,
-          "name": "极高值报警",
+          "inputs": 2,
+          "name": "蒸气的比容积计算",
+          "notes": "- 0℃ ≤ T ≤ 800℃\n- 1KPa ≤ P ≤ 100MPa\n",
           "outputs": 1,
-          "params": [
-            {
-              "default": 110,
-              "key": "vhv",
-              "label": "极高限",
-              "type": "number"
-            },
-            {
-              "default": 1,
-              "key": "db",
-              "label": "回差",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "温度输入",
+                "sym": "T",
+                "type": "analog"
+              },
+              {
+                "name": "压力输入",
+                "sym": "P",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "容积输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "WCM": {
+          "algorithm": "X > HL 或 X < LL: Y = 1\nLL ≤ X ≤ HL: Y = 0\n",
           "category": "compare",
-          "description": "信号在上下限窗口内时输出1，否则输出0",
+          "description": "窗口比较器，X>HL或X<LL时Y=1，否则Y=0",
           "id": "WCM",
           "inputs": 1,
-          "name": "窗口比较器",
+          "name": "比较运算器",
+          "notes": "- HL ≥ LL\n",
           "outputs": 1,
           "params": [
             {
               "default": 100,
-              "key": "hi",
-              "label": "上限",
+              "key": "HL",
+              "label": "上限值",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "lo",
-              "label": "下限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "db",
-              "label": "回差",
+              "key": "LL",
+              "label": "下限值",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "比较结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "G": {
+          "algorithm": "Y = K × X\n",
           "category": "dynamic",
-          "description": "纯增益环节，OUT = K * IN",
+          "description": "Y = K × X",
           "id": "G",
           "inputs": 1,
           "name": "增益",
@@ -678,260 +1366,657 @@
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": "Inertia"
         },
         "I": {
+          "algorithm": "SW=1(自动): Y = (1/TI) × ∫X dt + F，限幅 [LL, HL]\nSW=0(跟踪): Y = Z, 内部积分值 V1 = Y - F\n",
           "category": "dynamic",
-          "description": "积分环节，OUT = (1/Ti) * ∫IN dt",
+          "description": "积分器，SW=1时Y=(1/TI)∫Xdt+F；SW=0时Y=Z(跟踪)",
           "id": "I",
-          "inputs": 1,
-          "name": "积分器",
+          "inputs": 4,
+          "name": "积分",
+          "notes": "- HL ≥ LL, TI > 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 10,
-              "key": "Ti",
+              "key": "TI",
               "label": "积分时间(秒)",
               "type": "number"
             },
             {
               "default": 100,
-              "key": "hi",
+              "key": "HL",
               "label": "输出上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "lo",
+              "key": "LL",
               "label": "输出下限",
               "type": "number"
             }
           ],
-          "py_class": "Integrator"
+          "pins": {
+            "inputs": [
+              {
+                "name": "积分输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "前馈/偏置",
+                "sym": "F",
+                "type": "analog"
+              },
+              {
+                "name": "跟踪值",
+                "sym": "Z",
+                "type": "analog"
+              },
+              {
+                "name": "自动/跟踪",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "积分输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
         },
         "LDL": {
+          "algorithm": "SW=1: Y = (1 + T2·s) / (1 + T1·s) × X，限幅 [LL, HL]\nSW=0: Y = X（直通，受HL/LL限制）\n",
           "category": "dynamic",
-          "description": "超前滞后环节，G(s) = K * (T1s+1)/(T2s+1)",
+          "description": "传递函数 Y = (1+T2·s)/(1+T1·s) × X",
           "id": "LDL",
-          "inputs": 1,
+          "inputs": 2,
           "name": "超前滞后",
+          "notes": "- HL ≥ LL, T1 > 0, T2 > 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 1,
-              "key": "K",
-              "label": "增益",
-              "type": "number"
-            },
-            {
-              "default": 1,
               "key": "T1",
-              "label": "超前时间常数(秒)",
+              "label": "滞后时间常数(秒)",
               "type": "number"
             },
             {
               "default": 1,
               "key": "T2",
-              "label": "滞后时间常数(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": "LeadLag"
-        },
-        "DF": {
-          "category": "dynamic",
-          "description": "带滤波的微分环节，G(s) = Td*s/(Tf*s+1)",
-          "id": "DF",
-          "inputs": 1,
-          "name": "微分滤波",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "Td",
-              "label": "微分时间(秒)",
-              "type": "number"
-            },
-            {
-              "default": 0.1,
-              "key": "Tf",
-              "label": "滤波时间(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "FLT": {
-          "category": "dynamic",
-          "description": "一阶惯性滤波，G(s) = 1/(Ts+1)",
-          "id": "FLT",
-          "inputs": 1,
-          "name": "一阶滤波",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "T",
-              "label": "滤波时间常数(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": "Inertia"
-        },
-        "DB": {
-          "category": "dynamic",
-          "description": "输入在死区范围内时输出为0，超出死区后线性输出",
-          "id": "DB",
-          "inputs": 1,
-          "name": "死区",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 0.5,
-              "key": "db",
-              "label": "死区宽度",
-              "type": "number"
-            }
-          ],
-          "py_class": "DeadZone"
-        },
-        "LIM": {
-          "category": "dynamic",
-          "description": "输出限制在上下限范围内",
-          "id": "LIM",
-          "inputs": 1,
-          "name": "限幅器",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 100,
-              "key": "hi",
-              "label": "上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "lo",
-              "label": "下限",
-              "type": "number"
-            }
-          ],
-          "py_class": "Limiter"
-        },
-        "RL": {
-          "category": "dynamic",
-          "description": "限制输出变化速率，防止突变",
-          "id": "RL",
-          "inputs": 1,
-          "name": "速率限制",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 10,
-              "key": "rate_up",
-              "label": "上升速率限制(/秒)",
-              "type": "number"
-            },
-            {
-              "default": 10,
-              "key": "rate_dn",
-              "label": "下降速率限制(/秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": "RateLimiter"
-        },
-        "RLH": {
-          "category": "dynamic",
-          "description": "带保持功能的速率限制器，可冻结输出",
-          "id": "RLH",
-          "inputs": 2,
-          "name": "速率限制保持",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 10,
-              "key": "rate_up",
-              "label": "上升速率限制(/秒)",
-              "type": "number"
-            },
-            {
-              "default": 10,
-              "key": "rate_dn",
-              "label": "下降速率限制(/秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "GRD": {
-          "category": "dynamic",
-          "description": "计算输入信号的变化梯度（变化率）",
-          "id": "GRD",
-          "inputs": 1,
-          "name": "梯度计算",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "T",
-              "label": "计算周期(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "HLD": {
-          "category": "dynamic",
-          "description": "触发信号有效时采样输入并保持输出",
-          "id": "HLD",
-          "inputs": 2,
-          "name": "采样保持",
-          "outputs": 1,
-          "params": [],
-          "py_class": null
-        },
-        "SC": {
-          "category": "dynamic",
-          "description": "线性量程变换，OUT = (IN-IL)/(IH-IL)*(OH-OL)+OL",
-          "id": "SC",
-          "inputs": 1,
-          "name": "量程变换",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 100,
-              "key": "IH",
-              "label": "输入上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "IL",
-              "label": "输入下限",
+              "label": "超前时间常数(秒)",
               "type": "number"
             },
             {
               "default": 100,
-              "key": "OH",
+              "key": "HL",
               "label": "输出上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "OL",
+              "key": "LL",
               "label": "输出下限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": "LeadLag"
+        },
+        "DF": {
+          "algorithm": "SW=1: Y = G × TD × s / (1 + TD × s) × X，限幅 [LL, HL]\nSW=0: Y = 0\n",
+          "category": "dynamic",
+          "description": "不完全微分，Y = G×TD×s/(1+TD×s) × X",
+          "id": "DF",
+          "inputs": 2,
+          "name": "微分",
+          "notes": "- G ≠ 0, TD > 0, HL ≥ LL\n- TD 须大于执行周期\n- 有状态块\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 100,
+              "key": "G",
+              "label": "增益(%)",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "TD",
+              "label": "微分时间(秒)",
+              "type": "number"
+            },
+            {
+              "default": 100,
+              "key": "HL",
+              "label": "输出上限",
+              "type": "number"
+            },
+            {
+              "default": -100,
+              "key": "LL",
+              "label": "输出下限",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "微分输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "FLT": {
+          "algorithm": "SW=1: Y = (X + V1 + V2 + ... + V(N-1)) / N（移动平均）\nSW=0: Y = X, V1=V2=...=V9=X（初始化）\n",
+          "category": "dynamic",
+          "description": "N点移动平均滤波，Y = (X + V1 + ... + V(N-1)) / N",
+          "id": "FLT",
+          "inputs": 2,
+          "name": "时间序列求平均",
+          "notes": "- 2 ≤ N ≤ 10\n- 有状态块\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 5,
+              "key": "N",
+              "label": "平均点数",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "滤波输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "DB": {
+          "algorithm": "K2 < X ≤ K1: Y = K × X\nX > K1: Y = X - K1 + K × X\nX ≤ K2: Y = X - K2 + K × X\n",
+          "category": "dynamic",
+          "description": "带增益的死区，K2<X≤K1区间Y=K×X，超出区间Y=X±偏移",
+          "id": "DB",
+          "inputs": 1,
+          "name": "死区2",
+          "notes": "- K1 ≥ K2\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 1,
+              "key": "K1",
+              "label": "死区上限",
+              "type": "number"
+            },
+            {
+              "default": -1,
+              "key": "K2",
+              "label": "死区下限",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "K",
+              "label": "死区内增益",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "LIM": {
+          "algorithm": "X > HL: Y=HL, Y1=1, Y2=0\nLL ≤ X ≤ HL: Y=X, Y1=0, Y2=0\nX < LL: Y=LL, Y1=0, Y2=1\n",
+          "category": "dynamic",
+          "description": "限幅器，X超限时限幅并输出报警标志",
+          "id": "LIM",
+          "inputs": 1,
+          "name": "信号控制",
+          "notes": "- HL ≥ LL\n",
+          "outputs": 3,
+          "params": [
+            {
+              "default": 100,
+              "key": "HL",
+              "label": "上限",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "LL",
+              "label": "下限",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "限幅输出",
+                "sym": "Y",
+                "type": "analog"
+              },
+              {
+                "name": "上限报警",
+                "sym": "Y1",
+                "type": "digital"
+              },
+              {
+                "name": "下限报警",
+                "sym": "Y2",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "RL": {
+          "algorithm": "SW=1: 变化率限制，上升≤RI/秒，下降≤RD/秒\nSW=0: Y = X（直通初始化）\n",
+          "category": "dynamic",
+          "description": "限制输出变化率，SW=0时Y=X（直通）",
+          "id": "RL",
+          "inputs": 2,
+          "name": "变化率限制",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 10,
+              "key": "RI",
+              "label": "上升速率限制(/秒)",
+              "type": "number"
+            },
+            {
+              "default": 10,
+              "key": "RD",
+              "label": "下降速率限制(/秒)",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "限速输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "RLH": {
+          "algorithm": "SW=1: 变化率限制，上升≤RI，下降≤RD\n  SI=1时禁止增方向变化，SD=1时禁止减方向变化\nSW=0: Y = X\n",
+          "category": "dynamic",
+          "description": "带保持功能的变化率限制器",
+          "id": "RLH",
+          "inputs": 4,
+          "name": "变化率限制(带保持)",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 10,
+              "key": "RI",
+              "label": "上升速率限制(/秒)",
+              "type": "number"
+            },
+            {
+              "default": 10,
+              "key": "RD",
+              "label": "下降速率限制(/秒)",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "增保持",
+                "sym": "SI",
+                "type": "digital"
+              },
+              {
+                "name": "减保持",
+                "sym": "SD",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "限速输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "GRD": {
+          "algorithm": "SW=1: Y = (X×2 + V1 - V3 - V4×2) × K / (Ts×10)\n  用当前和4个历史值做最小二乘斜率计算\nSW=0: Y=0, V1=V2=V3=V4=X\n",
+          "category": "dynamic",
+          "description": "用最小二乘法计算输入信号斜率（变化率）",
+          "id": "GRD",
+          "inputs": 2,
+          "name": "斜率",
+          "notes": "- K ≠ 0\n- 有状态块\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 1,
+              "key": "K",
+              "label": "增益系数",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "斜率输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "HLD": {
+          "algorithm": "SW=1: SW上升沿(0→1)时锁存Y=X，之后保持不变\nSW=0: Y = X（跟踪）\n",
+          "category": "dynamic",
+          "description": "采样保持，SW上升沿锁存X；SW=0时Y=X(跟踪)",
+          "id": "HLD",
+          "inputs": 2,
+          "name": "保持",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "保持开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "保持输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "SC": {
+          "algorithm": "Y = -X\n",
+          "category": "dynamic",
+          "description": "Y = -X",
+          "id": "SC",
+          "inputs": 1,
+          "name": "符号变换",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "取反输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "BCG": {
+          "algorithm": "SW=1: X变化(0→1或1→0)时Y=1持续一个采样周期，其余Y=0\nSW=0: Y=0（初始化）\n",
           "category": "dynamic",
-          "description": "偏置加增益，OUT = K * IN + B",
+          "description": "边沿检测，X变化(0→1或1→0)时Y输出一拍脉冲",
           "id": "BCG",
+          "inputs": 2,
+          "name": "检查变化",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "变化脉冲",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "GAP": {
+          "algorithm": "K2 ≤ X ≤ K1: Y = 0\nX > K1 或 X < K2: Y = X + K\n",
+          "category": "dynamic",
+          "description": "死区，K2≤X≤K1时Y=0，超出死区Y=X+K",
+          "id": "GAP",
           "inputs": 1,
-          "name": "偏置增益",
+          "name": "死区1",
+          "notes": "- K1 ≥ K2\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 1,
+              "key": "K1",
+              "label": "死区上限",
+              "type": "number"
+            },
+            {
+              "default": -1,
+              "key": "K2",
+              "label": "死区下限",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "K",
+              "label": "偏移量",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "DV": {
+          "algorithm": "Y = X1 / X2\nX2 = 0 时 Y 保持上次输出值\n",
+          "category": "dynamic",
+          "description": "Y = X1 / X2，X2=0时保持上次值",
+          "id": "DV",
+          "inputs": 2,
+          "name": "除法器",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "被除数",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "除数",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "商",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "LIN": {
+          "algorithm": "Y = K × X + B\n",
+          "category": "dynamic",
+          "description": "Y = K × X + B",
+          "id": "LIN",
+          "inputs": 1,
+          "name": "一次变换",
           "outputs": 1,
           "params": [
             {
@@ -947,66 +2032,34 @@
               "type": "number"
             }
           ],
-          "py_class": null
-        },
-        "GAP": {
-          "category": "dynamic",
-          "description": "带间隙的控制器，偏差在间隙范围内时输出不变",
-          "id": "GAP",
-          "inputs": 1,
-          "name": "间隙控制",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "gap",
-              "label": "间隙宽度",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "DV": {
-          "category": "dynamic",
-          "description": "计算两路信号的偏差，OUT = IN1 - IN2",
-          "id": "DV",
-          "inputs": 2,
-          "name": "偏差计算",
-          "outputs": 1,
-          "params": [],
-          "py_class": null
-        },
-        "LIN": {
-          "category": "dynamic",
-          "description": "信号线性化处理，用于补偿传感器非线性",
-          "id": "LIN",
-          "inputs": 1,
-          "name": "线性化",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 0,
-              "key": "type",
-              "label": "线性化类型",
-              "type": "number"
-            }
-          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "FG": {
+          "algorithm": "8折点分段线性插值\nX < X0: Y = Y0; X > X7: Y = Y7\nX0~X7之间线性插值\n",
           "category": "dynamic",
-          "description": "折线插值函数发生器，根据断点表做线性插值",
+          "description": "8折点分段线性函数，X0~X7断点线性插值",
           "id": "FG",
           "inputs": 1,
-          "name": "折线函数",
+          "name": "函数发生器",
+          "notes": "- X0 < X1 < ... < X7\n",
           "outputs": 1,
           "params": [
-            {
-              "default": 5,
-              "key": "n",
-              "label": "断点数",
-              "type": "number"
-            },
             {
               "default": "0,0;25,25;50,50;75,75;100,100",
               "key": "points",
@@ -1014,955 +2067,2088 @@
               "type": "string"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "插值输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": "LinearInterp"
         },
         "FGC": {
+          "algorithm": "C输入经5折点函数得H: (C0,H0)~(C4,H4)\nY = H × X\nC < C0: H=H0; C > C4: H=H4\n",
           "category": "dynamic",
-          "description": "带标定功能的折线函数发生器",
+          "description": "函数修正，Y = H(C) × X，H由5折点C0~C4分段线性产生",
           "id": "FGC",
-          "inputs": 1,
-          "name": "折线函数(标定)",
+          "inputs": 2,
+          "name": "函数修正",
+          "notes": "- C0 < C1 < ... < C4\n",
           "outputs": 1,
           "params": [
             {
-              "default": 5,
-              "key": "n",
-              "label": "断点数",
+              "default": 0,
+              "key": "C0",
+              "label": "C折点0",
               "type": "number"
             },
             {
-              "default": "0,0;25,25;50,50;75,75;100,100",
-              "key": "points",
-              "label": "断点表(x,y)",
-              "type": "string"
+              "default": 1,
+              "key": "H0",
+              "label": "H值0",
+              "type": "number"
+            },
+            {
+              "default": 25,
+              "key": "C1",
+              "label": "C折点1",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "H1",
+              "label": "H值1",
+              "type": "number"
+            },
+            {
+              "default": 50,
+              "key": "C2",
+              "label": "C折点2",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "H2",
+              "label": "H值2",
+              "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "修正输入",
+                "sym": "C",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "修正输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "SF": {
+          "algorithm": "Y = Float(X)\n将16位整数转换为浮点数\n",
           "category": "dynamic",
-          "description": "可配置的信号处理函数（开方、对数等）",
+          "description": "Short(16位整数)→Float(浮点数)类型变换",
           "id": "SF",
           "inputs": 1,
-          "name": "信号函数",
+          "name": "浮点变换",
           "outputs": 1,
-          "params": [
-            {
-              "default": 0,
-              "key": "func",
-              "label": "函数类型",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "短字输入",
+                "sym": "X",
+                "type": "short"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "浮点输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "LMS": {
+          "algorithm": "X > HL: Y = HL\nLL ≤ X ≤ HL: Y = X\nX < LL: Y = LL\n",
           "category": "dynamic",
-          "description": "最小均方自适应滤波器",
+          "description": "简单限幅器，LL ≤ Y ≤ HL（无报警输出）",
           "id": "LMS",
-          "inputs": 2,
-          "name": "最小均方",
+          "inputs": 1,
+          "name": "单纯信号制限",
+          "notes": "- HL ≥ LL\n- 与LIM区别：无Y1/Y2报警输出\n",
           "outputs": 1,
           "params": [
-            {
-              "default": 4,
-              "key": "order",
-              "label": "阶数",
-              "type": "number"
-            },
-            {
-              "default": 0.01,
-              "key": "mu",
-              "label": "步长因子",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "LSQ": {
-          "category": "dynamic",
-          "description": "最小二乘拟合",
-          "id": "LSQ",
-          "inputs": 2,
-          "name": "最小二乘",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "order",
-              "label": "阶数",
-              "type": "number"
-            },
             {
               "default": 100,
-              "key": "window",
-              "label": "数据窗口长度",
+              "key": "HL",
+              "label": "上限",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "LL",
+              "label": "下限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "限幅输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": "Limiter"
+        },
+        "LSQ": {
+          "algorithm": "SW=1: Y = (3×X + 2×V1 + V2 - V4) / 5\n  使用当前值和4个历史值做最小二乘平滑\nSW=0: Y=X, V1=V2=V3=V4=X（初始化）\n",
+          "category": "dynamic",
+          "description": "5点最小二乘平滑，Y=(3X+2V1+V2-V4)/5",
+          "id": "LSQ",
+          "inputs": 2,
+          "name": "最小二乘过滤器",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "平滑输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "PI": {
+          "algorithm": "SW=1(自动): Y(j) = G×(X(j)-X(j-1)) + Ts/TI×X(j) + Y(j-1)\n  输出限幅 [LL, HL]\nSW=0(跟踪): Y = Z，限幅 [LL, HL]\n",
           "category": "control",
-          "description": "PI 控制器，OUT = Kp*(e + 1/Ti*∫e dt)",
+          "description": "置位型PI控制器，SW=1自动计算，SW=0跟踪Z",
           "id": "PI",
-          "inputs": 2,
-          "name": "比例积分",
+          "inputs": 3,
+          "name": "置位型PI",
+          "notes": "- HL ≥ LL, TI > 0\n- X为偏差（需外部计算SP-PV）\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 1,
-              "key": "Kp",
+              "key": "G",
               "label": "比例增益",
               "type": "number"
             },
             {
               "default": 60,
-              "key": "Ti",
+              "key": "TI",
               "label": "积分时间(秒)",
               "type": "number"
             },
             {
               "default": 100,
-              "key": "hi",
+              "key": "HL",
               "label": "输出上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "lo",
+              "key": "LL",
               "label": "输出下限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "偏差输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "跟踪值",
+                "sym": "Z",
+                "type": "analog"
+              },
+              {
+                "name": "自动/跟踪",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "控制输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "PIF": {
+          "algorithm": "SW=1(自动): Y = G×X + (1/TI)×∫X dt + F，限幅 [LL, HL]\nSW=0(跟踪): Y = Z, 积分初值反算 V3 = Y - G×X - F\n",
           "category": "control",
-          "description": "带输入滤波的 PI 控制器",
+          "description": "带前馈信号的PI控制器，Y = G×X + (1/TI)∫Xdt + F",
           "id": "PIF",
-          "inputs": 2,
-          "name": "比例积分带滤波",
+          "inputs": 4,
+          "name": "带前馈PI",
+          "notes": "- HL ≥ LL, TI > 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 1,
-              "key": "Kp",
+              "key": "G",
               "label": "比例增益",
               "type": "number"
             },
             {
               "default": 60,
-              "key": "Ti",
+              "key": "TI",
               "label": "积分时间(秒)",
               "type": "number"
             },
             {
-              "default": 1,
-              "key": "Tf",
-              "label": "滤波时间(秒)",
-              "type": "number"
-            },
-            {
               "default": 100,
-              "key": "hi",
+              "key": "HL",
               "label": "输出上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "lo",
+              "key": "LL",
               "label": "输出下限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "偏差输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "前馈信号",
+                "sym": "F",
+                "type": "analog"
+              },
+              {
+                "name": "跟踪值",
+                "sym": "Z",
+                "type": "analog"
+              },
+              {
+                "name": "自动/跟踪",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "控制输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "PIV": {
+          "algorithm": "SW=1: 比例路径G1×(X-VL)限速ML + 积分路径Ts×G2/TI + F\n  输出限幅 [LL, HL]，变化率限制 ML\nSW=0: Y=0, VL=X\n",
           "category": "control",
-          "description": "带变增益的 PI 控制器，增益随工况变化",
+          "description": "速度型PI控制器，带双增益和前馈",
           "id": "PIV",
-          "inputs": 3,
-          "name": "比例积分变增益",
+          "inputs": 4,
+          "name": "速度型PI",
+          "notes": "- HL ≥ LL, TI > 0, ML ≥ 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 1,
-              "key": "Kp",
-              "label": "基础比例增益",
+              "key": "G1",
+              "label": "比例增益1",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "G2",
+              "label": "比例增益2",
               "type": "number"
             },
             {
               "default": 60,
-              "key": "Ti",
+              "key": "TI",
               "label": "积分时间(秒)",
               "type": "number"
             },
             {
               "default": 100,
-              "key": "hi",
+              "key": "HL",
               "label": "输出上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "lo",
+              "key": "LL",
               "label": "输出下限",
+              "type": "number"
+            },
+            {
+              "default": 10,
+              "key": "ML",
+              "label": "变化率限制",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "偏差输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "前馈信号",
+                "sym": "F",
+                "type": "analog"
+              },
+              {
+                "name": "跟踪值",
+                "sym": "Z",
+                "type": "analog"
+              },
+              {
+                "name": "自动/跟踪",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "控制输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "PD": {
+          "algorithm": "SW=1: Y = X的N×K个采样周期前的值（循环缓冲区）\nSW=0: Y=X, 缓冲区清零（直通）\n",
           "category": "control",
-          "description": "PD 控制器，OUT = Kp*(e + Td*de/dt)",
+          "description": "纯延迟/死区时间，Y延迟N×K个采样周期输出X",
           "id": "PD",
           "inputs": 2,
-          "name": "比例微分",
+          "name": "无效时间",
+          "notes": "- 1 ≤ N ≤ 9, K > 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 1,
-              "key": "Kp",
-              "label": "比例增益",
-              "type": "number"
-            },
-            {
-              "default": 5,
-              "key": "Td",
-              "label": "微分时间(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "PDD": {
-          "category": "control",
-          "description": "带微分滤波的 PD 控制器，抑制微分噪声",
-          "id": "PDD",
-          "inputs": 2,
-          "name": "比例微分带微分滤波",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "Kp",
-              "label": "比例增益",
-              "type": "number"
-            },
-            {
-              "default": 5,
-              "key": "Td",
-              "label": "微分时间(秒)",
-              "type": "number"
-            },
-            {
-              "default": 0.5,
-              "key": "Tf",
-              "label": "微分滤波时间(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "PDF": {
-          "category": "control",
-          "description": "带输入滤波的 PD 控制器",
-          "id": "PDF",
-          "inputs": 2,
-          "name": "比例微分带滤波",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "Kp",
-              "label": "比例增益",
-              "type": "number"
-            },
-            {
-              "default": 5,
-              "key": "Td",
-              "label": "微分时间(秒)",
-              "type": "number"
-            },
-            {
-              "default": 1,
-              "key": "Tf",
-              "label": "滤波时间(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "FTR": {
-          "category": "control",
-          "description": "滤波传递函数，用于控制回路信号处理",
-          "id": "FTR",
-          "inputs": 1,
-          "name": "滤波传递",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "T",
-              "label": "滤波时间(秒)",
+              "key": "N",
+              "label": "延迟倍数",
               "type": "number"
             },
             {
               "default": 1,
               "key": "K",
-              "label": "增益",
+              "label": "采样间隔倍数",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "延迟输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "PDD": {
+          "algorithm": "SW=1: Y = 上一采样周期的X值\nSW=0: Y = X\n",
+          "category": "control",
+          "description": "数字量一拍延迟，Y=上一采样周期的X",
+          "id": "PDD",
+          "inputs": 2,
+          "name": "空载时间(数字量)",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "延迟输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "PDF": {
+          "algorithm": "SW=1: X由0→1时Y=1持续一个采样周期，其余Y=0\nSW=0: Y=0（初始化）\nX=1且SW由0→1时也触发Y=1一拍\n",
+          "category": "control",
+          "description": "检测X的上升沿(0→1)，输出一拍脉冲",
+          "id": "PDF",
+          "inputs": 2,
+          "name": "上升沿检测",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "上升沿脉冲",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "FTR": {
+          "algorithm": "Y = X（直通，用于不同点号间的信号传递）\n",
+          "category": "control",
+          "description": "将输入X复制到不同点号的输出Y，纯信号路由",
+          "id": "FTR",
+          "inputs": 1,
+          "name": "浮点数点号变换",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "AM": {
+          "algorithm": "SW=0(计数模式): I/D脉冲控制输出递增/递减，限幅[LL,HL]\nSW=1(设定模式): I/D控制输出按速率K增减，限幅[LL,HL]\n",
           "category": "control",
-          "description": "自动/手动操作站，支持无扰切换",
+          "description": "带增/减指令的模拟量储存器，支持计数和速率模式",
           "id": "AM",
           "inputs": 2,
-          "name": "自动/手动站",
+          "name": "模拟储存器",
+          "notes": "- HL ≥ LL, K ≥ 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
-              "default": 0,
-              "key": "init",
-              "label": "初始输出",
+              "default": 1,
+              "key": "K",
+              "label": "变化率",
               "type": "number"
             },
             {
               "default": 100,
-              "key": "hi",
-              "label": "输出上限",
+              "key": "HL",
+              "label": "上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "lo",
-              "label": "输出下限",
+              "key": "LL",
+              "label": "下限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "增指令",
+                "sym": "I",
+                "type": "analog"
+              },
+              {
+                "name": "减指令",
+                "sym": "D",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "MODE": {
+          "algorithm": "SW=0: Y0=1, 其余Yi=0（复位到初始方式）\nSW=1: 仅一个Xi=1且其余为0时切换到该方式Yi=1\n  多个或零个Xi=1时不切换，保持当前方式\n",
           "category": "control",
-          "description": "多模式控制器，根据工况切换控制策略",
+          "description": "多方式互斥选择器，Xi=1时切换到方式i，3~8路",
           "id": "MODE",
           "inputs": 4,
-          "name": "模式控制",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "模式数",
-              "type": "number"
-            }
-          ],
+          "name": "方式选择",
+          "outputs": 4,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "方式1请求",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "方式2请求",
+                "sym": "X2",
+                "type": "digital"
+              },
+              {
+                "name": "方式3请求",
+                "sym": "X3",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "方式0(初始)",
+                "sym": "Y0",
+                "type": "digital"
+              },
+              {
+                "name": "方式1",
+                "sym": "Y1",
+                "type": "digital"
+              },
+              {
+                "name": "方式2",
+                "sym": "Y2",
+                "type": "digital"
+              },
+              {
+                "name": "方式3",
+                "sym": "Y3",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "MJL": {
+          "algorithm": "3路输入排序，取中间值(或2路平均)作为Y\n信号偏差超限时对应Zi=1标记异常\n",
           "category": "control",
-          "description": "串级控制主回路，带跟踪和无扰切换",
+          "description": "3路冗余信号取中间值，带异常诊断标志",
           "id": "MJL",
           "inputs": 3,
-          "name": "主回路",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "Kp",
-              "label": "比例增益",
-              "type": "number"
-            },
-            {
-              "default": 60,
-              "key": "Ti",
-              "label": "积分时间(秒)",
-              "type": "number"
-            },
-            {
-              "default": 100,
-              "key": "hi",
-              "label": "输出上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "lo",
-              "label": "输出下限",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "BMP": {
-          "category": "control",
-          "description": "无扰动切换模块，保证手自动切换时输出无阶跃",
-          "id": "BMP",
-          "inputs": 3,
-          "name": "无扰切换",
-          "outputs": 1,
-          "params": [],
-          "py_class": null
-        },
-        "TSP": {
-          "category": "control",
-          "description": "跟踪设定值模块，自动跟踪实际值作为设定值",
-          "id": "TSP",
-          "inputs": 2,
-          "name": "跟踪设定值",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "rate",
-              "label": "跟踪速率(/秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "PST": {
-          "category": "control",
-          "description": "位置型控制输出，直接输出阀位指令",
-          "id": "PST",
-          "inputs": 2,
-          "name": "位置控制",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 100,
-              "key": "hi",
-              "label": "输出上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "lo",
-              "label": "输出下限",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "VCL": {
-          "category": "control",
-          "description": "速度型控制输出，输出阀位变化增量",
-          "id": "VCL",
-          "inputs": 2,
-          "name": "速度控制",
-          "outputs": 1,
+          "name": "三取中",
+          "notes": "- 用于重要测量信号的冗余选择\n",
+          "outputs": 4,
           "params": [
             {
               "default": 5,
-              "key": "rate",
-              "label": "最大速率(/秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "MR": {
-          "category": "control",
-          "description": "手动复位模块，操作员手动设定控制器输出",
-          "id": "MR",
-          "inputs": 1,
-          "name": "手动复位",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 0,
-              "key": "init",
-              "label": "初始值",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "PTN": {
-          "category": "control",
-          "description": "控制模式模式切换逻辑",
-          "id": "PTN",
-          "inputs": 2,
-          "name": "模式切换",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "模式数",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "A": {
-          "category": "logic",
-          "description": "逻辑与运算，所有输入为1时输出为1",
-          "id": "A",
-          "inputs": 2,
-          "name": "与门",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "输入数",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "OR": {
-          "category": "logic",
-          "description": "逻辑或运算，任一输入为1时输出为1",
-          "id": "OR",
-          "inputs": 2,
-          "name": "或门",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "输入数",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "NOT": {
-          "category": "logic",
-          "description": "逻辑非运算，输入取反输出",
-          "id": "NOT",
-          "inputs": 1,
-          "name": "非门",
-          "outputs": 1,
-          "params": [],
-          "py_class": null
-        },
-        "EOR": {
-          "category": "logic",
-          "description": "逻辑异或运算，两输入不同时输出为1",
-          "id": "EOR",
-          "inputs": 2,
-          "name": "异或门",
-          "outputs": 1,
-          "params": [],
-          "py_class": null
-        },
-        "LG": {
-          "category": "logic",
-          "description": "可配置逻辑门，支持与、或、异或等多种组合",
-          "id": "LG",
-          "inputs": 4,
-          "name": "可配置逻辑门",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 4,
-              "key": "n",
-              "label": "输入数",
+              "key": "E1",
+              "label": "通道1偏差限",
               "type": "number"
             },
             {
-              "default": 0,
-              "key": "logic",
-              "label": "逻辑类型(0=与,1=或,2=异或)",
+              "default": 5,
+              "key": "E2",
+              "label": "通道2偏差限",
+              "type": "number"
+            },
+            {
+              "default": 5,
+              "key": "E3",
+              "label": "通道3偏差限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "中间值",
+                "sym": "Y",
+                "type": "analog"
+              },
+              {
+                "name": "通道1异常",
+                "sym": "Z1",
+                "type": "digital"
+              },
+              {
+                "name": "通道2异常",
+                "sym": "Z2",
+                "type": "digital"
+              },
+              {
+                "name": "通道3异常",
+                "sym": "Z3",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "BMP": {
+          "algorithm": "SW 0→1: Y从当前值按速率R向X1过渡\nSW 1→0: Y从当前值按速率R向X2过渡\n过渡中目标值变化叠加到速率过程\n",
+          "category": "control",
+          "description": "SW切换时，输出按速率R从当前值平滑过渡到目标",
+          "id": "BMP",
+          "inputs": 3,
+          "name": "无扰动切换",
+          "notes": "- R ≥ 0\n- 有状态块\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 10,
+              "key": "R",
+              "label": "过渡速率(/秒)",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "信号1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "信号2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "切换开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "无扰输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "TSP": {
+          "algorithm": "由压力P(MPa)查IAPWS-IF97计算饱和温度Y(℃)\n",
+          "category": "control",
+          "description": "由压力P计算饱和温度Y，参照IAPWS-IF97",
+          "id": "TSP",
+          "inputs": 1,
+          "name": "饱和温度计算",
+          "notes": "- 1KPa ≤ P ≤ 22.064MPa\n",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "压力输入",
+                "sym": "P",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "饱和温度输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "PST": {
+          "algorithm": "由温度T(℃)查IAPWS-IF97计算饱和压力Y(MPa)\n",
+          "category": "control",
+          "description": "由温度T计算饱和压力Y，参照IAPWS-IF97",
+          "id": "PST",
+          "inputs": 1,
+          "name": "饱和压力计算",
+          "notes": "- 0℃ ≤ T ≤ 373.946℃\n",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "温度输入",
+                "sym": "T",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "饱和压力输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "VCL": {
+          "algorithm": "由温度T(℃)和压力P(MPa)查IAPWS-IF97\n计算压缩水比容积Y(m³/kg)\n",
+          "category": "control",
+          "description": "由温度T和压力P计算压缩水比容积Y，参照IAPWS-IF97",
+          "id": "VCL",
+          "inputs": 2,
+          "name": "压缩水的比容积计算",
+          "notes": "- 0℃ ≤ T ≤ 800℃, 1KPa ≤ P ≤ 100MPa\n",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "温度输入",
+                "sym": "T",
+                "type": "analog"
+              },
+              {
+                "name": "压力输入",
+                "sym": "P",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "容积输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "MR": {
+          "algorithm": "(X1-X2) > HL 或 (X1-X2) < LL: Y=1\n否则: Y=0\n",
+          "category": "control",
+          "description": "监视两信号差值，|X1-X2|超限时Y=1",
+          "id": "MR",
+          "inputs": 2,
+          "name": "监视继电器",
+          "notes": "- HL ≥ LL\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 10,
+              "key": "HL",
+              "label": "偏差上限",
+              "type": "number"
+            },
+            {
+              "default": -10,
+              "key": "LL",
+              "label": "偏差下限",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "超限报警",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "PTN": {
+          "algorithm": "偏差=X1-X2，根据死区和参数C1/C2计算脉冲时序\n偏差>0: YU脉冲，脉宽=C1/(X2-X1)×Ts\n偏差<0: YD脉冲，脉宽=C2/(X1-X2)×Ts\nSW=0: 复位\n",
+          "category": "control",
+          "description": "根据偏差X1-X2产生增/减脉冲序列YU/YD",
+          "id": "PTN",
+          "inputs": 3,
+          "name": "脉冲序列",
+          "notes": "- C1 > 0, C2 > 0\n",
+          "outputs": 2,
+          "params": [
+            {
+              "default": 1,
+              "key": "C1",
+              "label": "增脉冲系数",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "C2",
+              "label": "减脉冲系数",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "增脉冲",
+                "sym": "YU",
+                "type": "digital"
+              },
+              {
+                "name": "减脉冲",
+                "sym": "YD",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "A": {
+          "algorithm": "Y = X1 AND X2 AND ... AND Xn\n",
+          "category": "logic",
+          "description": "逻辑与，全部输入=1时Y=1，支持2~16路",
+          "id": "A",
+          "inputs": 2,
+          "name": "与",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 2,
+              "key": "n",
+              "label": "输入数",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "与结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "OR": {
+          "algorithm": "Y = X1 OR X2 OR ... OR Xn\n",
+          "category": "logic",
+          "description": "逻辑或，任一输入=1时Y=1，支持2~16路",
+          "id": "OR",
+          "inputs": 2,
+          "name": "或",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 2,
+              "key": "n",
+              "label": "输入数",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "或结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "NOT": {
+          "algorithm": "Y = NOT X\n",
+          "category": "logic",
+          "description": "逻辑非，Y = NOT X",
+          "id": "NOT",
+          "inputs": 1,
+          "name": "非",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "取反",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "EOR": {
+          "algorithm": "Y = X1 XOR X2\n",
+          "category": "logic",
+          "description": "逻辑异或，两输入不同时Y=1",
+          "id": "EOR",
+          "inputs": 2,
+          "name": "异或",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "异或结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "LG": {
+          "algorithm": "SW=1: 一阶惯性，时间常数T秒\nSW=0: Y=X（直通/初始化）\n",
+          "category": "logic",
+          "description": "一阶惯性滤波，传递函数 1/(1+T·s)",
+          "id": "LG",
+          "inputs": 2,
+          "name": "一阶延迟",
+          "notes": "- T > 0\n- 有状态块\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 1,
+              "key": "T",
+              "label": "时间常数(秒)",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "滤波输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "FFR": {
+          "algorithm": "S=0,R=0: Y保持  |  S=1,R=0: Y=1\nS=0,R=1: Y=0    |  S=1,R=1: Y=0（复位优先）\n",
           "category": "logic",
-          "description": "RS 触发器，复位优先，R=1时输出强制为0",
+          "description": "RS触发器，复位优先。S=R=1时Y=0",
           "id": "FFR",
           "inputs": 2,
-          "name": "RS触发器(复位优先)",
+          "name": "复位优先触发器",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "置位",
+                "sym": "S",
+                "type": "digital"
+              },
+              {
+                "name": "复位",
+                "sym": "R",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出Q",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "FFS": {
+          "algorithm": "S=0,R=0: Y保持  |  S=1,R=0: Y=1\nS=0,R=1: Y=0    |  S=1,R=1: Y=1（置位优先）\n",
           "category": "logic",
-          "description": "RS 触发器，置位优先，S=1时输出强制为1",
+          "description": "RS触发器，置位优先。S=R=1时Y=1",
           "id": "FFS",
           "inputs": 2,
-          "name": "RS触发器(置位优先)",
+          "name": "置位优先触发器",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "置位",
+                "sym": "S",
+                "type": "digital"
+              },
+              {
+                "name": "复位",
+                "sym": "R",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出Q",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "LCK": {
+          "algorithm": "X < K: Y = 1\nX ≥ K: Y = 0\n",
           "category": "logic",
-          "description": "闭锁/联锁模块，条件满足时锁定输出状态",
+          "description": "X < K 时 Y=1，X ≥ K 时 Y=0",
           "id": "LCK",
-          "inputs": 3,
-          "name": "闭锁",
+          "inputs": 1,
+          "name": "下限溢出判断",
           "outputs": 1,
-          "params": [],
+          "params": [
+            {
+              "default": 0,
+              "key": "K",
+              "label": "下限值",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "判断结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "UCK": {
+          "algorithm": "X > K: Y = 1\nX ≤ K: Y = 0\n",
           "category": "logic",
-          "description": "解锁模块，解除闭锁状态",
+          "description": "X > K 时 Y=1，X ≤ K 时 Y=0",
           "id": "UCK",
-          "inputs": 2,
-          "name": "解锁",
+          "inputs": 1,
+          "name": "上限溢出判断",
           "outputs": 1,
-          "params": [],
+          "params": [
+            {
+              "default": 100,
+              "key": "K",
+              "label": "上限值",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "判断结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "DSW": {
+          "algorithm": "SW=1: Y=X1; SW=0: Y=X2\n",
           "category": "logic",
-          "description": "数字量二选一开关，根据切换信号选择输出",
+          "description": "数字量二选一，SW=1时Y=X1，SW=0时Y=X2",
           "id": "DSW",
           "inputs": 3,
           "name": "数字开关",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "digital"
+              },
+              {
+                "name": "切换开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "选择输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "ASW": {
+          "algorithm": "SW=1: Y=X1; SW=0: Y=X2\n",
           "category": "logic",
-          "description": "模拟量二选一开关，根据切换信号选择一路模拟量输出",
+          "description": "模拟量二选一，SW=1时Y=X1，SW=0时Y=X2",
           "id": "ASW",
           "inputs": 3,
           "name": "模拟开关",
           "outputs": 1,
           "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "切换开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "选择输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "ASWW": {
+          "algorithm": "SW=1: Y=X1; SW=0: Y=X2（短字类型）\n",
           "category": "logic",
-          "description": "带窗口限制的模拟量开关",
+          "description": "字(WORD/Short)类型二选一，SW=1时Y=X1，SW=0时Y=X2",
           "id": "ASWW",
           "inputs": 3,
-          "name": "模拟开关(带窗口)",
+          "name": "模拟开关(字)",
           "outputs": 1,
-          "params": [
-            {
-              "default": 5,
-              "key": "window",
-              "label": "窗口宽度",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "short"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "short"
+              },
+              {
+                "name": "切换开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "选择输出",
+                "sym": "Y",
+                "type": "short"
+              }
+            ]
+          },
           "py_class": null
         },
         "TB": {
+          "algorithm": "主/备站TieBack切换逻辑\nSW控制主站或备站激活\n切换时输出无扰过渡\n",
           "category": "timer",
-          "description": "接通延时定时器，输入持续为1达到设定时间后输出为1",
+          "description": "主/备TieBack双重化切换，主站故障时切到备站",
           "id": "TB",
-          "inputs": 1,
-          "name": "通延时",
+          "inputs": 3,
+          "name": "双重化",
+          "notes": "- 用于冗余控制器双重化\n- 有状态块\n",
           "outputs": 1,
-          "params": [
-            {
-              "default": 5,
-              "key": "T",
-              "label": "延时时间(秒)",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "主站输入",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "备站输入",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "主/备切换",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "TBD": {
+          "algorithm": "数字量版本的TB双重化切换\n",
           "category": "timer",
-          "description": "断开延时定时器，输入变为0后延时设定时间输出才变0",
+          "description": "数字量主/备TieBack双重化切换",
           "id": "TBD",
-          "inputs": 1,
-          "name": "断延时",
+          "inputs": 3,
+          "name": "双重化(数字量)",
           "outputs": 1,
-          "params": [
-            {
-              "default": 5,
-              "key": "T",
-              "label": "延时时间(秒)",
-              "type": "number"
-            }
-          ],
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "主站输入",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "备站输入",
+                "sym": "X2",
+                "type": "digital"
+              },
+              {
+                "name": "主/备切换",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "TD": {
+          "algorithm": "X 由1→0时，Y保持1，延迟TD秒后Y=0\nX=1时Y立即=1，复位定时器\nSW=0: 初始化\n",
           "category": "timer",
-          "description": "信号延时模块，输出为延时后的输入信号",
+          "description": "X=0后延迟TD秒Y才变0，X=1时Y立即=1",
           "id": "TD",
-          "inputs": 1,
-          "name": "延时",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "T",
-              "label": "延时时间(秒)",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "THF": {
-          "category": "timer",
-          "description": "定时保持功能，触发后保持输出设定时间",
-          "id": "THF",
-          "inputs": 1,
-          "name": "定时保持",
+          "inputs": 2,
+          "name": "延迟断开定时器",
           "outputs": 1,
           "params": [
             {
               "default": 5,
-              "key": "T",
-              "label": "保持时间(秒)",
+              "key": "TD",
+              "label": "延迟时间(秒)",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "延时输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "THF": {
+          "algorithm": "X1~X4中有3个或以上为1时Y=1，否则Y=0\n等效逻辑：(X1∧X2∧X3)∨(X1∧X2∧X4)∨(X1∧X3∧X4)∨(X2∧X3∧X4)\n",
+          "category": "timer",
+          "description": "4路输入中3路或以上为1时Y=1（4取3表决）",
+          "id": "THF",
+          "inputs": 4,
+          "name": "4取3",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "digital"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "digital"
+              },
+              {
+                "name": "输入4",
+                "sym": "X4",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "表决结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "TP": {
+          "algorithm": "X持续为1达TP秒: Y=1\nX=0: Y立即=0，复位定时器\nSW=0: 初始化\n",
           "category": "timer",
-          "description": "脉冲定时器，触发后输出固定宽度脉冲",
+          "description": "X=1持续TP秒后Y才变1，X=0时Y立即=0",
           "id": "TP",
-          "inputs": 1,
-          "name": "脉冲定时",
+          "inputs": 2,
+          "name": "延迟接通定时器",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 5,
+              "key": "TP",
+              "label": "延迟时间(秒)",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "延时输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "TW": {
+          "algorithm": "SW=1: X由0→1时Y=1，持续TW秒后Y=0\n  TW秒内X再次触发不延长\nSW=0: 初始化，Y=0\n",
+          "category": "timer",
+          "description": "X上升沿触发，Y=1持续TW秒后自动复位为0",
+          "id": "TW",
+          "inputs": 2,
+          "name": "一次触发",
+          "notes": "- 0 < TW ≤ 86400秒\n",
           "outputs": 1,
           "params": [
             {
               "default": 1,
-              "key": "T",
+              "key": "TW",
               "label": "脉冲宽度(秒)",
               "type": "number"
             }
           ],
-          "py_class": null
-        },
-        "TW": {
-          "category": "timer",
-          "description": "看门狗定时器，超时未刷新则输出报警",
-          "id": "TW",
-          "inputs": 1,
-          "name": "看门狗定时",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 10,
-              "key": "T",
-              "label": "超时时间(秒)",
-              "type": "number"
-            }
-          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "脉冲输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "TWF": {
+          "algorithm": "X1~X4中有2个或以上为1时Y=1，否则Y=0\n",
           "category": "timer",
-          "description": "带功能扩展的看门狗定时器",
+          "description": "4路输入中2路或以上为1时Y=1（4取2表决）",
           "id": "TWF",
+          "inputs": 4,
+          "name": "4取2",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "digital"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "digital"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "digital"
+              },
+              {
+                "name": "输入4",
+                "sym": "X4",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "表决结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "TWO": {
+          "algorithm": "2折点分段线性插值\nX < A1: Y = B1; X > A2: Y = B2\nA1~A2之间线性插值\n",
+          "category": "timer",
+          "description": "2折点分段线性函数，用(A1,B1)和(A2,B2)做线性插值",
+          "id": "TWO",
           "inputs": 1,
-          "name": "看门狗定时功能",
+          "name": "两点折线",
+          "notes": "- A1 < A2\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 0,
+              "key": "A1",
+              "label": "折点1X坐标",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "B1",
+              "label": "折点1Y坐标",
+              "type": "number"
+            },
+            {
+              "default": 100,
+              "key": "A2",
+              "label": "折点2X坐标",
+              "type": "number"
+            },
+            {
+              "default": 100,
+              "key": "B2",
+              "label": "折点2Y坐标",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "插值输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "RT": {
+          "algorithm": "Y = √(K × X)\n",
+          "category": "timer",
+          "description": "Y = √(K × X)",
+          "id": "RT",
+          "inputs": 1,
+          "name": "开方",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 1,
+              "key": "K",
+              "label": "系数",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "开方输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "CNT": {
+          "algorithm": "SW=1: X每次0→1计数+1，计数≥N时Y=1\nSW=0: Y=0, 计数清零\n",
+          "category": "timer",
+          "description": "脉冲计数器，X上升沿计数，达N次时Y=1",
+          "id": "CNT",
+          "inputs": 2,
+          "name": "计数器",
+          "notes": "- 0 < N < 30000\n",
           "outputs": 1,
           "params": [
             {
               "default": 10,
-              "key": "T",
-              "label": "超时时间(秒)",
+              "key": "N",
+              "label": "计数目标",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "计数脉冲",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "计满输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
-        "TWO": {
+        "CON": {
+          "algorithm": "SW=1: X连续为1达N个执行周期时Y=1\n  X变0则计数复位，Y=0\nSW=0: Y=0, 计数清零\n",
           "category": "timer",
-          "description": "双位式（开关式）控制器，带回差",
-          "id": "TWO",
+          "description": "X连续为1达N个周期时Y=1，否则Y=0",
+          "id": "CON",
           "inputs": 2,
-          "name": "双位控制",
+          "name": "连续检查",
+          "notes": "- 0 < N < 30000\n",
           "outputs": 1,
           "params": [
             {
-              "default": 1,
-              "key": "db",
-              "label": "回差",
+              "default": 10,
+              "key": "N",
+              "label": "连续周期数",
               "type": "number"
             }
           ],
-          "py_class": null
-        },
-        "RT": {
-          "category": "timer",
-          "description": "斜坡/定时器，输出按设定速率线性变化",
-          "id": "RT",
-          "inputs": 2,
-          "name": "斜坡定时",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "rate",
-              "label": "变化速率(/秒)",
-              "type": "number"
-            },
-            {
-              "default": 100,
-              "key": "hi",
-              "label": "上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "lo",
-              "label": "下限",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "CNT": {
-          "category": "timer",
-          "description": "脉冲计数器，对输入脉冲计数",
-          "id": "CNT",
-          "inputs": 2,
-          "name": "计数器",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 100,
-              "key": "preset",
-              "label": "预置值",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "dir",
-              "label": "计数方向(0=加,1=减)",
-              "type": "number"
-            }
-          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "连续确认",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "FLK": {
+          "algorithm": "SW=1: X=1时Y交替1/0，导通T1秒关断T2秒\n  X=0时Y=0\nSW=0: Y=0\n",
           "category": "timer",
-          "description": "闪烁/脉冲发生器，按设定周期输出方波",
+          "description": "X=1时输出交替闪烁，导通T1秒、关断T2秒循环",
           "id": "FLK",
-          "inputs": 1,
+          "inputs": 2,
           "name": "闪烁器",
+          "notes": "- 0 < T1, T2 ≤ 86400秒\n",
           "outputs": 1,
           "params": [
             {
               "default": 0.5,
-              "key": "Ton",
+              "key": "T1",
               "label": "导通时间(秒)",
               "type": "number"
             },
             {
               "default": 0.5,
-              "key": "Toff",
+              "key": "T2",
               "label": "关断时间(秒)",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "使能",
+                "sym": "X",
+                "type": "digital"
+              },
+              {
+                "name": "初始化开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "闪烁输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
           "py_class": null
         },
         "AW": {
+          "algorithm": "Y = G1×X1 + G2×X2 + G3×X3 + B\n",
           "category": "timer",
-          "description": "报警看门狗，监视信号并在超限时输出报警",
+          "description": "Y = G1×X1 + G2×X2 + G3×X3 + B",
           "id": "AW",
+          "inputs": 3,
+          "name": "加权加法器",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 1,
+              "key": "G1",
+              "label": "增益1",
+              "type": "number"
+            },
+            {
+              "default": 1,
+              "key": "G2",
+              "label": "增益2",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "G3",
+              "label": "增益3",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "B",
+              "label": "偏置",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "输入2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "输入3",
+                "sym": "X3",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "加权和",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "CPL": {
+          "algorithm": "升方向: X < HL → Y=1, X ≥ HL → Y=0\n降方向: X > LL → Y=0, X ≤ LL → Y=1\nHL=LL时: X ≥ HL → Y=0, X < HL → Y=1\n",
+          "category": "transfer",
+          "description": "反向滞后比较器，X<HL时Y=1，X>LL时恢复Y=0",
+          "id": "CPL",
           "inputs": 1,
-          "name": "报警看门狗",
+          "name": "比较(负)",
+          "notes": "- HL ≥ LL\n- 与CMP方向相反\n",
+          "outputs": 1,
+          "params": [
+            {
+              "default": 100,
+              "key": "HL",
+              "label": "上限值",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "LL",
+              "label": "下限值",
+              "type": "number"
+            }
+          ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "比较结果",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "BTR": {
+          "algorithm": "Y = X（纯数字量信号路由，不同点号间传递）\n",
+          "category": "transfer",
+          "description": "将输入X(数字量)复制到不同点号的输出Y",
+          "id": "BTR",
+          "inputs": 1,
+          "name": "位运算",
+          "outputs": 1,
+          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "digital"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "BP1": {
+          "algorithm": "SW 0→1: Y从当前值按速率R向X1过渡\nSW 1→0: Y从当前值按速率R向X2过渡\n与BMP区别：过渡中目标值变化不影响速率（固定R）\n",
+          "category": "transfer",
+          "description": "同BMP但过渡中目标变化不叠加，速率恒定",
+          "id": "BP1",
+          "inputs": 3,
+          "name": "无扰动切换1",
+          "notes": "- R ≥ 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
               "default": 10,
-              "key": "T",
-              "label": "超时时间(秒)",
-              "type": "number"
-            },
-            {
-              "default": 100,
-              "key": "hi",
-              "label": "报警上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "lo",
-              "label": "报警下限",
+              "key": "R",
+              "label": "过渡速率(/秒)",
               "type": "number"
             }
           ],
-          "py_class": null
-        },
-        "CPL": {
-          "category": "transfer",
-          "description": "信号耦合/分配，一路输入分配到多路输出",
-          "id": "CPL",
-          "inputs": 1,
-          "name": "信号耦合",
-          "outputs": 2,
-          "params": [
-            {
-              "default": 2,
-              "key": "n",
-              "label": "输出数",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "BTR": {
-          "category": "transfer",
-          "description": "多路信号批量传送/数据块搬移",
-          "id": "BTR",
-          "inputs": 4,
-          "name": "批量传送",
-          "outputs": 4,
-          "params": [
-            {
-              "default": 4,
-              "key": "n",
-              "label": "传送数量",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "BP1": {
-          "category": "transfer",
-          "description": "信号旁路模块，可在线切入/切出信号处理环节",
-          "id": "BP1",
-          "inputs": 2,
-          "name": "旁路",
-          "outputs": 1,
-          "params": [],
+          "pins": {
+            "inputs": [
+              {
+                "name": "信号1",
+                "sym": "X1",
+                "type": "analog"
+              },
+              {
+                "name": "信号2",
+                "sym": "X2",
+                "type": "analog"
+              },
+              {
+                "name": "切换开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "无扰输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "BHL": {
+          "algorithm": "SW 0→1: 锁存当前值，Y保持不变\nSW 1→0: Y按速率R从保持值向X回归\nSW=0稳态: Y=X\n",
           "category": "transfer",
-          "description": "带高低限的信号传输，超限时切换到备用信号",
+          "description": "SW=1时保持当前值；SW由1→0时按速率R回归X",
           "id": "BHL",
           "inputs": 2,
-          "name": "高低带限",
+          "name": "无扰保持",
+          "notes": "- R ≥ 0\n- 有状态块\n",
           "outputs": 1,
           "params": [
             {
-              "default": 100,
-              "key": "hi",
-              "label": "上限",
-              "type": "number"
-            },
-            {
-              "default": 0,
-              "key": "lo",
-              "label": "下限",
+              "default": 10,
+              "key": "R",
+              "label": "回归速率(/秒)",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "输入",
+                "sym": "X",
+                "type": "analog"
+              },
+              {
+                "name": "保持开关",
+                "sym": "SW",
+                "type": "digital"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
           "py_class": null
         },
         "SG": {
+          "algorithm": "Y = K（输出固定常数值）\n",
           "category": "transfer",
-          "description": "测试信号发生器，可输出阶跃/斜坡/正弦等波形",
+          "description": "输出常数值 Y = K（R600C标准常数发生器）",
           "id": "SG",
           "inputs": 0,
           "name": "信号发生器",
@@ -1970,69 +4156,102 @@
           "params": [
             {
               "default": 0,
-              "key": "type",
-              "label": "波形类型(0=阶跃,1=斜坡,2=正弦)",
+              "key": "K",
+              "label": "常数值",
               "type": "number"
-            },
+            }
+          ],
+          "pins": {
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "常数输出",
+                "sym": "Y",
+                "type": "analog"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "SGW": {
+          "algorithm": "Y = K（输出固定短字常数值）\n",
+          "category": "transfer",
+          "description": "输出短字(Short)类型常数值 Y = K",
+          "id": "SGW",
+          "inputs": 0,
+          "name": "信号发生器(字)",
+          "outputs": 1,
+          "params": [
             {
-              "default": 1,
-              "key": "amp",
-              "label": "幅值",
+              "default": 0,
+              "key": "K",
+              "label": "常数值",
               "type": "number"
-            },
+            }
+          ],
+          "pins": {
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "常数输出",
+                "sym": "Y",
+                "type": "short"
+              }
+            ]
+          },
+          "py_class": null
+        },
+        "FS": {
+          "algorithm": "Y = (SH-SL)/(FH-FL) × (X-FL) + SL\n小数部分四舍五入，限制在Short范围(-32768~32767)\n",
+          "category": "transfer",
+          "description": "Float→Short线性缩放变换",
+          "id": "FS",
+          "inputs": 1,
+          "name": "短字变换",
+          "notes": "- FH > FL\n",
+          "outputs": 1,
+          "params": [
             {
-              "default": 1,
-              "key": "freq",
-              "label": "频率(Hz)",
+              "default": 100,
+              "key": "FH",
+              "label": "浮点上限",
               "type": "number"
             },
             {
               "default": 0,
-              "key": "offset",
-              "label": "偏置",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "SGW": {
-          "category": "transfer",
-          "description": "带窗口的信号选通门，窗口内有效",
-          "id": "SGW",
-          "inputs": 2,
-          "name": "信号门(带窗口)",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 5,
-              "key": "window",
-              "label": "窗口宽度",
-              "type": "number"
-            }
-          ],
-          "py_class": null
-        },
-        "FS": {
-          "category": "transfer",
-          "description": "频率/脉冲信号转换为模拟量信号",
-          "id": "FS",
-          "inputs": 1,
-          "name": "频率转信号",
-          "outputs": 1,
-          "params": [
-            {
-              "default": 1,
-              "key": "K",
-              "label": "转换系数",
+              "key": "FL",
+              "label": "浮点下限",
               "type": "number"
             },
             {
-              "default": 1000,
-              "key": "fmax",
-              "label": "最大频率(Hz)",
+              "default": 10000,
+              "key": "SH",
+              "label": "短字上限",
+              "type": "number"
+            },
+            {
+              "default": 0,
+              "key": "SL",
+              "label": "短字下限",
               "type": "number"
             }
           ],
+          "pins": {
+            "inputs": [
+              {
+                "name": "浮点输入",
+                "sym": "X",
+                "type": "analog"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "短字输出",
+                "sym": "Y",
+                "type": "short"
+              }
+            ]
+          },
           "py_class": null
         },
         "L3_boiler_thermal": {
@@ -2060,7 +4279,8 @@
         "3": "output",
         "4": "output",
         "6": "output",
-        "7": "ref_in"
+        "7": "ref_in",
+        "8": "CMP"
       },
       "nodeDataMap": {
         "1": {
@@ -2093,12 +4313,18 @@
           "unit": ""
         },
         "7": {
-          "tag": "MW",
           "_blockId": "ref_in",
-          "_blockName": "引入点"
+          "_blockName": "引入点",
+          "tag": "MW"
+        },
+        "8": {
+          "HL": 100,
+          "LL": 0,
+          "_blockId": "CMP",
+          "_blockName": "滞后比较"
         }
       },
-      "exportTime": "2026-03-16T03:18:50.168Z"
+      "exportTime": "2026-03-23T02:10:57.590Z"
     }
   },
   "layer": "IL"

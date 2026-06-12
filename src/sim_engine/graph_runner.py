@@ -68,13 +68,22 @@ class GraphRunner:
     3. reset(): 重置所有有状态功能块
     """
 
-    def __init__(self):
+    def __init__(self, trace: bool = False):
+        """
+        Args:
+            trace: 是否启用执行追踪（记录每步每个节点的输入/输出值，用于调试）
+        """
         self._nodes: Dict[str, GraphNode] = {}
         self._sorted_ids: List[str] = []  # 拓扑排序后的执行顺序
         self._input_nodes: List[GraphNode] = []   # 外部输入端子
         self._output_nodes: List[GraphNode] = []  # 外部输出端子
         self._latest_outputs: Dict[str, float] = {}
         self._ref_values: Dict[str, float] = {}   # 引出点变量值
+
+        # 执行追踪
+        self._trace_enabled = trace
+        self._trace_log: List[Dict[str, Any]] = []  # 每步的追踪记录
+        self._trace_step = 0
 
     # ── 加载与解析 ────────────────────────────────────────
 
@@ -523,9 +532,32 @@ class GraphRunner:
             输出信号 {信号tag: 值}
         """
         outputs = {}
+        step_trace = {} if self._trace_enabled else None
 
         for nid in self._sorted_ids:
-            self._exec_node(self._nodes[nid], io_values, dt, outputs)
+            node = self._nodes[nid]
+            self._exec_node(node, io_values, dt, outputs)
+
+            if step_trace is not None:
+                # 记录节点的输入值和输出值
+                inputs_snapshot = []
+                for i in range(len(node.input_connections)):
+                    inputs_snapshot.append(self._get_input_value(node, i))
+                step_trace[nid] = {
+                    "type": node.block_type,
+                    "tag": node.tag,
+                    "inputs": inputs_snapshot,
+                    "output": node.output_value,
+                }
+
+        if self._trace_enabled:
+            self._trace_log.append({
+                "step": self._trace_step,
+                "io_values": dict(io_values),
+                "nodes": step_trace,
+                "outputs": dict(outputs),
+            })
+            self._trace_step += 1
 
         self._latest_outputs = outputs
         return outputs
@@ -691,3 +723,146 @@ class GraphRunner:
             ],
             "execution_order": self._sorted_ids,
         }
+
+    # ── 执行追踪 ──────────────────────────────────────────
+
+    def enable_trace(self, enabled: bool = True):
+        """启用/禁用执行追踪"""
+        self._trace_enabled = enabled
+        if enabled:
+            self._trace_log.clear()
+            self._trace_step = 0
+
+    def get_trace(self, last_n: int = 0) -> List[Dict[str, Any]]:
+        """
+        获取追踪记录
+
+        Args:
+            last_n: 返回最近 N 步的记录，0 = 全部
+        Returns:
+            追踪记录列表，每条包含 step/io_values/nodes/outputs
+        """
+        if last_n > 0:
+            return self._trace_log[-last_n:]
+        return list(self._trace_log)
+
+    def get_node_trace(self, node_id: str, last_n: int = 0) -> List[dict]:
+        """
+        获取单个节点的追踪历史
+
+        Args:
+            node_id: 节点 ID
+            last_n: 返回最近 N 步，0 = 全部
+        Returns:
+            [{step, inputs, output}, ...]
+        """
+        records = self._trace_log if last_n <= 0 else self._trace_log[-last_n:]
+        result = []
+        for rec in records:
+            node_data = rec["nodes"].get(node_id)
+            if node_data:
+                result.append({
+                    "step": rec["step"],
+                    "inputs": node_data["inputs"],
+                    "output": node_data["output"],
+                })
+        return result
+
+    def get_tag_trace(self, tag: str, last_n: int = 0) -> List[dict]:
+        """
+        按 tag 获取节点追踪历史（方便用信号名查询）
+
+        Args:
+            tag: 信号标签名
+            last_n: 返回最近 N 步，0 = 全部
+        Returns:
+            [{step, inputs, output}, ...]
+        """
+        # 找到 tag 对应的节点 ID
+        target_id = None
+        for nid, node in self._nodes.items():
+            if node.tag == tag:
+                target_id = nid
+                break
+        if not target_id:
+            return []
+        return self.get_node_trace(target_id, last_n)
+
+    def clear_trace(self):
+        """清空追踪记录"""
+        self._trace_log.clear()
+        self._trace_step = 0
+
+    # ── 信号校验 ──────────────────────────────────────────
+
+    def validate(self, available_signals: List[str] = None) -> Dict[str, list]:
+        """
+        校验图的完整性，返回警告和错误列表
+
+        Args:
+            available_signals: 可用的外部信号 tag 列表（来自 OPC 映射或用户设定值）。
+                               为 None 时跳过信号可用性检查。
+        Returns:
+            {"errors": [...], "warnings": [...]}
+        """
+        errors = []
+        warnings = []
+
+        # 1. 检查 input 节点的 tag 是否有对应外部信号
+        if available_signals is not None:
+            sig_set = set(available_signals)
+            for node in self._input_nodes:
+                tag = node.tag
+                if tag and tag not in sig_set:
+                    warnings.append(
+                        f"输入节点 '{tag}' ({node.id}) 无对应外部信号，"
+                        f"运行时将使用默认值 {node.params.get('default', 0.0)}")
+
+        # 2. 检查 ref_in 是否有匹配的 ref_out
+        ref_out_tags = set()
+        for node in self._nodes.values():
+            if node.block_type == "ref_out" and node.tag:
+                ref_out_tags.add(node.tag)
+        for node in self._nodes.values():
+            if node.block_type == "ref_in":
+                tag = node.tag
+                if not tag:
+                    errors.append(f"引入点 {node.id} 未设置 tag")
+                elif tag not in ref_out_tags:
+                    errors.append(
+                        f"引入点 '{tag}' ({node.id}) 无匹配的引出点 ref_out，"
+                        f"运行时将始终输出 0")
+
+        # 3. 检查未连接的输入端口（非 input/ref_in/constant/comment/DELAY 的首个输入）
+        skip_types = {"input", "ref_in", "ref_out", "constant", "CON", "comment",
+                      "output", "_relay"}
+        for node in self._nodes.values():
+            if node.block_type in skip_types:
+                continue
+            if not node.input_connections:
+                warnings.append(
+                    f"节点 {node.block_type} ({node.id}) 无任何输入连接，"
+                    f"将使用默认值 0")
+            else:
+                for i, conn in enumerate(node.input_connections):
+                    if conn is None:
+                        warnings.append(
+                            f"节点 {node.block_type} ({node.id}) "
+                            f"输入端口 {i+1} 未连接")
+
+        # 4. 检查 output 节点是否有连接
+        for node in self._output_nodes:
+            if not node.input_connections or all(c is None for c in node.input_connections):
+                warnings.append(
+                    f"输出节点 '{node.tag}' ({node.id}) 无输入连接，"
+                    f"将始终输出 0")
+
+        if errors:
+            logger.warning(f"图校验发现 {len(errors)} 个错误: " +
+                          "; ".join(errors))
+        if warnings:
+            logger.info(f"图校验发现 {len(warnings)} 个警告: " +
+                       "; ".join(warnings[:5]) +
+                       (f" ...及 {len(warnings)-5} 个更多" if len(warnings) > 5 else ""))
+
+        return {"errors": errors, "warnings": warnings}

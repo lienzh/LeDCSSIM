@@ -31,6 +31,25 @@ from typing import List, Tuple, Optional, Union
 from urllib.parse import urlparse
 
 from src.opc_client.client import OPCClient
+from .ccs_model import CcsUscOtbt, load_params as _load_ccs_params
+from .steam import steam_T_from_ph
+
+# CCS 协调模型参数 (论文 USC-OTBT 1000MW) — 首次调用时懒加载
+_CCS_PARAMS_PATH = Path("config/ccs_models/usc-otbt-1000mw.yaml")
+_CCS_PARAMS: Optional[dict] = None
+_CCS_PARAMS_ERR: Optional[str] = None
+
+def _get_ccs_params() -> Optional[dict]:
+    """懒加载 CCS 协调模型参数. 失败时缓存错误信息, 不反复读文件."""
+    global _CCS_PARAMS, _CCS_PARAMS_ERR
+    if _CCS_PARAMS is not None or _CCS_PARAMS_ERR is not None:
+        return _CCS_PARAMS
+    try:
+        _CCS_PARAMS = _load_ccs_params(str(_CCS_PARAMS_PATH))
+        return _CCS_PARAMS
+    except Exception as e:
+        _CCS_PARAMS_ERR = str(e)
+        return None
 
 
 # ---------- 显式事件日志 (用户视角时间线: 启停/重连/镜像/清状态等) ----------
@@ -356,12 +375,14 @@ def reinit_tracking_state() -> dict:
     """
     s = _STATE
     n = {"lag": len(s.lag_state), "var": len(s.intermediates),
-         "written": len(s.last_written)}
+         "written": len(s.last_written), "ccs": len(s.ccs_state)}
     s.lag_state = {}
     s.intermediates = {}
     s.last_written = {}
+    # CCS 协调模型也是积分状态, 算作"初值"清掉, 下周期按 yaml seed 起步
+    s.ccs_state = {}
     logger.info(f"跟踪状态已重置: {n}")
-    log_event("state", f"⏮ 重置初值 (LAG {n['lag']} / $var {n['var']} 清, RS {len(s.rs_state)} 保留)", n)
+    log_event("state", f"⏮ 重置初值 (LAG {n['lag']} / $var {n['var']} / CCS {n['ccs']} 清, RS {len(s.rs_state)} 保留)", n)
     return n
 
 
@@ -715,13 +736,64 @@ def dryrun_preview(opc_url: Optional[str] = None) -> dict:
     return {"ok": True, "items": results, "summary": summary}
 
 
-def reset_persistent_state() -> dict:
-    """显式清空持久状态 (RS/LAG/中间变量) — 用户想"从头开始"时调用"""
+def prune_state_to_pairs(pairs: list) -> dict:
+    """保存脚本时调用 — 清掉新脚本不再引用的 LAG/RS/CCS state key,
+    保留还在用的状态量. 让镜像保存不带历史脚本残留的死状态.
+
+    收集策略: 走 pairs 的 RHS 树, 看到 LAG/RS/RS_NOT/CCS_1000 就记下其 state_key,
+    然后对 lag_state/rs_state/ccs_state 三个 dict 做白名单过滤.
+
+    INST_PIN 的 args 是 ["$YQ3.PST"], 不会触发 LAG/RS/CCS 收集.
+
+    返回各类被剪掉的条目数.
+    """
     s = _STATE
-    n = {"rs": len(s.rs_state), "lag": len(s.lag_state), "var": len(s.intermediates)}
+    live: set = set()
+
+    def _walk(expr):
+        if not isinstance(expr, tuple):
+            return
+        fname, args = expr
+        if fname == "INST_PIN":
+            return
+        if fname == "LAG":
+            live.add(("LAG", _make_hashable(args)))
+        elif fname in ("RS", "RS_NOT"):
+            live.add(("RS", _make_hashable(args)))
+        elif fname == "CCS_1000":
+            live.add(("CCS_1000", _make_hashable(args)))
+        for a in args:
+            _walk(a)
+
+    for _, rhs in pairs:
+        _walk(rhs)
+
+    before = {"lag": len(s.lag_state), "rs": len(s.rs_state), "ccs": len(s.ccs_state)}
+    s.lag_state = {k: v for k, v in s.lag_state.items() if k in live}
+    s.rs_state  = {k: v for k, v in s.rs_state.items()  if k in live}
+    s.ccs_state = {k: v for k, v in s.ccs_state.items() if k in live}
+    pruned = {
+        "lag": before["lag"] - len(s.lag_state),
+        "rs":  before["rs"]  - len(s.rs_state),
+        "ccs": before["ccs"] - len(s.ccs_state),
+    }
+    total = sum(pruned.values())
+    if total > 0:
+        log_event("state",
+                  f"🧹 保存时清理过期状态 (LAG {pruned['lag']} / RS {pruned['rs']} / CCS {pruned['ccs']})",
+                  pruned)
+    return pruned
+
+
+def reset_persistent_state() -> dict:
+    """显式清空持久状态 (RS/LAG/中间变量/CCS 模型) — 用户想"从头开始"时调用"""
+    s = _STATE
+    n = {"rs": len(s.rs_state), "lag": len(s.lag_state),
+         "var": len(s.intermediates), "ccs": len(s.ccs_state)}
     s.rs_state = {}
     s.lag_state = {}
     s.intermediates = {}
+    s.ccs_state = {}
     s.last_values = {}
     s.last_read = {}
     s.last_written = {}
@@ -730,7 +802,7 @@ def reset_persistent_state() -> dict:
     except Exception:
         pass
     logger.info(f"持久状态已清空: {n}")
-    log_event("state", f"🔥 清空状态 (RS {n['rs']} / LAG {n['lag']} / $var {n['var']})", n)
+    log_event("state", f"🔥 清空状态 (RS {n['rs']} / LAG {n['lag']} / $var {n['var']} / CCS {n['ccs']})", n)
     return n
 
 
@@ -836,6 +908,14 @@ FUNC_ARITY = {
     "LAG": 2,
     # 折线特性 CHAR(x, x0,y0, x1,y1, ..., xN,yN) — 变长, 至少 2 个点
     "CHAR": -1,
+    # USC-OTBT 协调模型工厂 (3 入, 论文 Fan 2021)
+    #   $YQ3 = CCS_1000(uB, Dfw, ut)   # 实例化 1000MW preset, 绑到 $YQ3
+    #   DPU.AI_PST = $YQ3.PST          # 读管脚: PST(MPa) / HM(kJ/kg) / NE(MW)
+    # 同一个 $YQ3 全周期只积分一次; 加 660MW preset 时新增 CCS_660 工厂即可
+    "CCS_1000": 3,
+    # 水蒸气热力性质 — IAPWS-IF97 自动选区(亚饱和水/过热/超临界)
+    #   STEAM_T(h, p) → T (°C)   入参: h kJ/kg, p MPa
+    "STEAM_T": 2,
 }
 SUPPORTED_FUNCS = tuple(FUNC_ARITY.keys())
 
@@ -846,8 +926,9 @@ _TOKEN_RE = re.compile(r"""
     \s+
   | (?P<NUMBER>\d+\.\d+|\d+)
   | (?P<NODE>DPU\d{4}(?:\.\w+)+)
+  | (?P<INST_PIN>\$[A-Za-z_]\w*\.[A-Za-z_]\w*)
   | (?P<VAR>\$[A-Za-z_]\w*)
-  | (?P<FUNC>[A-Z][A-Z_]*)(?=\s*[(（])
+  | (?P<FUNC>[A-Z][A-Z_0-9]*)(?=\s*[(（])
   | (?P<LPAREN>[(（])
   | (?P<RPAREN>[)）])
   | (?P<COMMA>[,，])
@@ -934,7 +1015,7 @@ def _parse_unary(tokens, pos):
 
 
 def _parse_primary(tokens, pos):
-    """primary := NUMBER | NODE | VAR | FUNC '(' args ')' | '(' expr ')'"""
+    """primary := NUMBER | NODE | INST_PIN | VAR | FUNC '(' args ')' | '(' expr ')'"""
     if pos >= len(tokens):
         raise ParseError("表达式意外结束")
     tk, val = tokens[pos]
@@ -942,6 +1023,12 @@ def _parse_primary(tokens, pos):
         return pos + 1, float(val)
     if tk == "NODE":
         return pos + 1, short_to_full(val)
+    if tk == "INST_PIN":
+        # $YQ3.PST → ("INST_PIN", ["$YQ3.PST"]); args 是 list 兼容标准 (fname, args)
+        # 形态, 让所有走 RHS 树的遍历器 (_collect / _node_refs / _walk 等) 看到
+        # "$YQ3.PST" 这个 args 元素时按 "$" 开头跳过 — 否则三元 tuple + 字符串迭代
+        # 会拆字符成 Y/Q/3 被误判 OPC 节点
+        return pos + 1, ("INST_PIN", [val])
     if tk == "VAR":
         return pos + 1, val
     if tk == "FUNC":
@@ -1099,13 +1186,44 @@ def _make_hashable(x):
     return x
 
 
+class _CcsHandle:
+    """CCS_xxxx 工厂函数返回的运行时把柄 — 装到 s.intermediates['$YQ3'] 里.
+    持有: 模型对象 + 上次输出管脚 + 上次积分的 cycle (去重整周期只 step 一次)
+    """
+    __slots__ = ("model", "outputs", "last_cycle")
+
+    def __init__(self, model):
+        self.model = model
+        self.outputs: dict = {}        # {"PST": float, "HM": float, "NE": float}
+        self.last_cycle: int = -1
+
+    def step_if_needed(self, uB: float, Dfw: float, ut: float,
+                        dt: float, cycle: int) -> None:
+        if self.last_cycle != cycle:
+            self.last_cycle = cycle
+            pst, hm, Ne = self.model.step(uB, Dfw, ut, dt)
+            self.outputs = {"PST": pst, "HM": hm, "NE": Ne}
+
+
 def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
     """计算右边表达式的当前值。
     rhs 形态:
       - str(节点):直接读
       - float/int:常数
       - (fname, [args]):函数调用
+      - ("INST_PIN", "$YQ3", "PST"):实例管脚访问
     """
+    # 实例管脚访问 $YQ3.PST → 查 s.intermediates['$YQ3'] (必须是 _CcsHandle)
+    # AST 形态: ("INST_PIN", ["$YQ3.PST"]) — args 列表里唯一元素是 "$inst.pin"
+    if isinstance(rhs, tuple) and rhs[0] == "INST_PIN":
+        inst_name, pin = rhs[1][0].split(".", 1)
+        handle = s.intermediates.get(inst_name)
+        if not isinstance(handle, _CcsHandle):
+            raise _SkipCycle()
+        if pin not in handle.outputs:
+            raise _SkipCycle()
+        return handle.outputs[pin]
+
     if isinstance(rhs, str):
         # 中间变量直读
         if rhs.startswith("$"):
@@ -1190,34 +1308,119 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
         y = y_prev + (dt / T) * (x - y_prev) if T > 0 else x
         s.lag_state[key] = y
         return y
+
+    # USC-OTBT 1000MW 协调模型工厂 (论文 Fan 2021)
+    #   $YQ3 = CCS_1000(uB, Dfw, ut)
+    # 返回 _CcsHandle 把柄, 后续 $YQ3.PST/HM/NE 从把柄读管脚
+    # 入参 hashable 作 key → 同一脚本里多次写 $YQ3 = CCS_1000(...) 用同一份模型
+    if fname == "CCS_1000":
+        uB, Dfw, ut = float(vals[0]), float(vals[1]), float(vals[2])
+        key = ("CCS_1000", _make_hashable(raw_args))
+        handle = s.ccs_state.get(key)
+        if handle is None:
+            params = _get_ccs_params()
+            if params is None:
+                raise _SkipCycle()    # 参数文件没加载, 跳过 (诊断面板可查错因)
+            handle = _CcsHandle(CcsUscOtbt(params))
+            s.ccs_state[key] = handle
+        handle.step_if_needed(uB, Dfw, ut, dt, s.cycle_count)
+        return handle
+
+    # 水蒸气热力性质 — IAPWS-IF97  STEAM_T(h, p) → T(°C)
+    if fname == "STEAM_T":
+        h, p = float(vals[0]), float(vals[1])
+        T = steam_T_from_ph(h, p)
+        if T is None:
+            raise _SkipCycle()   # 越界 / iapws 求解失败 → 跳过本周期, 状态面板查原因
+        return T
     return None
 
 
 # ---------- 状态镜像 (用户显式保存/恢复, 用于 NTVDPU 重启后手动还原) ----------
 
 _SNAPSHOT_PATH = Path("data/state_snapshot.json")
+_SNAPSHOT_BAK_DIR = Path("data/snapshot_backups")    # 时间戳历史
+_SNAPSHOT_KEEP = 30                                  # 最多保留几份历史副本
+
+
+def _migrate_legacy_bak() -> None:
+    """老机制留下的 state_snapshot.json.bak → 搬进新历史目录(模块加载时跑一次).
+    防丢失用户已有的"上一份"备份.
+    """
+    from datetime import datetime
+    import shutil
+    legacy = _SNAPSHOT_PATH.with_suffix(_SNAPSHOT_PATH.suffix + ".bak")
+    if not legacy.exists():
+        return
+    try:
+        _SNAPSHOT_BAK_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.fromtimestamp(legacy.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
+        migrated = _SNAPSHOT_BAK_DIR / f"snapshot_{ts}_legacy.json"
+        if not migrated.exists():
+            shutil.copy2(legacy, migrated)
+        legacy.unlink()
+        logger.info(f"老 .bak 迁入历史目录: {migrated.name}")
+    except Exception as e:
+        logger.warning(f"老 .bak 迁移失败 (跳过): {e}")
+
+
+def list_snapshot_backups() -> list:
+    """返回所有历史镜像副本, 新→旧 排序. 每项 {name, path, ts, size}"""
+    if not _SNAPSHOT_BAK_DIR.exists():
+        return []
+    out = []
+    for p in _SNAPSHOT_BAK_DIR.glob("snapshot_*.json"):
+        try:
+            st = p.stat()
+            out.append({
+                "name": p.name,
+                "path": str(p),
+                "ts": st.st_mtime,
+                "size": st.st_size,
+            })
+        except OSError:
+            continue
+    out.sort(key=lambda x: -x["ts"])
+    return out
 
 
 def save_state_snapshot(force: bool = False) -> dict:
     """显式保存当前 RS/LAG/中间变量到镜像文件 (用户主动调用)
     JSON 结构清晰: 每个 RS/LAG 条目带 fname/args/value 字段, 便于查看核对
     force=False 时若内存全空会拒绝, 避免误覆盖已有镜像
+
+    备份链:
+      - 主文件 data/state_snapshot.json (📤 下载默认从这里读, 永远指最新)
+      - 历史 data/snapshot_backups/snapshot_YYYYMMDD_HHMMSS.json (每次保存留一份)
+      - 历史只保留最近 _SNAPSHOT_KEEP 个 (满了清最老)
     """
     import json as _json
+    from datetime import datetime
     s = _STATE
     if not force and not s.rs_state and not s.lag_state and not s.intermediates:
         return {"ok": False, "error": "内存里 RS/LAG/中间变量 全为空, 拒绝保存(防覆盖). "
                                        "请先运行脚本让状态算出来, 或加 force 强制保存"}
     try:
         _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # 防误覆盖: 写新文件前, 若旧文件存在就 mv 到 .bak (上一份永远留底)
+        _SNAPSHOT_BAK_DIR.mkdir(parents=True, exist_ok=True)
+        # 老 .bak 防御性再迁一次 (module 加载时已跑过, 这里防中途外部进程造 .bak)
+        _migrate_legacy_bak()
+        # 写新文件前, 若旧主文件存在 → 拷一份到时间戳历史 (留底链不再单 .bak)
         if _SNAPSHOT_PATH.exists():
-            bak = _SNAPSHOT_PATH.with_suffix(_SNAPSHOT_PATH.suffix + ".bak")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            bak = _SNAPSHOT_BAK_DIR / f"snapshot_{ts}.json"
             try:
-                if bak.exists(): bak.unlink()
-                _SNAPSHOT_PATH.rename(bak)
+                import shutil
+                shutil.copy2(_SNAPSHOT_PATH, bak)
             except Exception as e:
-                logger.warning(f"备份旧镜像到 .bak 失败 (继续覆盖写): {e}")
+                logger.warning(f"备份旧镜像到历史失败 (继续覆盖写): {e}")
+            # 清理: 只留最近 N 个
+            try:
+                backups = sorted(_SNAPSHOT_BAK_DIR.glob("snapshot_*.json"))
+                for old in backups[:-_SNAPSHOT_KEEP]:
+                    try: old.unlink()
+                    except OSError: pass
+            except Exception: pass
         data = {
             "saved_at": time.time(),
             "rs_state": [
@@ -1228,7 +1431,10 @@ def save_state_snapshot(force: bool = False) -> dict:
                 {"fname": k[0], "args": list(k[1]), "value": v}
                 for k, v in s.lag_state.items()
             ],
-            "intermediates": s.intermediates,
+            # 模型实例 _CcsHandle 不进镜像 — 重启时按 yaml seed 重建即可,
+            # 序列化 model + delay queue 复杂且收益小
+            "intermediates": {k: v for k, v in s.intermediates.items()
+                              if not isinstance(v, _CcsHandle)},
         }
         _SNAPSHOT_PATH.write_text(
             _json.dumps(data, ensure_ascii=False, indent=2),
@@ -1244,15 +1450,27 @@ def save_state_snapshot(force: bool = False) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def restore_state_snapshot() -> dict:
-    """从镜像文件恢复 RS/LAG/中间变量"""
+def restore_state_snapshot(path: Optional[str] = None) -> dict:
+    """从镜像文件恢复 RS/LAG/中间变量.
+    path=None → 主文件 data/state_snapshot.json
+    path="snapshot_20260610_153045.json" → data/snapshot_backups/ 下指定历史副本
+    """
     import json as _json
     from datetime import datetime
     s = _STATE
-    if not _SNAPSHOT_PATH.exists():
-        return {"ok": False, "error": "没有镜像文件,先保存"}
+    if path:
+        # 安全: 只允许文件名 (不接受绝对路径或 ..) — 防御 path traversal
+        if ("/" in path) or ("\\" in path) or (".." in path) or not path.endswith(".json"):
+            return {"ok": False, "error": f"非法历史镜像名: {path!r}"}
+        src = _SNAPSHOT_BAK_DIR / path
+        if not src.exists():
+            return {"ok": False, "error": f"历史镜像不存在: {path}"}
+    else:
+        src = _SNAPSHOT_PATH
+        if not src.exists():
+            return {"ok": False, "error": "没有镜像文件,先保存"}
     try:
-        data = _json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        data = _json.loads(src.read_text(encoding="utf-8"))
         # 镜像现在只有一种格式: list of {fname, args, value}
         # _make_hashable 递归把 list → tuple, 否则嵌套表达式参数 (如
         # LAG((MUL,[...]),120) 这种 args) 直接 tuple() 还是带 list, dict key 报
@@ -1380,6 +1598,10 @@ class _State:
         self.lag_state: dict = {}
         # 中间变量当前值 {"$tmp": value}, 每周期可覆盖
         self.intermediates: dict = {}
+        # CCS 协调模型实例池 {state_key: {"inst": CcsUscOtbt, "tick": int,
+        #                                "out": (pst, hm, Ne)}}
+        # state_key = ("CCS", hashable(args)) — 3 个姊妹函数 CCS_PST/HM/NE 共享
+        self.ccs_state: dict = {}
         # 上次写入值 (用于跳过未变化的写,降低通讯负荷)
         self.last_written: dict = {}
         # 节点级失败/成功累计 (debug 用)
@@ -1395,6 +1617,17 @@ class _State:
 
 _STATE = _State()
 # 不自动恢复 — 用户在界面点【🔄 恢复镜像】才恢复 (避免误用陈旧状态)
+# 模块加载时把老机制的 .bak 单备份迁进新历史目录 (一次性)
+_migrate_legacy_bak()
+
+
+def _jsonable_value_map(d: dict) -> dict:
+    """把 last_values / intermediates 序列化前先把 _CcsHandle 转成 outputs dict.
+    Flask jsonify 不认识自定义对象, 直接喂会 500. 前端拿到 $YQ3 → {PST,HM,NE}
+    反而更直观, 一行就能在实时值面板里看到三个管脚.
+    """
+    return {k: (v.outputs if isinstance(v, _CcsHandle) else v)
+            for k, v in d.items()}
 
 
 def get_status() -> dict:
@@ -1433,7 +1666,7 @@ def get_status() -> dict:
         "pairs_count": len(s.pairs),
         "dt": s.dt,
         "opc_url": s.opc_url,
-        "last_values": s.last_values,
+        "last_values": _jsonable_value_map(s.last_values),
         "last_read": s.last_read,
         "avg_read_ms": round(avg_read, 1),
         "avg_write_ms": round(avg_write, 1),
@@ -1575,6 +1808,11 @@ async def _opc_loop(initial_pairs: List[Tuple[str, Union[str, float]]], dt: floa
                     if lhs.startswith("$"):
                         s.intermediates[lhs] = v
                     else:
+                        # 模型实例不能写到 OPC 节点 — 用户大概率写错了
+                        if isinstance(v, _CcsHandle):
+                            s.skip_count[lhs] = s.skip_count.get(lhs, 0) + 1
+                            s.skip_cause[lhs] = "模型实例只能绑到 $var (如 $YQ3=CCS_1000(...)), 读管脚用 $YQ3.PST"
+                            continue
                         writes[lhs] = v
 
                 # 3. 批量写 (写规则: 实际值不等于目标才写, 避免被组态覆盖时永远不重试)

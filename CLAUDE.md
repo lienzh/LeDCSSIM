@@ -329,6 +329,8 @@ await client.write_value("ns=0;s=DPU3013.HW.AI010605.PV", 600.0)
 await client.write_value("ns=0;s=DPU3044.HW.DI010204.PV", True)
 ```
 
+**踩坑事务性经验**(2026-06-10):部分 DI 点 **read 返回 Boolean 但 write 只接受 Float**,直写 Boolean 报 `BadTypeMismatch`。已知实例:`DPU3005.HW.DI010402.PV`。`OPCClient.write_value` 已加 fallback:Boolean 失败时自动用 Float 重试 + 节点加入 `_FORCE_FLOAT_NODES` 缓存,下次直接走 Float 跳过 Boolean。**架构再变也保留这个 fallback** — NTVDPU 端的 read/write attribute schema 不一致是已知怪行为,不是我们的 bug。
+
 ### 8.3a SH 段(组态块端子)写入 ⚠️
 
 - `DPU.SH0xxx.<块名>.IN` / `.OUT` / `.PV` 是组态块端子,不是硬件通道

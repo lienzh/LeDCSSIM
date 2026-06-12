@@ -142,10 +142,35 @@ class OPCClient:
                     results.append(val)
         return results
 
+    # NTVDPU 怪点缓存: 某些 DI/AI 点 read 返回的 VariantType (常是 Boolean)
+    # 跟 write attribute schema (实际只接受 Float) 不一致, 直写报 BadTypeMismatch.
+    # 一旦命中, 该节点永久标记为"用 Float 写", 下次跳过 Boolean 直接 Float.
+    _FORCE_FLOAT_NODES: set = set()
+
+    @staticmethod
+    def _adapt_value(value: Any, vt: "ua.VariantType") -> Any:
+        """Python 值类型适配 NTVDPU 严格类型"""
+        if vt == ua.VariantType.Boolean and not isinstance(value, bool):
+            if isinstance(value, (int, float)):
+                return bool(value)
+        elif vt in (ua.VariantType.Float, ua.VariantType.Double):
+            if isinstance(value, (bool, int)):
+                return float(value)
+        elif vt in (ua.VariantType.SByte, ua.VariantType.Byte,
+                    ua.VariantType.Int16, ua.VariantType.UInt16,
+                    ua.VariantType.Int32, ua.VariantType.UInt32,
+                    ua.VariantType.Int64, ua.VariantType.UInt64):
+            if isinstance(value, (bool, float)):
+                return int(value)
+        return value
+
     async def write_value(self, node_id: str, value: Any,
                           variant_type: ua.VariantType = None):
         """
         写入单个节点值(自动 VariantType 检测 + Python 值类型适配)
+
+        遇到 BadTypeMismatch 自动 fallback 到 Float 重试 — NTVDPU 部分 DI 点的怪行为:
+        read 返回 Boolean, write 期望 Float. 命中即缓存, 下次直接 Float.
 
         Args:
             node_id: 节点标识
@@ -153,26 +178,26 @@ class OPCClient:
             variant_type: OPC UA 数据类型。为 None 时自动检测
         """
         node = self._get_node(node_id)
+        # 已知怪点 → 直接 Float, 跳过 Boolean
+        if variant_type is None and node_id in self._FORCE_FLOAT_NODES:
+            variant_type = ua.VariantType.Float
         if variant_type is None:
             dv = await node.read_data_value(raise_on_bad_status=False)
             variant_type = dv.Value.VariantType
-        # Python 值类型适配 NTVDPU 严格类型:
-        #   Boolean 节点 ← 数值 0/1: 转 True/False
-        #   Float/Double 节点 ← 整数 / bool: 转 float
-        #   整数节点 ← float: 转 int
-        if variant_type == ua.VariantType.Boolean and not isinstance(value, bool):
-            if isinstance(value, (int, float)):
-                value = bool(value)
-        elif variant_type in (ua.VariantType.Float, ua.VariantType.Double):
-            if isinstance(value, (bool, int)):
-                value = float(value)
-        elif variant_type in (ua.VariantType.SByte, ua.VariantType.Byte,
-                              ua.VariantType.Int16, ua.VariantType.UInt16,
-                              ua.VariantType.Int32, ua.VariantType.UInt32,
-                              ua.VariantType.Int64, ua.VariantType.UInt64):
-            if isinstance(value, (bool, float)):
-                value = int(value)
-        await node.write_value(ua.DataValue(ua.Variant(value, variant_type)))
+        adapted = self._adapt_value(value, variant_type)
+        try:
+            await node.write_value(ua.DataValue(ua.Variant(adapted, variant_type)))
+        except ua.uaerrors.BadTypeMismatch:
+            # NTVDPU read/write VariantType 不一致 — 用 Float 重试
+            float_val = self._adapt_value(value, ua.VariantType.Float)
+            try:
+                await node.write_value(ua.DataValue(ua.Variant(float_val, ua.VariantType.Float)))
+            except Exception:
+                raise   # Float 也不行就抛原异常类型
+            else:
+                # Float 写成功, 标记节点, 下次绕开 Boolean
+                self._FORCE_FLOAT_NODES.add(node_id)
+                logger.info(f"[NTVDPU quirk] {node_id} 用 Float 写成功 (Boolean 被拒), 已缓存")
 
     async def write_values(self, values: Dict[str, Any],
                            variant_types: Dict[str, ua.VariantType] = None):

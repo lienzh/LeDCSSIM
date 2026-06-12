@@ -529,6 +529,13 @@ def api_script_save():
     SCRIPT_PATH.write_text(content, encoding="utf-8")
     rt.log_event("save", f"💾 保存脚本 ({len(content)} 字节, {len(pairs)} 对)",
                  {"bytes": len(content), "pairs": len(pairs)})
+    # 保存(=编译): 自动清理过期 state — 新脚本不再引用的 LAG/RS/CCS key 直接剪掉,
+    # 让镜像下次保存不带历史残留
+    pruned = rt.prune_state_to_pairs(pairs)
+    prune_msg = ""
+    total_pruned = pruned["lag"] + pruned["rs"] + pruned["ccs"]
+    if total_pruned > 0:
+        prune_msg = f" · 🧹 清理过期 {total_pruned} 项"
     # OPC 循环在跑 → 自动在线下装 (0 断流, 不用点 ▶ 运行)
     hot_swap_msg = ""
     hot_swapped = False
@@ -539,9 +546,10 @@ def api_script_save():
             hot_swap_msg = f" · ♻ 在线下装 (0 断流)"
     return jsonify({
         "ok": True,
-        "msg": f"已保存 ({len(content)} 字节, {len(pairs)} 对赋值){hot_swap_msg}",
+        "msg": f"已保存 ({len(content)} 字节, {len(pairs)} 对赋值){hot_swap_msg}{prune_msg}",
         "pairs_count": len(pairs),
         "hot_swapped": hot_swapped,
+        "pruned": pruned,
     })
 
 
@@ -972,8 +980,33 @@ def api_script_state_save():
 
 @app.route("/api/script/state/restore", methods=["POST"])
 def api_script_state_restore():
-    """从镜像恢复状态"""
-    return jsonify(rt.restore_state_snapshot())
+    """从镜像恢复状态. body 里可选 {"path": "snapshot_YYYYMMDD_HHMMSS.json"} 从历史副本恢复"""
+    body = request.get_json(force=True, silent=True) or {}
+    return jsonify(rt.restore_state_snapshot(path=body.get("path")))
+
+
+@app.route("/api/script/state/backups")
+def api_script_state_backups():
+    """列出所有历史镜像副本"""
+    return jsonify({"items": rt.list_snapshot_backups()})
+
+
+@app.route("/api/script/state/backup/delete", methods=["POST"])
+def api_script_state_backup_delete():
+    """删除指定的历史镜像副本"""
+    body = request.get_json(force=True, silent=True) or {}
+    name = (body.get("path") or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name or not name.endswith(".json"):
+        return jsonify({"ok": False, "error": f"非法历史镜像名: {name!r}"}), 400
+    p = rt._SNAPSHOT_BAK_DIR / name
+    if not p.exists():
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    try:
+        p.unlink()
+        rt.log_event("snapshot", f"🗑 删除历史镜像 {name}")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/script/state/info")
@@ -1086,7 +1119,8 @@ def api_script_symbols():
             candidates = [c for c in candidates if "_" not in Path(c).stem
                           or Path(c).stem.startswith("DPU")]
         # SH 段正则: SH<图号>.<块名>.<端子>
-        SH_RE = _re.compile(r"^(SH\d+)\.([A-Z]+\d+)\.([A-Z]+)$")
+        # 块名允许字母/数字/下划线任意组合 (PROYR 纯字母, AALMZML 纯字母, PRO21120, X_VALVE 都得过)
+        SH_RE = _re.compile(r"^(SH\d+)\.([A-Z][A-Z0-9_]*)\.([A-Z][A-Z0-9_]*)$")
         for fn in candidates:
             dpu = _dpu_from_filename(Path(fn).stem)
             # (1) HW.XX0000.PV — 走 load_points (严格筛)
@@ -1375,7 +1409,7 @@ mark      { background: #ff8; padding: 0; }
 </header>
 <div class="hint">
   <b>快速</b>:<code>@关键词</code> 补全 · <code>Ctrl+G</code> 跳行 · <code>Ctrl+/</code> 注释 · <code>F1</code> 完整帮助
-  · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR</code>
+  · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR CCS_1000 STEAM_T</code>
 </div>
 <!-- ────── 第 1 行: 工作流 (编辑 → 状态准备 → 运行) ────── -->
 <div class="toolbar">
@@ -1473,8 +1507,15 @@ mark      { background: #ff8; padding: 0; }
       <label>类型
         <select id="fltCode" onchange="renderValsForced()" style="font-size:11px;padding:1px 3px;">
           <option value="">全部</option>
-          <option value="AI">AI</option><option value="AQ">AQ</option>
-          <option value="DI">DI</option><option value="DQ">DQ</option>
+          <optgroup label="硬件 IO">
+            <option value="AI">AI</option><option value="AQ">AQ</option>
+            <option value="DI">DI</option><option value="DQ">DQ</option>
+            <option value="TC">TC</option><option value="RT">RT</option>
+          </optgroup>
+          <optgroup label="自定义">
+            <option value="_ANALOG">自定义模拟量</option>
+            <option value="_SWITCH" disabled>自定义开关量 (预留)</option>
+          </optgroup>
         </select>
       </label>
       <label>角色
@@ -1779,7 +1820,8 @@ async function restartViewer() {
 
 // ===== 语法高亮 =====
 const FN_NAMES = ['RS_NOT','RS','NOT','AND','OR','ADD','SUB','MUL','DIV',
-                  'POW','SQRT','ABS','MAX','MIN','LIMIT','SEL','LAG','CHAR'];
+                  'POW','SQRT','ABS','MAX','MIN','LIMIT','SEL','LAG','CHAR',
+                  'CCS_1000','STEAM_T'];
 const FN_RE = new RegExp('\\b(' + FN_NAMES.join('|') + ')\\b(?=\\s*\\()', 'g');
 
 function escHtml2(s) {
@@ -1950,6 +1992,17 @@ let _valTimer = null;
 function scheduleValidate() {
   if (_valTimer) clearTimeout(_valTimer);
   _valTimer = setTimeout(() => { _valTimer = null; validateScript(); }, 600);
+}
+
+// 编辑时不再后台校验, 用户改完保存才校验 (类似编译)
+// 改了之后徽章先变灰说"未校验", 提醒用户下一步是保存
+function markValidateStale() {
+  const badge = document.getElementById('errBadge');
+  if (!badge) return;
+  badge.innerHTML = '<span style="background:#888;color:#fff;padding:1px 8px;border-radius:3px;font-weight:normal;" title="点击 [💾 保存] 或 [▶ 运行] 后校验">⏸ 未校验 (改后请保存)</span>';
+  badge.style.display = '';
+  badge.style.background = 'transparent';
+  badge.style.padding = '0';
 }
 
 // ===== 行号 + 光标位置 =====
@@ -2142,7 +2195,16 @@ async function saveScript() {
   // 在线下装就让用户看到 ♻ 标记 (区别于普通保存)
   const icon = d.ok ? (d.hot_swapped ? '♻' : '✓') : '✗';
   setStatus(d.ok ? `${icon} ${d.msg}` : `✗ ${d.error}`, d.ok ? 'ok' : 'err');
-  if (d.ok) { rebuildDescMap(); return; }
+  if (d.ok) {
+    rebuildDescMap();
+    validateScript();   // 保存成功 → 触发一次校验
+    // A: 镜像面板正打开 → 刷新内存 vs 磁盘对照 (后端已自动 prune 过期 state)
+    const sm = document.getElementById('snapmodal');
+    if (sm && sm.style.display && sm.style.display !== 'none') {
+      refreshSnapInfo();
+    }
+    return;
+  }
   // 解析错误 → 自动跳到错误行
   const m = (d.error || '').match(/第\s*(\d+)\s*行/);
   if (m) jumpToLine(parseInt(m[1], 10));
@@ -2156,6 +2218,7 @@ async function runIt() {
     body: JSON.stringify({content: c})});
   const sd = await sr.json();
   if (!sd.ok) { setStatus(`✗ 保存失败: ${sd.error}`, 'err'); return; }
+  validateScript();   // 保存通过 → 触发一次完整校验 (徽章从 "未校验" 翻成 "✓N 错 / ⚠N 警告" 真实结果)
   // 启动
   const r = await fetch('/api/script/run', {method: 'POST',
     headers: {'Content-Type': 'application/json'}, body: '{}'});
@@ -2280,6 +2343,51 @@ $Tmix(混合温度, 加权平均) = ADD(MUL($Vh_A, 200), MUL($Vc_A, 25)) / ($Vh_
           至少 2 个点(5 参数),参数总数必须是奇数。</td>
       <td class="ex">$flow = CHAR(AI_x, 0,0, 25,5, 50,50, 75,80, 100,100)</td></tr>
 </table>
+
+<h3>协调模型 — USC-OTBT 1000MW (3 入 3 出)</h3>
+<p>论文 Fan/Su/Wang/Lee 2021 (Energy 226:120425) 的完整 CCS 动态模型。
+   <b>实例化 → 读管脚</b>:工厂函数 <code>CCS_1000(...)</code> 返回一个模型实例,绑到 <code>$实例名</code>;
+   后续用 <code>$实例名.PST/.HM/.NE</code> 读 3 个输出管脚。参数文件:
+   <code>config/ccs_models/usc-otbt-1000mw.yaml</code>(后续加 660MW 等 preset 时新增 <code>CCS_660</code> 工厂即可,脚本不动)。</p>
+<table>
+  <tr><th>语法</th><th>含义</th></tr>
+  <tr><td class="fn">$inst = CCS_1000(uB, Dfw, ut)</td>
+      <td>实例化论文 1000MW 模型, 绑到 <code>$inst</code>。
+          <code>uB</code>=煤量指令(kg/s), <code>Dfw</code>=给水流量(kg/s), <code>ut</code>=调门开度(0~1)。
+          每周期推进一步, 同一周期内被多次赋值不会重复积分。</td></tr>
+  <tr><td class="fn">$inst.PST</td><td>主汽压力 (MPa)</td></tr>
+  <tr><td class="fn">$inst.HM</td><td>分离器焓 (kJ/kg)</td></tr>
+  <tr><td class="fn">$inst.NE</td><td>机组负荷 (MW)</td></tr>
+</table>
+<p>调用示例:</p>
+<pre># 1. 实例化 (1 次)
+$YQ3(协调模型) = CCS_1000(DPU3013.AQ_UB, DPU3013.AQ_DFW, DPU3013.AQ_UT)
+# 2. 读管脚 (任意次, 自由组合)
+DPU3013.AI_PST(主汽压力)  = $YQ3.PST
+DPU3013.AI_HM (分离器焓)  = $YQ3.HM
+DPU3013.AI_NE (机组负荷)  = $YQ3.NE</pre>
+<p><b>状态管理</b>:模型内部 4 个状态量(rB/pm/hm/Ne)+ 煤粉 τ=20s 延迟队列。
+   点【🗑 重置初值】或【🔥 清空状态】会按 yaml seed(600.9MW THA 工况)重置;启动后约 10 分钟收敛到当前输入对应的稳态。
+   <b>论文模型</b>静态参数 R²: k1=0.71、λ=0.88(残差较大),稳态 Ne 误差最大 6.6%(论文 Table 7)— 这是论文模型本身的精度,非实现 bug。</p>
+
+<h3>水蒸气热力性质 — STEAM_T</h3>
+<p>给焓 + 压力,计算水蒸气温度。后端走 IAPWS-IF97 工业标准,自动识别亚饱和水 / 过热蒸汽 / 超临界区。</p>
+<table>
+  <tr><th>函数</th><th>含义</th><th>入参 / 输出</th></tr>
+  <tr><td class="fn">STEAM_T(h, p)</td>
+      <td>水蒸气温度 (°C)</td>
+      <td><code>h</code>: 比焓 (kJ/kg, 范围 10~4500)<br>
+          <code>p</code>: 压力 (MPa, 范围 0.001~100)<br>
+          越界返 SkipCycle (诊断面板可查)</td></tr>
+</table>
+<p>调用示例:</p>
+<pre># 主蒸汽温度: 论文 THA 工况 (15.589 MPa, 3578 kJ/kg) → 600°C
+DPU3013.AI_Tst(主汽温度) = STEAM_T(DPU3013.AQ_HST, DPU3013.AQ_PST)
+# 给水温度: 跟焓压一起算 (跟 CCS 模型 hfw 配套)
+DPU3013.AI_Tfw(给水温度) = STEAM_T(DPU3013.AQ_HFW, DPU3013.AQ_PECO)
+# 跟协调模型搭: 用 $YQ3.HM 当焓输入算分离器温度
+$T_sep(分离器温度) = STEAM_T($YQ3.HM, $YQ3.PST)
+DPU3013.AI_TM = $T_sep</pre>
 
 <h2>3. 快捷键</h2>
 <table>
@@ -2893,9 +3001,69 @@ async function refreshSnapInfo() {
     html += `</tbody></table></div></details>`;
   }
 
+  // 历史副本 (每次保存自动留时间戳, 最多 30 个)
+  try {
+    const bkR = await fetch('/api/script/state/backups');
+    const bkData = await bkR.json();
+    const items = bkData.items || [];
+    html += `<details style="margin-top:10px" ${items.length ? 'open' : ''}>
+      <summary style="cursor:pointer;color:#048;font-weight:bold;font-size:12px;padding:4px 0">
+        ▼ 📚 历史副本 (${items.length} 份, 最多留 30)
+      </summary>`;
+    if (!items.length) {
+      html += `<div style="color:#888;padding:6px 4px">还没有历史副本 — 每次【💾 保存镜像】会在 <code>data/snapshot_backups/</code> 自动留一份带时戳的副本</div>`;
+    } else {
+      html += `<div style="max-height:200px;overflow:auto;border:1px solid #ddd;margin-top:4px">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:monospace">
+          <thead><tr style="background:#f5f5f5;position:sticky;top:0">
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">保存时间</th>
+            <th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ccc">文件名</th>
+            <th style="text-align:right;padding:3px 6px;width:60px;border-bottom:1px solid #ccc">大小</th>
+            <th style="text-align:center;padding:3px 6px;width:130px;border-bottom:1px solid #ccc">操作</th>
+          </tr></thead><tbody>`;
+      for (const it of items) {
+        const when = new Date(it.ts * 1000).toLocaleString('zh-CN');
+        const sz = it.size < 1024 ? `${it.size} B` : `${(it.size/1024).toFixed(1)} KB`;
+        html += `<tr style="border-bottom:1px dotted #eee">
+          <td style="padding:2px 6px">${when}</td>
+          <td style="padding:2px 6px;color:#666">${it.name}</td>
+          <td style="text-align:right;padding:2px 6px;color:#888">${sz}</td>
+          <td style="text-align:center;padding:2px 6px">
+            <button onclick="restoreBackup('${it.name}')" style="font-size:10px;padding:1px 6px;background:#06a;color:#fff;border:0;cursor:pointer" title="把这份历史镜像下载进内存">📤 恢复</button>
+            <button onclick="deleteBackup('${it.name}')" style="font-size:10px;padding:1px 6px;background:#999;color:#fff;border:0;cursor:pointer" title="删除这份历史副本">🗑</button>
+          </td>
+        </tr>`;
+      }
+      html += `</tbody></table></div>`;
+    }
+    html += `</details>`;
+  } catch(e) { /* 列历史失败不影响主视图 */ }
+
   box.innerHTML = html;
   restoreBtn.disabled = false; restoreBtn.style.opacity = 1;
   delBtn.disabled = false; delBtn.style.opacity = 1;
+}
+
+async function restoreBackup(name) {
+  if (!confirm(`恢复历史副本 "${name}" 到内存?\n\n会覆盖当前 RS/LAG/$var 内存. 跑起来后所有 LHS 强制重写一遍.`)) return;
+  setStatus('恢复历史镜像中...', 'run');
+  const r = await fetch('/api/script/state/restore', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path: name})});
+  const d = await r.json();
+  setStatus(d.ok ? `📤 已从 ${name} 恢复 (RS ${d.restored.rs}/LAG ${d.restored.lag}/$var ${d.restored.var})`
+                : `✗ ${d.error}`, d.ok ? 'ok' : 'err');
+  if (d.ok) refreshSnapInfo();
+}
+
+async function deleteBackup(name) {
+  if (!confirm(`删除历史副本 "${name}"?\n\n不影响主镜像 data/state_snapshot.json. 操作不可撤销.`)) return;
+  const r = await fetch('/api/script/state/backup/delete', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path: name})});
+  const d = await r.json();
+  setStatus(d.ok ? `🗑 已删除 ${name}` : `✗ ${d.error}`, d.ok ? 'ok' : 'err');
+  if (d.ok) refreshSnapInfo();
 }
 
 async function saveSnapshot() {
@@ -3277,9 +3445,19 @@ function renderVals() {
     if (typeof na === 'number' && typeof nb === 'number') return Math.abs(na - nb) > 0.01;
     return String(na) !== String(nb);
   }
+  // 分组 → 多 code 集合 (筛选 "自定义模拟量" = 任一 SH 段端子类型)
+  // 自定义开关量目前为空集; 后端有开关类组态块时往 _SWITCH 数组里加 (如 LOGIC/RS/SR 等)
+  const CODE_GROUPS = {
+    _ANALOG: ['IN', 'OUT', 'PV'],
+    _SWITCH: [],
+  };
   const filtered = _valRows.filter(r => {
     if (dpuSel && r.dpu !== dpuSel) return false;
-    if (codeSel && r.code !== codeSel) return false;
+    if (codeSel) {
+      const codes = CODE_GROUPS[codeSel];
+      if (codes) { if (!codes.includes(r.code)) return false; }
+      else if (r.code !== codeSel) return false;
+    }
     if (roleSel === 'diff') {
       if (!_isDiff(r.writeVal, r.readVal)) return false;
     } else if (roleSel && r.role !== roleSel) {
@@ -3450,7 +3628,8 @@ async function pollStatus() {
         dpu = '$中间'; code = 'VAR'; shortLabel = k;
       } else if ((m = k.match(/^ns=0;s=([A-Z]+\d+)\.HW\.([A-Z]+)(\d+)\.PV$/))) {
         dpu = m[1]; code = m[2]; shortLabel = `${dpu}.${m[2]}${m[3]}`;
-      } else if ((m = k.match(/^ns=0;s=([A-Z]+\d+)\.(SH\d+\.[A-Z]+\d+)\.([A-Z]+)$/))) {
+      } else if ((m = k.match(/^ns=0;s=([A-Z]+\d+)\.(SH\d+\.[A-Z][A-Z0-9_]*)\.([A-Z][A-Z0-9_]*)$/))) {
+        // 块名允许纯字母 (PROYR / AALMZML) / 带下划线, 跟后端 app.py:1089 同步放宽
         dpu = m[1]; code = m[3]; shortLabel = `${dpu}.${m[2]}.${m[3]}`;
       } else {
         continue;
@@ -3842,13 +4021,15 @@ function _bindHover() {
   // 中文输入法 (IME) composition 期间, input 事件值是拼音,不要 fuzzy
   let composing = false;
   ed.addEventListener('compositionstart', () => { composing = true; });
-  ed.addEventListener('compositionend',   () => { composing = false; scheduleAC(); scheduleLineNums(); scheduleHighlight(); scheduleValidate(); });
+  ed.addEventListener('compositionend',   () => { composing = false; scheduleAC(); scheduleLineNums(); scheduleHighlight(); markValidateStale(); });
   ed.addEventListener('input',  (e) => {
     if (composing) return;
     scheduleAC();          // fuzzy 50ms 后
     scheduleLineNums();    // 行号+光标 80ms 后
     scheduleHighlight();   // 高亮 80ms 后
-    scheduleValidate();    // 组态错误标注 600ms 后
+    markValidateStale();   // 校验徽章变灰 "未校验 - 保存后看", 不发后端
+    // 不再 scheduleValidate() — 整脚本逐行 parse + HTTP 在大脚本上明显卡顿,
+    // 改为 [保存] / [运行] 时统一校验 (用户主动触发, 类似编译)
   });
   // scroll 事件高频, 只同步行号 + 高亮层 scrollTop, 不做任何重算
   ed.addEventListener('scroll', () => {

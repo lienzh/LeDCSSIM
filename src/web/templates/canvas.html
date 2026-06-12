@@ -126,14 +126,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 初始化新模块
   CrossPageNav.init(engine);
   LogicChecker.init(engine);
-  ConnRecommend.init(engine);
-
   // 画布变更时更新标题栏脏标记
   engine._onCanvasChanged = () => updateDirtyIndicator();
 
   // 快捷键
   document.addEventListener('keydown', (e) => {
-    // 忽略输入框中的按键
+    // 方向键微调：不受输入框守卫限制（有选中节点时优先移动）
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key) && !simRunning) {
+      const step = e.shiftKey ? 1 : 5;
+      const map = { ArrowUp: [0,-step], ArrowDown: [0,step], ArrowLeft: [-step,0], ArrowRight: [step,0] };
+      if (engine.moveSelected(map[e.key][0], map[e.key][1])) {
+        e.preventDefault();
+        clearTimeout(window._arrowDirtyTimer);
+        window._arrowDirtyTimer = setTimeout(updateDirtyIndicator, 300);
+        return;  // 成功移动，消费事件
+      }
+    }
+
+    // 输入框守卫（保护后续快捷键不在输入框中误触发）
     const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
@@ -150,15 +160,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateDirtyIndicator();
     }
     if (e.key === 'Delete' && !simRunning) { engine.removeSelected(); }
-    // 方向键微调节点位置：默认 5px，Shift 按 1px 精调
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key) && !simRunning) {
-      const step = e.shiftKey ? 1 : 5;
-      const map = { ArrowUp: [0,-step], ArrowDown: [0,step], ArrowLeft: [-step,0], ArrowRight: [step,0] };
-      if (engine.moveSelected(map[e.key][0], map[e.key][1])) {
-        e.preventDefault();
-        updateDirtyIndicator();
-      }
-    }
   });
 
   // 拖放

@@ -196,15 +196,37 @@
       var textVal = data.text !== undefined ? data.text : '注释';
       var fsVal = data.fontSize !== undefined ? data.fontSize : 12;
       var colVal = data.color || '#64748b';
+      var _commentColors = [
+        '#000000','#333333','#64748b','#6b7280','#9ca3af',
+        '#dc2626','#ef4444','#f97316','#f59e0b','#eab308',
+        '#22c55e','#16a34a','#10b981','#14b8a6','#06b6d4',
+        '#3b82f6','#2563eb','#6366f1','#8b5cf6','#ec4899'
+      ];
       body += '<div class="ce-modal-field">';
       body += '<label>注释内容</label>';
       body += '<textarea data-key="text" rows="4" style="width:100%;resize:vertical;font-size:12px;font-family:inherit;padding:4px 6px;border:1px solid #d4d4d4;">' + esc(textVal) + '</textarea>';
       body += '</div>';
-      body += '<div class="ce-modal-field" style="display:flex;gap:10px;">';
+      var boldVal = data.bold ? true : false;
+      var italicVal = data.italic ? true : false;
+      body += '<input type="hidden" data-key="color" value="' + esc(colVal) + '">';
+      body += '<input type="hidden" data-key="bold" value="' + (boldVal ? '1' : '0') + '">';
+      body += '<input type="hidden" data-key="italic" value="' + (italicVal ? '1' : '0') + '">';
+      body += '<div class="ce-modal-field" style="display:flex;gap:8px;align-items:end;">';
       body += '<div style="flex:1;"><label>字号(px)</label>';
       body += '<input type="number" value="' + esc(String(fsVal)) + '" data-key="fontSize" min="8" max="48" step="1"></div>';
-      body += '<div style="flex:1;"><label>颜色</label>';
-      body += '<input type="color" value="' + esc(colVal) + '" data-key="color" style="width:100%;height:28px;padding:0;border:1px solid #d4d4d4;cursor:pointer;"></div>';
+      body += '<div style="display:flex;gap:4px;">';
+      body += '<button type="button" class="ce-style-toggle' + (boldVal ? ' active' : '') + '" data-style-key="bold" title="加粗"><b>B</b></button>';
+      body += '<button type="button" class="ce-style-toggle' + (italicVal ? ' active' : '') + '" data-style-key="italic" title="斜体"><i>I</i></button>';
+      body += '</div>';
+      body += '</div>';
+      body += '<div class="ce-modal-field">';
+      body += '<label>颜色</label>';
+      body += '<div class="ce-color-grid">';
+      _commentColors.forEach(function (c) {
+        var sel = (c.toLowerCase() === colVal.toLowerCase()) ? ' ce-color-sel' : '';
+        body += '<span class="ce-color-swatch' + sel + '" data-color="' + c + '" style="background:' + c + '"></span>';
+      });
+      body += '</div>';
       body += '</div>';
     } else if (blockId === 'input' || blockId === 'output') {
       body += '<div class="ce-modal-field">';
@@ -218,9 +240,12 @@
         body += '</div>';
       }
     }
-    if (params.length > 0) {
+    // comment 块的 text/fontSize/color 已在上方自定义表单中处理，跳过重复
+    var _commentHandled = { text: 1, fontSize: 1, color: 1, bold: 1, italic: 1 };
+    var filteredParams = (blockId === 'comment') ? params.filter(function (p) { return !_commentHandled[p.key]; }) : params;
+    if (filteredParams.length > 0) {
       body += '<div class="ce-modal-section-title">参数</div>';
-      params.forEach(function (p) {
+      filteredParams.forEach(function (p) {
         var val = data[p.key] !== undefined ? data[p.key] : (p.default !== undefined ? p.default : '');
         body += '<div class="ce-modal-field">';
         body += '<label>' + esc(p.label || p.key) + '</label>';
@@ -231,8 +256,49 @@
         body += '</div>';
       });
     }
+    // ── 功能描述 ──
     if (blockDef && blockDef.description) {
-      body += '<div class="ce-modal-desc">' + esc(blockDef.description) + '</div>';
+      body += '<details class="ce-detail-section" open>';
+      body += '<summary class="ce-detail-summary">功能描述</summary>';
+      body += '<div class="ce-detail-content">' + esc(blockDef.description) + '</div>';
+      body += '</details>';
+    }
+
+    // ── 管脚说明 ──
+    if (blockDef && blockDef.pins) {
+      body += '<details class="ce-detail-section">';
+      body += '<summary class="ce-detail-summary">管脚说明</summary>';
+      body += '<table class="ce-pin-table"><thead><tr><th>记号</th><th>名称</th><th>数据类别</th></tr></thead><tbody>';
+      if (blockDef.pins.inputs) {
+        blockDef.pins.inputs.forEach(function (pin) {
+          var tc = pin.type === 'digital' ? '开关量' : pin.type === 'short' ? '整数(字)' : '模拟量';
+          body += '<tr><td>' + esc(pin.sym) + '</td><td>' + esc(pin.name) + '</td><td>' + esc(tc) + '</td></tr>';
+        });
+      }
+      if (blockDef.pins.outputs) {
+        blockDef.pins.outputs.forEach(function (pin) {
+          var tc = pin.type === 'digital' ? '开关量' : pin.type === 'short' ? '整数(字)' : '模拟量';
+          body += '<tr><td>' + esc(pin.sym) + '</td><td>' + esc(pin.name) + '</td><td>' + esc(tc) + '</td></tr>';
+        });
+      }
+      body += '</tbody></table>';
+      body += '</details>';
+    }
+
+    // ── 处理算法 ──
+    if (blockDef && blockDef.algorithm) {
+      body += '<details class="ce-detail-section">';
+      body += '<summary class="ce-detail-summary">处理算法</summary>';
+      body += '<pre class="ce-algo-pre">' + esc(blockDef.algorithm) + '</pre>';
+      body += '</details>';
+    }
+
+    // ── 使用注意事项 ──
+    if (blockDef && blockDef.notes) {
+      body += '<details class="ce-detail-section">';
+      body += '<summary class="ce-detail-summary">使用注意事项</summary>';
+      body += '<div class="ce-detail-content ce-notes-content">' + esc(blockDef.notes) + '</div>';
+      body += '</details>';
     }
 
     // 底部
@@ -279,6 +345,12 @@
     this._editor.reroute_curvature = 0;
     this._editor.start();
 
+    // 拦截左键在空白画布上的拖拽（改为框选，平移用中键）
+    this._patchCanvasDrag();
+
+    // 单节点拖拽时的对齐辅助线
+    this._patchSingleNodeDragAlign();
+
     // Manhattan 直角折线：覆写 Drawflow 的 createCurvature 方法
     this._patchManhattanRouting();
 
@@ -319,6 +391,128 @@
 
   /* ── 内部方法 ──────────────────────────────────────── */
 
+  /**
+   * 禁止左键拖拽画布 + 中键平移
+   * Drawflow 的 mousedown listener 是 start() 时用 .bind() 绑定的，无法替换，
+   * 因此在它执行完后立即重置 editor_selected 来取消画布拖拽。
+   * 框选逻辑在 enableBoxSelect 中，mousedown 注册在同一元素，晚于 Drawflow 注册，
+   * 因此能在 Drawflow 设置 editor_selected=true 之后将其重置为 false。
+   */
+  CanvasEngine.prototype._patchCanvasDrag = function () {
+    var self = this;
+    var editor = this._editor;
+    var container = this._container;
+
+    // 中键平移
+    var panning = false;
+    var panStartX = 0, panStartY = 0;
+    var canvasStartX = 0, canvasStartY = 0;
+
+    container.addEventListener('mousedown', function (e) {
+      if (e.button === 1) { // 中键
+        e.preventDefault();
+        panning = true;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        canvasStartX = editor.canvas_x || 0;
+        canvasStartY = editor.canvas_y || 0;
+        container.style.cursor = 'grabbing';
+      }
+    });
+
+    document.addEventListener('mousemove', function (e) {
+      if (!panning) return;
+      var dx = e.clientX - panStartX;
+      var dy = e.clientY - panStartY;
+      editor.canvas_x = canvasStartX + dx;
+      editor.canvas_y = canvasStartY + dy;
+      var precanvas = container.querySelector('.drawflow');
+      if (precanvas) {
+        precanvas.style.transform =
+          'translate(' + editor.canvas_x + 'px, ' + editor.canvas_y + 'px) scale(' + (editor.zoom || 1) + ')';
+      }
+    });
+
+    document.addEventListener('mouseup', function (e) {
+      if (e.button === 1 && panning) {
+        panning = false;
+        container.style.cursor = '';
+        self._updateGrid();
+      }
+    });
+
+    // 禁用中键默认行为（自动滚动）
+    container.addEventListener('auxclick', function (e) {
+      if (e.button === 1) e.preventDefault();
+    });
+  };
+
+  /**
+   * 单节点拖拽时对齐辅助线
+   * nodeSelected 时缓存参考边，mousemove 时纯算术吸附
+   */
+  CanvasEngine.prototype._patchSingleNodeDragAlign = function () {
+    var self = this;
+    var editor = this._editor;
+    var singleDragInit = null;
+
+    // 选中节点 → 缓存参考边（从 DOM 读真实位置，避免 Drawflow pos_x bug 残留）
+    editor.on('nodeSelected', function (nodeId) {
+      try {
+        var dfNode = editor.getNodeFromId(nodeId);
+        if (dfNode) {
+          var el = self._container.querySelector('#node-' + nodeId);
+          var posX = el ? el.offsetLeft : dfNode.pos_x;
+          var posY = el ? el.offsetTop : dfNode.pos_y;
+          singleDragInit = { id: nodeId, x: posX, y: posY };
+          var initPos = {};
+          initPos[nodeId] = { x: posX, y: posY };
+          self._beginSnapSession([nodeId], initPos);
+        }
+      } catch (e) { singleDragInit = null; }
+    });
+
+    editor.on('nodeUnselected', function () {
+      singleDragInit = null;
+      self._hideGuides();
+    });
+
+    // mousemove：从 DOM 读真实位置（绕过 Drawflow 0.0.59 pos_x double-subtraction bug）
+    this._container.addEventListener('mousemove', function () {
+      if (!editor.drag || !singleDragInit) return;
+      if (self._selectedNodes && self._selectedNodes.length > 1) return;
+
+      var nid = singleDragInit.id;
+      var dfNode = editor.getNodeFromId(nid);
+      if (!dfNode) return;
+
+      // 从 DOM 读取真实位置，而非 Drawflow 可能错误的 pos_x/pos_y
+      var el = self._container.querySelector('#node-' + nid);
+      var actualX = el ? el.offsetLeft : dfNode.pos_x;
+      var actualY = el ? el.offsetTop : dfNode.pos_y;
+
+      var proposedDx = actualX - singleDragInit.x;
+      var proposedDy = actualY - singleDragInit.y;
+      var snapped = self._snapAlign(proposedDx, proposedDy);
+
+      if (snapped.dx !== proposedDx || snapped.dy !== proposedDy) {
+        var newX = singleDragInit.x + snapped.dx;
+        var newY = singleDragInit.y + snapped.dy;
+        dfNode.pos_x = newX;
+        dfNode.pos_y = newY;
+        if (el) {
+          el.style.left = newX + 'px';
+          el.style.top = newY + 'px';
+        }
+        editor.updateConnectionNodes('node-' + nid);
+      }
+    });
+
+    editor.on('nodeMoved', function () {
+      self._hideGuides();
+    });
+  };
+
   CanvasEngine.prototype._applyGrid = function () {
     this._container.classList.remove('grid-dots', 'grid-lines', 'grid-none');
     this._container.classList.add('grid-' + this._gridType);
@@ -335,12 +529,14 @@
 
     // 节点选中/取消选中
     editor.on('nodeSelected', function (nodeId) {
+      self._lastSelectedNodeId = parseInt(nodeId, 10) || null;
       if (self._onNodeSelected) {
         self._onNodeSelected(nodeId, self.getNodeData(nodeId));
       }
     });
 
     editor.on('nodeUnselected', function () {
+      self._lastSelectedNodeId = null;
       if (self._onNodeDeselected) {
         self._onNodeDeselected();
       }
@@ -364,22 +560,14 @@
       });
     });
 
-    // Fix 6: 节点拖拽释放 → snap to 20px 网格
+    // 节点拖拽释放：修正 Drawflow 0.0.59 的 pos_x/pos_y double-subtraction bug
     editor.on('nodeMoved', function (nodeId) {
       try {
         var dfNode = editor.getNodeFromId(nodeId);
-        if (!dfNode) return;
-        var sx = Math.round(dfNode.pos_x / 20) * 20;
-        var sy = Math.round(dfNode.pos_y / 20) * 20;
-        if (sx !== dfNode.pos_x || sy !== dfNode.pos_y) {
-          var el = self._container.querySelector('#node-' + nodeId);
-          if (el) {
-            el.style.left = sx + 'px';
-            el.style.top = sy + 'px';
-          }
-          dfNode.pos_x = sx;
-          dfNode.pos_y = sy;
-          editor.updateConnectionNodes('node-' + nodeId);
+        var el = self._container.querySelector('#node-' + nodeId);
+        if (dfNode && el) {
+          dfNode.pos_x = el.offsetLeft;
+          dfNode.pos_y = el.offsetTop;
         }
       } catch (e) {}
     });
@@ -625,9 +813,47 @@
    * 删除当前选中的节点
    */
   CanvasEngine.prototype.removeSelected = function () {
+    var self = this;
+
+    // 优先处理多选
+    if ((this._selectedNodes && this._selectedNodes.length > 0) ||
+        (this._selectedConnections && this._selectedConnections.length > 0)) {
+      // 删除多选连线
+      if (this._selectedConnections) {
+        this._selectedConnections.forEach(function (svgEl) {
+          // 从 class 提取连线信息
+          var classes = svgEl.getAttribute('class') || '';
+          var outMatch = classes.match(/node_out_node-(\d+)/);
+          var inMatch = classes.match(/node_in_node-(\d+)/);
+          var ocMatch = classes.match(/output_(\d+)/);  // output_1
+          var icMatch = classes.match(/input_(\d+)/);    // input_1
+          if (outMatch && inMatch && ocMatch && icMatch) {
+            try {
+              self._editor.removeSingleConnection(
+                parseInt(outMatch[1]), parseInt(inMatch[1]),
+                'output_' + ocMatch[1], 'input_' + icMatch[1]
+              );
+            } catch (e) {}
+          }
+        });
+      }
+      // 删除多选节点
+      if (this._selectedNodes) {
+        this._selectedNodes.forEach(function (nodeId) {
+          try {
+            self._editor.removeNodeId('node-' + nodeId);
+            delete self._nodeBlockMap[nodeId];
+            delete self._nodeDataMap[nodeId];
+          } catch (e) {}
+        });
+      }
+      this.clearSelection();
+      return;
+    }
+
+    // 单选节点
     var sel = this._editor.node_selected;
     if (sel) {
-      // sel 是 DOM 元素，提取 ID
       var idStr = sel.id; // "node-3"
       if (idStr) {
         var nodeId = parseInt(idStr.replace('node-', ''), 10);
@@ -720,8 +946,11 @@
       var text = data.text || data.name || '注释';
       var fontSize = parseNumSafe(data.fontSize, 12);
       var color = data.color || '#64748b';
+      var styleStr = 'font-size:' + fontSize + 'px;color:' + esc(color);
+      if (data.bold && data.bold !== '0') styleStr += ';font-weight:700';
+      if (data.italic && data.italic !== '0') styleStr += ';font-style:italic';
       html = '<div class="sama-node sama-comment">';
-      html += '<span class="sama-comment-text" style="font-size:' + fontSize + 'px;color:' + esc(color) + '">' + esc(text) + '</span>';
+      html += '<span class="sama-comment-text" style="' + styleStr + '">' + esc(text) + '</span>';
       html += '</div>';
 
     } else if (isIO) {
@@ -756,15 +985,19 @@
       // 功能块 — 紧凑黑白 SAMA 布局
       var instanceName = data._blockName || data.name || blockDef.name || typeId;
 
-      // 端口名生成
+      // 端口名生成 — 优先从 pins 定义取 sym
       var numIn = typeof blockDef.inputs === 'number' ? blockDef.inputs : (Array.isArray(blockDef.inputs) ? blockDef.inputs.length : 0);
       var numOut = typeof blockDef.outputs === 'number' ? blockDef.outputs : (Array.isArray(blockDef.outputs) ? blockDef.outputs.length : 0);
       var inNames = [];
       var outNames = [];
-      if (Array.isArray(blockDef.inputs)) {
+      if (blockDef.pins && Array.isArray(blockDef.pins.inputs)) {
+        inNames = blockDef.pins.inputs.map(function (p) { return p.sym || p.name || ''; });
+      } else if (Array.isArray(blockDef.inputs)) {
         inNames = blockDef.inputs.map(function (p) { return typeof p === 'string' ? p : (p.name || ''); });
       }
-      if (Array.isArray(blockDef.outputs)) {
+      if (blockDef.pins && Array.isArray(blockDef.pins.outputs)) {
+        outNames = blockDef.pins.outputs.map(function (p) { return p.sym || p.name || ''; });
+      } else if (Array.isArray(blockDef.outputs)) {
         outNames = blockDef.outputs.map(function (p) { return typeof p === 'string' ? p : (p.name || ''); });
       }
       for (var ii = inNames.length; ii < numIn; ii++) { inNames.push(numIn === 1 ? 'IN' : 'IN' + (ii + 1)); }
@@ -847,7 +1080,10 @@
           if (data.meta.blockDefs) {
             var self = this;
             Object.keys(data.meta.blockDefs).forEach(function (k) {
-              self._blockDefs[k] = data.meta.blockDefs[k];
+              // 仅补充尚未从 API 注册的块，API 定义优先（含最新 pins/algorithm/notes）
+              if (!self._blockDefs[k]) {
+                self._blockDefs[k] = data.meta.blockDefs[k];
+              }
             });
           }
           this._nodeBlockMap = data.meta.nodeBlockMap || {};
@@ -1723,6 +1959,25 @@
     modal.innerHTML = html;
     modal.classList.add('active');
 
+    // 颜色色板点击
+    modal.querySelectorAll('.ce-color-swatch').forEach(function (sw) {
+      sw.addEventListener('click', function () {
+        modal.querySelectorAll('.ce-color-swatch').forEach(function (s) { s.classList.remove('ce-color-sel'); });
+        sw.classList.add('ce-color-sel');
+        var hiddenInput = modal.querySelector('input[data-key="color"]');
+        if (hiddenInput) hiddenInput.value = sw.getAttribute('data-color');
+      });
+    });
+    // 加粗/斜体切换
+    modal.querySelectorAll('.ce-style-toggle').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        btn.classList.toggle('active');
+        var sk = btn.getAttribute('data-style-key');
+        var hi = modal.querySelector('input[data-key="' + sk + '"]');
+        if (hi) hi.value = btn.classList.contains('active') ? '1' : '0';
+      });
+    });
+
     var self = this;
 
     modal.querySelectorAll('[data-close]').forEach(function (btn) {
@@ -1755,7 +2010,7 @@
     });
 
     var firstInput = modal.querySelector('.ce-modal-body input');
-    if (firstInput) setTimeout(function () { firstInput.focus(); firstInput.select(); }, 50);
+    if (firstInput) setTimeout(function () { firstInput.focus(); }, 50);
   };
 
   /** 关闭参数编辑弹窗 */
@@ -1806,6 +2061,25 @@
 
     panel.innerHTML = html;
 
+    // 颜色色板点击
+    panel.querySelectorAll('.ce-color-swatch').forEach(function (sw) {
+      sw.addEventListener('click', function () {
+        panel.querySelectorAll('.ce-color-swatch').forEach(function (s) { s.classList.remove('ce-color-sel'); });
+        sw.classList.add('ce-color-sel');
+        var hiddenInput = panel.querySelector('input[data-key="color"]');
+        if (hiddenInput) hiddenInput.value = sw.getAttribute('data-color');
+      });
+    });
+    // 加粗/斜体切换
+    panel.querySelectorAll('.ce-style-toggle').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        btn.classList.toggle('active');
+        var sk = btn.getAttribute('data-style-key');
+        var hi = panel.querySelector('input[data-key="' + sk + '"]');
+        if (hi) hi.value = btn.classList.contains('active') ? '1' : '0';
+      });
+    });
+
     // 展开面板
     requestAnimationFrame(function () {
       panel.classList.add('open');
@@ -1841,8 +2115,7 @@
     };
     document.addEventListener('keydown', this._sidePanelKeyHandler);
 
-    var firstInput = panel.querySelector('.ce-side-body input');
-    if (firstInput) setTimeout(function () { firstInput.focus(); firstInput.select(); }, 250);
+    // 不自动聚焦参数输入框，避免误操作
 
     // 异步填充关联页面
     if (typeof CrossPageNav !== 'undefined' && CrossPageNav.getRelatedInfo) {
@@ -2101,12 +2374,15 @@
     if (this._selectedNodes && this._selectedNodes.length > 0) {
       nodeIds = this._selectedNodes.slice();
     } else {
-      // 单选
+      // 单选：优先用 Drawflow 的 node_selected，退而用缓存 ID
       var sel = this._editor.node_selected;
+      var nid = null;
       if (sel) {
-        var nid = parseInt(sel.id.replace('node-', ''), 10);
-        if (!isNaN(nid)) nodeIds.push(nid);
+        nid = parseInt(sel.id.replace('node-', ''), 10);
+      } else if (this._lastSelectedNodeId) {
+        nid = this._lastSelectedNodeId;
       }
+      if (nid && !isNaN(nid)) nodeIds.push(nid);
     }
     if (nodeIds.length === 0) return false;
 
@@ -2127,10 +2403,14 @@
       } catch (e) {}
     });
 
-    // 推送历史记录
-    this._pushHistory();
-    this._redoStack = [];
-    if (this._onCanvasChanged) this._onCanvasChanged('nodeMoved');
+    // 防抖推送历史：连续方向键操作结束后才推一次快照
+    var self2 = this;
+    if (this._moveDebounce) clearTimeout(this._moveDebounce);
+    this._moveDebounce = setTimeout(function () {
+      self2._pushHistory();
+      self2._redoStack = [];
+      if (self2._onCanvasChanged) self2._onCanvasChanged('nodeMoved');
+    }, 300);
     return true;
   };
 
@@ -2258,15 +2538,122 @@
 
 
   /* ═══════════════════════════════════════════════════════════
+     端口对齐辅助线（Port Alignment Guides）
+     拖拽节点时，输入/输出端口中心与其他节点端口对齐时显示参考线并吸附，
+     使连线保持水平直线。
+     ─ 性能关键：drag start 时缓存所有端口坐标，mousemove 中零 DOM 读取
+     ═══════════════════════════════════════════════════════════ */
+
+  var SNAP_THRESHOLD = 5; // 吸附阈值（画布逻辑像素）
+
+  /**
+   * 从节点 DOM 读取所有端口的中心 Y 偏移（相对节点 pos_y）
+   * @returns {number[]}  端口中心 Y 偏移量数组
+   */
+  function getPortYOffsets(nodeEl) {
+    var offsets = [];
+    var ports = nodeEl.querySelectorAll('.input, .output');
+    for (var i = 0; i < ports.length; i++) {
+      offsets.push(ports[i].offsetTop + 10); // 10 = 20px port / 2
+    }
+    return offsets;
+  }
+
+  /**
+   * 拖拽开始时调用：缓存所有参考节点端口的绝对 Y 坐标 + 拖拽节点端口偏移
+   */
+  CanvasEngine.prototype._beginSnapSession = function (dragIds, initPositions) {
+    var excludeSet = {};
+    for (var i = 0; i < dragIds.length; i++) excludeSet[dragIds[i]] = true;
+
+    // 收集参考节点的端口绝对 Y
+    var refYs = [];
+    var nodes = this._container.querySelectorAll('.drawflow-node');
+    var self = this;
+    nodes.forEach(function (el) {
+      var nid = parseInt(el.id.replace('node-', ''), 10);
+      if (isNaN(nid) || excludeSet[nid]) return;
+      try {
+        var dfNode = self._editor.getNodeFromId(nid);
+        if (!dfNode) return;
+        var offsets = getPortYOffsets(el);
+        for (var j = 0; j < offsets.length; j++) {
+          refYs.push(dfNode.pos_y + offsets[j]);
+        }
+      } catch (e) {}
+    });
+
+    // 收集拖拽组中每个节点的端口 Y 偏移（相对节点 pos_y）
+    var dragPortOffsets = {}; // nid -> number[]
+    dragIds.forEach(function (nid) {
+      var el = self._container.querySelector('#node-' + nid);
+      if (el) dragPortOffsets[nid] = getPortYOffsets(el);
+    });
+
+    this._snapCache = {
+      refYs: refYs,
+      dragIds: dragIds,
+      dragPortOffsets: dragPortOffsets,
+      initPositions: initPositions
+    };
+  };
+
+  /**
+   * 每帧调用（纯算术，无 DOM 读取）
+   * 只做 Y 轴吸附（让连线水平对齐）
+   */
+  CanvasEngine.prototype._snapAlign = function (proposedDx, proposedDy) {
+    var c = this._snapCache;
+    if (!c || c.refYs.length === 0) return { dx: proposedDx, dy: proposedDy };
+
+    // 收集拖拽组所有端口的当前绝对 Y
+    var bestDy = 0, bestDist = SNAP_THRESHOLD + 1, snapY = 0;
+
+    for (var i = 0; i < c.dragIds.length; i++) {
+      var nid = c.dragIds[i];
+      var init = c.initPositions[nid];
+      var offsets = c.dragPortOffsets[nid];
+      if (!init || !offsets) continue;
+      var nodeY = init.y + proposedDy;
+
+      for (var p = 0; p < offsets.length; p++) {
+        var portY = nodeY + offsets[p];
+        for (var r = 0, len = c.refYs.length; r < len; r++) {
+          var d = Math.abs(portY - c.refYs[r]);
+          if (d < bestDist) {
+            bestDist = d;
+            bestDy = c.refYs[r] - portY;
+            snapY = c.refYs[r];
+          }
+        }
+      }
+    }
+
+    var finalDy = proposedDy;
+    if (bestDist <= SNAP_THRESHOLD) {
+      finalDy = proposedDy + bestDy;
+    }
+    return { dx: proposedDx, dy: finalDy };
+  };
+
+  /** 清除吸附缓存 */
+  CanvasEngine.prototype._hideGuides = function () {
+    this._snapCache = null;
+  };
+
+
+  /* ═══════════════════════════════════════════════════════════
      框选 & 封装
      ═══════════════════════════════════════════════════════════ */
 
   /**
-   * 启用框选功能（Shift+拖拽）
+   * 启用框选功能（左键拖拽空白区域）
+   * 选中框内的功能块和连线
    */
   CanvasEngine.prototype.enableBoxSelect = function () {
     var self = this;
-    this._selectedNodes = [];   // 多选节点 ID 列表
+    this._selectedNodes = [];        // 多选节点 ID 列表
+    this._selectedConnections = [];  // 多选连线 [{output_id, input_id, output_class, input_class}]
     this._boxSelecting = false;
 
     // 创建框选矩形
@@ -2277,10 +2664,28 @@
 
     var startX, startY;
 
+    // 判断是否点击在空白画布上
+    function isCanvasBackground(target) {
+      if (target.closest('.drawflow-node')) return false;
+      if (target.closest('svg.connection')) return false;
+      var cls = target.classList;
+      if (!cls) return false;
+      return cls.contains('drawflow') || cls.contains('parent-drawflow') ||
+             cls.contains('canvas-area') || cls.contains('grid-dots') ||
+             cls.contains('grid-lines') || cls.contains('grid-none') ||
+             target.id === 'drawflow';
+    }
+
+    // 左键在空白区域 → 开始框选
+    // 此 listener 注册在 Drawflow 的 mousedown listener 之后（同一元素、同一 phase），
+    // 因此执行顺序：Drawflow 先设 editor_selected=true → 这里立即重置为 false
     this._container.addEventListener('mousedown', function (e) {
-      if (!e.shiftKey || self._mode !== 'config') return;
-      // 不在节点上才开始框选
-      if (e.target.closest('.drawflow-node')) return;
+      if (e.button !== 0 || self._mode !== 'config') return;
+      if (!isCanvasBackground(e.target)) return;
+
+      // 关键：Drawflow 已将 editor_selected 设为 true，立即重置以阻止画布平移
+      self._editor.editor_selected = false;
+
       e.preventDefault();
       self._boxSelecting = true;
       var rect = self._container.getBoundingClientRect();
@@ -2307,6 +2712,7 @@
     document.addEventListener('mouseup', function (e) {
       if (!self._boxSelecting) return;
       self._boxSelecting = false;
+      self._justBoxSelected = true;  // 标记：本轮 click 事件不清除选区
       box.style.display = 'none';
 
       // 计算框选范围（相对容器）
@@ -2317,18 +2723,18 @@
       if (bw < 5 && bh < 5) { self.clearSelection(); return; }
 
       var selRect = { left: bx, top: by, right: bx + bw, bottom: by + bh };
+      var cr = self._container.getBoundingClientRect();
       self._selectedNodes = [];
+      self._selectedConnections = [];
 
       // 遍历所有节点
       var nodes = self._container.querySelectorAll('.drawflow-node');
       nodes.forEach(function (nodeEl) {
         var nr = nodeEl.getBoundingClientRect();
-        var cr = self._container.getBoundingClientRect();
         var nl = nr.left - cr.left;
         var nt = nr.top - cr.top;
         var nRect = { left: nl, top: nt, right: nl + nr.width, bottom: nt + nr.height };
 
-        // 相交判定
         if (nRect.left < selRect.right && nRect.right > selRect.left &&
             nRect.top < selRect.bottom && nRect.bottom > selRect.top) {
           var nodeId = parseInt(nodeEl.id.replace('node-', ''), 10);
@@ -2339,16 +2745,124 @@
         }
       });
 
+      // 遍历所有连线
+      var conns = self._container.querySelectorAll('svg.connection');
+      conns.forEach(function (svgEl) {
+        var sr = svgEl.getBoundingClientRect();
+        var sl = sr.left - cr.left;
+        var st = sr.top - cr.top;
+        var sRect = { left: sl, top: st, right: sl + sr.width, bottom: st + sr.height };
+
+        if (sRect.left < selRect.right && sRect.right > selRect.left &&
+            sRect.top < selRect.bottom && sRect.bottom > selRect.top) {
+          svgEl.classList.add('ce-conn-selected');
+          var oid = svgEl.classList.toString().match(/node_in_node-(\d+)/);
+          var iid = svgEl.classList.toString().match(/node_out_node-(\d+)/);
+          self._selectedConnections.push(svgEl);
+        }
+      });
+
       // 触发回调
-      if (self._selectedNodes.length > 0 && self._onBoxSelected) {
+      if ((self._selectedNodes.length > 0 || self._selectedConnections.length > 0) && self._onBoxSelected) {
         self._onBoxSelected(self._selectedNodes);
       }
     });
 
-    // 点击空白区域清除多选
+    // 点击空白区域清除多选（跳过刚完成框选的那次 click）
     this._container.addEventListener('click', function (e) {
-      if (!e.target.closest('.drawflow-node') && !e.shiftKey) {
+      if (self._justBoxSelected) {
+        self._justBoxSelected = false;
+        return;
+      }
+      if (self._justGroupDragged) {
+        self._justGroupDragged = false;
+        return;
+      }
+      if (isCanvasBackground(e.target)) {
         self.clearSelection();
+      }
+    });
+
+    /* ── 多选拖拽移动 ──────────────────────────────────── */
+    var groupDragging = false;
+    var gdStartX = 0, gdStartY = 0;
+    var gdMoved = false;
+    // 记录每个被选中节点的初始位置
+    var gdInitPositions = {};
+
+    // mousedown：在被选中节点上按下左键 → 开始整组拖拽
+    this._container.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || self._mode !== 'config') return;
+      if (!self._selectedNodes || self._selectedNodes.length === 0) return;
+
+      var nodeEl = e.target.closest('.drawflow-node');
+      if (!nodeEl || !nodeEl.classList.contains('ce-selected')) return;
+
+      // 阻止 Drawflow 的单节点拖拽
+      e.stopPropagation();
+      e.preventDefault();
+
+      groupDragging = true;
+      gdMoved = false;
+      var zoom = self._editor.zoom || 1;
+      gdStartX = e.clientX;
+      gdStartY = e.clientY;
+
+      // 快照每个选中节点的初始坐标 + 缓存参考边
+      gdInitPositions = {};
+      self._selectedNodes.forEach(function (nid) {
+        try {
+          var dfNode = self._editor.getNodeFromId(nid);
+          if (dfNode) {
+            gdInitPositions[nid] = { x: dfNode.pos_x, y: dfNode.pos_y };
+          }
+        } catch (ex) {}
+      });
+      self._beginSnapSession(self._selectedNodes, gdInitPositions);
+    });
+
+    document.addEventListener('mousemove', function (e) {
+      if (!groupDragging) return;
+      var zoom = self._editor.zoom || 1;
+      var rawDx = (e.clientX - gdStartX) / zoom;
+      var rawDy = (e.clientY - gdStartY) / zoom;
+      if (Math.abs(rawDx) > 2 || Math.abs(rawDy) > 2) gdMoved = true;
+
+      // 对齐吸附（纯算术，零 DOM 读取）
+      var snapped = self._snapAlign(rawDx, rawDy);
+      var dx = snapped.dx;
+      var dy = snapped.dy;
+
+      self._selectedNodes.forEach(function (nid) {
+        var init = gdInitPositions[nid];
+        if (!init) return;
+        var newX = init.x + dx;
+        var newY = init.y + dy;
+        try {
+          var dfNode = self._editor.getNodeFromId(nid);
+          if (dfNode) {
+            dfNode.pos_x = newX;
+            dfNode.pos_y = newY;
+          }
+          var el = self._container.querySelector('#node-' + nid);
+          if (el) {
+            el.style.left = newX + 'px';
+            el.style.top = newY + 'px';
+          }
+          self._editor.updateConnectionNodes('node-' + nid);
+        } catch (ex) {}
+      });
+    });
+
+    document.addEventListener('mouseup', function (e) {
+      if (!groupDragging) return;
+      groupDragging = false;
+      self._hideGuides();
+      if (gdMoved) {
+        self._justGroupDragged = true;  // 防止后续 click 清除选区
+        self._pushHistory();
+        self._redoStack = [];
+        if (self._onCanvasChanged) self._onCanvasChanged('nodeMoved');
       }
     });
   };
@@ -2356,8 +2870,12 @@
   /** 清除多选 */
   CanvasEngine.prototype.clearSelection = function () {
     this._selectedNodes = [];
+    this._selectedConnections = [];
     this._container.querySelectorAll('.ce-selected').forEach(function (el) {
       el.classList.remove('ce-selected');
+    });
+    this._container.querySelectorAll('.ce-conn-selected').forEach(function (el) {
+      el.classList.remove('ce-conn-selected');
     });
     if (this._onBoxSelected) this._onBoxSelected([]);
   };
