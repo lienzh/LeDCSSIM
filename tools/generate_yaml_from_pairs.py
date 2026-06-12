@@ -23,8 +23,9 @@ import yaml
 from src import project as _prj
 from src.sim_engine.io_pairing_gen import generate
 
-SRC_DIR = str(_prj.paths().io_full_dir)    # 全量点表目录 (project.yaml: io_full_dir)
-_OUT_DIR = _prj.paths().generated_dir
+_paths = _prj.paths()
+SRC_DIR = str(_paths.io_full_dir)    # 全量点表目录 (project.yaml: io_full_dir)
+_OUT_DIR = _paths.generated_dir
 SUMMARY_MD = _OUT_DIR / "_OPC_配对组态清单.md"
 
 
@@ -119,21 +120,20 @@ def write_summary_md(pairs_a: list, pairs_d: list):
     lines.append("")
     lines.append("## 1. 输出文件")
     lines.append("")
-    gen = str(_OUT_DIR)
     lines.append("| 文件 | 用途 |")
     lines.append("|---|---|")
-    lines.append(f"| `{gen}/models.generated.yaml` | block 实例化清单 |")
-    lines.append(f"| `{gen}/connections.generated.yaml` | block 间连接(配对场景为空) |")
-    lines.append(f"| `{gen}/tagmap.generated.yaml` | OPC 测点映射 |")
+    lines.append(f"| `{_OUT_DIR.as_posix()}/models.generated.yaml` | block 实例化清单 |")
+    lines.append(f"| `{_OUT_DIR.as_posix()}/connections.generated.yaml` | block 间连接(配对场景为空) |")
+    lines.append(f"| `{_OUT_DIR.as_posix()}/tagmap.generated.yaml` | OPC 测点映射 |")
     lines.append("")
     lines.append("## 2. 用法")
     lines.append("")
     lines.append("```bash")
     lines.append("# 在线跑(需 NTVDPU 启动且 CSV 已导回工程生效)")
     lines.append("py -3.12 -m src.cli run --online --duration 30 \\")
-    lines.append(f"    --models {gen}/models.generated.yaml \\")
-    lines.append(f"    --connections {gen}/connections.generated.yaml \\")
-    lines.append(f"    --tagmap {gen}/tagmap.generated.yaml")
+    lines.append(f"    --models {_OUT_DIR.as_posix()}/models.generated.yaml \\")
+    lines.append(f"    --connections {_OUT_DIR.as_posix()}/connections.generated.yaml \\")
+    lines.append(f"    --tagmap {_OUT_DIR.as_posix()}/tagmap.generated.yaml")
     lines.append("```")
     lines.append("")
     lines.append("## 3. Analog 配对(FirstOrder)")
