@@ -31,25 +31,8 @@ from typing import List, Tuple, Optional, Union
 from urllib.parse import urlparse
 
 from src.opc_client.client import OPCClient
-from src.models.ccs_usc_otbt import CcsUscOtbt, load_params as _load_ccs_params
+from src.models.dsl_registry import MODEL_FACTORIES, get_factory_params
 from src.models.steam import steam_T_from_ph
-
-# CCS 协调模型参数 (论文 USC-OTBT 1000MW) — 首次调用时懒加载
-_CCS_PARAMS_PATH = Path("config/ccs_models/usc-otbt-1000mw.yaml")
-_CCS_PARAMS: Optional[dict] = None
-_CCS_PARAMS_ERR: Optional[str] = None
-
-def _get_ccs_params() -> Optional[dict]:
-    """懒加载 CCS 协调模型参数. 失败时缓存错误信息, 不反复读文件."""
-    global _CCS_PARAMS, _CCS_PARAMS_ERR
-    if _CCS_PARAMS is not None or _CCS_PARAMS_ERR is not None:
-        return _CCS_PARAMS
-    try:
-        _CCS_PARAMS = _load_ccs_params(str(_CCS_PARAMS_PATH))
-        return _CCS_PARAMS
-    except Exception as e:
-        _CCS_PARAMS_ERR = str(e)
-        return None
 
 
 # ---------- 显式事件日志 (用户视角时间线: 启停/重连/镜像/清状态等) ----------
@@ -760,8 +743,8 @@ def prune_state_to_pairs(pairs: list) -> dict:
             live.add(("LAG", _make_hashable(args)))
         elif fname in ("RS", "RS_NOT"):
             live.add(("RS", _make_hashable(args)))
-        elif fname == "CCS_1000":
-            live.add(("CCS_1000", _make_hashable(args)))
+        elif fname in MODEL_FACTORIES:
+            live.add((fname, _make_hashable(args)))
         for a in args:
             _walk(a)
 
@@ -908,15 +891,12 @@ FUNC_ARITY = {
     "LAG": 2,
     # 折线特性 CHAR(x, x0,y0, x1,y1, ..., xN,yN) — 变长, 至少 2 个点
     "CHAR": -1,
-    # USC-OTBT 协调模型工厂 (3 入, 论文 Fan 2021)
-    #   $YQ3 = CCS_1000(uB, Dfw, ut)   # 实例化 1000MW preset, 绑到 $YQ3
-    #   DPU.AI_PST = $YQ3.PST          # 读管脚: PST(MPa) / HM(kJ/kg) / NE(MW)
-    # 同一个 $YQ3 全周期只积分一次; 加 660MW preset 时新增 CCS_660 工厂即可
-    "CCS_1000": 3,
     # 水蒸气热力性质 — IAPWS-IF97 自动选区(亚饱和水/过热/超临界)
     #   STEAM_T(h, p) → T (°C)   入参: h kJ/kg, p MPa
     "STEAM_T": 2,
 }
+# 模型工厂 (src/models/dsl_registry.py 注册) — 加 660MW preset = 注册表加一条, 本文件不动
+FUNC_ARITY.update({name: spec.arity for name, spec in MODEL_FACTORIES.items()})
 SUPPORTED_FUNCS = tuple(FUNC_ARITY.keys())
 
 
@@ -1187,22 +1167,22 @@ def _make_hashable(x):
 
 
 class _CcsHandle:
-    """CCS_xxxx 工厂函数返回的运行时把柄 — 装到 s.intermediates['$YQ3'] 里.
-    持有: 模型对象 + 上次输出管脚 + 上次积分的 cycle (去重整周期只 step 一次)
+    """模型工厂函数返回的运行时把柄 — 装到 s.intermediates['$YQ3'] 里.
+    持有: 模型对象 + 管脚名 + 上次输出 + 上次积分的 cycle (整周期只 step 一次)
     """
-    __slots__ = ("model", "outputs", "last_cycle")
+    __slots__ = ("model", "pins", "outputs", "last_cycle")
 
-    def __init__(self, model):
+    def __init__(self, model, pins):
         self.model = model
-        self.outputs: dict = {}        # {"PST": float, "HM": float, "NE": float}
+        self.pins = tuple(pins)
+        self.outputs: dict = {}        # {pin: float}
         self.last_cycle: int = -1
 
-    def step_if_needed(self, uB: float, Dfw: float, ut: float,
-                        dt: float, cycle: int) -> None:
+    def step_if_needed(self, vals, dt: float, cycle: int) -> None:
         if self.last_cycle != cycle:
             self.last_cycle = cycle
-            pst, hm, Ne = self.model.step(uB, Dfw, ut, dt)
-            self.outputs = {"PST": pst, "HM": hm, "NE": Ne}
+            outs = self.model.step(*vals, dt)
+            self.outputs = dict(zip(self.pins, outs))
 
 
 def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
@@ -1309,21 +1289,20 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
         s.lag_state[key] = y
         return y
 
-    # USC-OTBT 1000MW 协调模型工厂 (论文 Fan 2021)
-    #   $YQ3 = CCS_1000(uB, Dfw, ut)
-    # 返回 _CcsHandle 把柄, 后续 $YQ3.PST/HM/NE 从把柄读管脚
+    # 模型工厂 (dsl_registry 注册) — $YQ3 = CCS_1000(uB, Dfw, ut)
+    # 返回 _CcsHandle 把柄, 后续 $YQ3.PST 等从把柄读管脚
     # 入参 hashable 作 key → 同一脚本里多次写 $YQ3 = CCS_1000(...) 用同一份模型
-    if fname == "CCS_1000":
-        uB, Dfw, ut = float(vals[0]), float(vals[1]), float(vals[2])
-        key = ("CCS_1000", _make_hashable(raw_args))
+    if fname in MODEL_FACTORIES:
+        spec = MODEL_FACTORIES[fname]
+        key = (fname, _make_hashable(raw_args))
         handle = s.ccs_state.get(key)
         if handle is None:
-            params = _get_ccs_params()
+            params = get_factory_params(fname)
             if params is None:
-                raise _SkipCycle()    # 参数文件没加载, 跳过 (诊断面板可查错因)
-            handle = _CcsHandle(CcsUscOtbt(params))
+                raise _SkipCycle()    # 参数 yaml 没加载成功, 跳过 (诊断面板可查错因)
+            handle = _CcsHandle(spec.make(params), spec.pins)
             s.ccs_state[key] = handle
-        handle.step_if_needed(uB, Dfw, ut, dt, s.cycle_count)
+        handle.step_if_needed([float(v) for v in vals], dt, s.cycle_count)
         return handle
 
     # 水蒸气热力性质 — IAPWS-IF97  STEAM_T(h, p) → T(°C)
