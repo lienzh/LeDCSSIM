@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from src.opc_client.client import OPCClient
 from src.models.dsl_registry import MODEL_FACTORIES, get_factory_params
 from src.models.steam import steam_T_from_ph
+from src import project as proj
 
 
 # ---------- 显式事件日志 (用户视角时间线: 启停/重连/镜像/清状态等) ----------
@@ -84,9 +85,12 @@ logging.getLogger("asyncua").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# OPC 端点配置 — 由 config/opc_endpoints.yaml 驱动 (mode=local|vm)
+# OPC 端点配置 — 由当前工程的 opc_endpoints.yaml 驱动 (mode=local|vm)
 # 顶栏切换按钮调 set_endpoint_mode() 更新 + 持久化
-_ENDPOINT_PATH = Path("config/opc_endpoints.yaml")
+def _endpoint_path() -> Path:
+    """当前工程的 opc_endpoints.yaml (跟着 projects/<active>/ 走)"""
+    return proj.paths().endpoints
+
 _ENDPOINT_DEFAULT = {
     "mode": "local",
     "local": "opc.tcp://127.0.0.1:9440",
@@ -98,25 +102,25 @@ def _load_endpoint_config() -> dict:
     """读 opc_endpoints.yaml, 缺字段就拿默认补齐, 文件不存在写入默认"""
     import yaml as _yaml
     cfg = dict(_ENDPOINT_DEFAULT)
-    if _ENDPOINT_PATH.exists():
+    if _endpoint_path().exists():
         try:
-            doc = _yaml.safe_load(_ENDPOINT_PATH.read_text(encoding="utf-8")) or {}
+            doc = _yaml.safe_load(_endpoint_path().read_text(encoding="utf-8")) or {}
             for k in ("mode", "local", "vm"):
                 if isinstance(doc.get(k), str) and doc[k].strip():
                     cfg[k] = doc[k].strip()
         except Exception as e:
-            logger.warning(f"读取 {_ENDPOINT_PATH} 失败, 用默认: {e}")
+            logger.warning(f"读取 {_endpoint_path()} 失败, 用默认: {e}")
     else:
         try:
-            _ENDPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _ENDPOINT_PATH.write_text(
+            _endpoint_path().parent.mkdir(parents=True, exist_ok=True)
+            _endpoint_path().write_text(
                 "# OPC 端点选择 — viewer 顶栏 [本地] [VM] 切换写这里\n"
                 "mode: local\n"
                 f"local: {cfg['local']}\n"
                 f"vm:    {cfg['vm']}\n",
                 encoding="utf-8")
         except Exception as e:
-            logger.warning(f"写入 {_ENDPOINT_PATH} 失败: {e}")
+            logger.warning(f"写入 {_endpoint_path()} 失败: {e}")
     if cfg["mode"] not in ("local", "vm"):
         cfg["mode"] = "local"
     return cfg
@@ -139,14 +143,14 @@ def set_endpoint_mode(mode: str, vm_url: Optional[str] = None) -> dict:
     if vm_url and vm_url.strip():
         cfg["vm"] = vm_url.strip()
     try:
-        _ENDPOINT_PATH.write_text(
+        _endpoint_path().write_text(
             "# OPC 端点选择 — viewer 顶栏 [本地] [VM] 切换写这里\n"
             f"mode: {cfg['mode']}\n"
             f"local: {cfg['local']}\n"
             f"vm:    {cfg['vm']}\n",
             encoding="utf-8")
     except Exception as e:
-        logger.warning(f"持久化 {_ENDPOINT_PATH} 失败: {e}")
+        logger.warning(f"持久化 {_endpoint_path()} 失败: {e}")
     cfg["url"] = cfg[cfg["mode"]]
     log_event("endpoint", f"🔌 OPC 端点切到 [{'VM' if mode == 'vm' else '本地'}] {cfg['url']}",
               {"mode": mode, "url": cfg["url"]})
@@ -393,10 +397,10 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
     # s.pairs 只有点过 ▶ 运行 才填; 首次启动直接调本接口时为空 — 从 script.txt 重新 parse
     pairs = s.pairs
     if not pairs:
-        script_path = Path("config/script.txt")
+        script_path = proj.paths().script
         if not script_path.exists():
             return {"ok": False,
-                    "error": "config/script.txt 不存在, 先编辑器里点【💾 保存】"}
+                    "error": f"{script_path} 不存在, 先编辑器里点【💾 保存】"}
         try:
             content = script_path.read_text(encoding="utf-8")
             pairs = parse_script(content)
@@ -602,9 +606,9 @@ def dryrun_preview(opc_url: Optional[str] = None) -> dict:
         return {"ok": False, "error": "OPC 循环在运行, 请先点【■ 停止】再预演"}
     pairs = s.pairs
     if not pairs:
-        sp = Path("config/script.txt")
+        sp = proj.paths().script
         if not sp.exists():
-            return {"ok": False, "error": "config/script.txt 不存在"}
+            return {"ok": False, "error": f"{sp} 不存在"}
         try:
             pairs = parse_script(sp.read_text(encoding="utf-8"))
         except ParseError as e:
@@ -781,7 +785,7 @@ def reset_persistent_state() -> dict:
     s.last_read = {}
     s.last_written = {}
     try:
-        _SNAPSHOT_PATH.unlink(missing_ok=True)
+        _snapshot_path().unlink(missing_ok=True)
     except Exception:
         pass
     logger.info(f"持久状态已清空: {n}")
@@ -1317,8 +1321,12 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
 
 # ---------- 状态镜像 (用户显式保存/恢复, 用于 NTVDPU 重启后手动还原) ----------
 
-_SNAPSHOT_PATH = Path("data/state_snapshot.json")
-_SNAPSHOT_BAK_DIR = Path("data/snapshot_backups")    # 时间戳历史
+def _snapshot_path() -> Path:
+    return proj.paths().snapshot
+
+def _snapshot_bak_dir() -> Path:
+    return proj.paths().snapshot_backups
+
 _SNAPSHOT_KEEP = 30                                  # 最多保留几份历史副本
 
 
@@ -1328,13 +1336,13 @@ def _migrate_legacy_bak() -> None:
     """
     from datetime import datetime
     import shutil
-    legacy = _SNAPSHOT_PATH.with_suffix(_SNAPSHOT_PATH.suffix + ".bak")
+    legacy = _snapshot_path().with_suffix(_snapshot_path().suffix + ".bak")
     if not legacy.exists():
         return
     try:
-        _SNAPSHOT_BAK_DIR.mkdir(parents=True, exist_ok=True)
+        _snapshot_bak_dir().mkdir(parents=True, exist_ok=True)
         ts = datetime.fromtimestamp(legacy.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
-        migrated = _SNAPSHOT_BAK_DIR / f"snapshot_{ts}_legacy.json"
+        migrated = _snapshot_bak_dir() / f"snapshot_{ts}_legacy.json"
         if not migrated.exists():
             shutil.copy2(legacy, migrated)
         legacy.unlink()
@@ -1345,10 +1353,10 @@ def _migrate_legacy_bak() -> None:
 
 def list_snapshot_backups() -> list:
     """返回所有历史镜像副本, 新→旧 排序. 每项 {name, path, ts, size}"""
-    if not _SNAPSHOT_BAK_DIR.exists():
+    if not _snapshot_bak_dir().exists():
         return []
     out = []
-    for p in _SNAPSHOT_BAK_DIR.glob("snapshot_*.json"):
+    for p in _snapshot_bak_dir().glob("snapshot_*.json"):
         try:
             st = p.stat()
             out.append({
@@ -1380,22 +1388,22 @@ def save_state_snapshot(force: bool = False) -> dict:
         return {"ok": False, "error": "内存里 RS/LAG/中间变量 全为空, 拒绝保存(防覆盖). "
                                        "请先运行脚本让状态算出来, 或加 force 强制保存"}
     try:
-        _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _SNAPSHOT_BAK_DIR.mkdir(parents=True, exist_ok=True)
+        _snapshot_path().parent.mkdir(parents=True, exist_ok=True)
+        _snapshot_bak_dir().mkdir(parents=True, exist_ok=True)
         # 老 .bak 防御性再迁一次 (module 加载时已跑过, 这里防中途外部进程造 .bak)
         _migrate_legacy_bak()
         # 写新文件前, 若旧主文件存在 → 拷一份到时间戳历史 (留底链不再单 .bak)
-        if _SNAPSHOT_PATH.exists():
+        if _snapshot_path().exists():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            bak = _SNAPSHOT_BAK_DIR / f"snapshot_{ts}.json"
+            bak = _snapshot_bak_dir() / f"snapshot_{ts}.json"
             try:
                 import shutil
-                shutil.copy2(_SNAPSHOT_PATH, bak)
+                shutil.copy2(_snapshot_path(), bak)
             except Exception as e:
                 logger.warning(f"备份旧镜像到历史失败 (继续覆盖写): {e}")
             # 清理: 只留最近 N 个
             try:
-                backups = sorted(_SNAPSHOT_BAK_DIR.glob("snapshot_*.json"))
+                backups = sorted(_snapshot_bak_dir().glob("snapshot_*.json"))
                 for old in backups[:-_SNAPSHOT_KEEP]:
                     try: old.unlink()
                     except OSError: pass
@@ -1415,7 +1423,7 @@ def save_state_snapshot(force: bool = False) -> dict:
             "intermediates": {k: v for k, v in s.intermediates.items()
                               if not isinstance(v, _CcsHandle)},
         }
-        _SNAPSHOT_PATH.write_text(
+        _snapshot_path().write_text(
             _json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -1441,11 +1449,11 @@ def restore_state_snapshot(path: Optional[str] = None) -> dict:
         # 安全: 只允许文件名 (不接受绝对路径或 ..) — 防御 path traversal
         if ("/" in path) or ("\\" in path) or (".." in path) or not path.endswith(".json"):
             return {"ok": False, "error": f"非法历史镜像名: {path!r}"}
-        src = _SNAPSHOT_BAK_DIR / path
+        src = _snapshot_bak_dir() / path
         if not src.exists():
             return {"ok": False, "error": f"历史镜像不存在: {path}"}
     else:
-        src = _SNAPSHOT_PATH
+        src = _snapshot_path()
         if not src.exists():
             return {"ok": False, "error": "没有镜像文件,先保存"}
     try:
@@ -1503,10 +1511,10 @@ def get_snapshot_info(with_detail: bool = False) -> dict:
     """看当前镜像信息. with_detail=True 返回完整模块值用于检查"""
     import json as _json
     from datetime import datetime
-    if not _SNAPSHOT_PATH.exists():
+    if not _snapshot_path().exists():
         return {"exists": False}
     try:
-        data = _json.loads(_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        data = _json.loads(_snapshot_path().read_text(encoding="utf-8"))
         ts = data.get("saved_at", 0)
         rs_raw = data.get("rs_state") or []
         lag_raw = data.get("lag_state") or []
@@ -1519,8 +1527,8 @@ def get_snapshot_info(with_detail: bool = False) -> dict:
             "rs_count": len(rs_raw),
             "lag_count": len(lag_raw),
             "var_count": len(intermediates),
-            "size_bytes": _SNAPSHOT_PATH.stat().st_size,
-            "path": str(_SNAPSHOT_PATH),
+            "size_bytes": _snapshot_path().stat().st_size,
+            "path": str(_snapshot_path()),
         }
 
         if with_detail:
@@ -1607,6 +1615,24 @@ def _jsonable_value_map(d: dict) -> dict:
     """
     return {k: (v.outputs if isinstance(v, _CcsHandle) else v)
             for k, v in d.items()}
+
+
+def switch_project(name: str) -> dict:
+    """切换激活工程 — 仅停止态允许. 全量重建运行内存状态 + 立即探活新工程端点."""
+    global _STATE
+    if _STATE.running:
+        return {"ok": False, "error": "OPC 循环运行中, 先点【■ 停止】再切工程"}
+    try:
+        proj.set_active(name)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    _STATE = _State()      # RS/LAG/$var/模型实例全清 — 不能把 A 工程状态带进 B 工程
+    log_event("project", f"📂 切换工程 → {name}")
+    try:
+        _probe_once_and_store()
+    except Exception:
+        pass
+    return {"ok": True, "active": name}
 
 
 def get_status() -> dict:
@@ -2167,14 +2193,17 @@ def generate_script_from_tagmap(tagmap_yaml_path: str) -> str:
     from src.sim_engine.io_pairing_gen import (
         load_points, pair_analog, pair_digital, is_soft, DEV,
     )
-    # 优先用"简化"目录的 *_S.csv, 找不到回退老路径
-    SIMPLE_DIR = Path("YQ3SIM-IO/SIMPLE/简化")
-    csv_files = sorted(SIMPLE_DIR.glob("*[_-]S.csv"))
+    # 优先用工程配置的点表目录, 找不到回退 io_fallback_globs
+    pp = proj.paths()
+    csv_files = sorted(pp.io_dir.glob(pp.io_glob))
     if csv_files:
         def _dpu_of(p): return "DPU" + p.stem.replace("_S","").replace("-S","")
     else:
-        csv_files = sorted(Path("YQ3SIM-IO").glob("DPU*.csv"))
-        csv_files = [p for p in csv_files if "_" not in p.stem]
+        import glob as _glob
+        for pat in pp.io_fallback_globs:
+            csv_files = sorted(Path(f) for f in _glob.glob(pat))
+            if csv_files:
+                break
         def _dpu_of(p): return p.stem
 
     DPU_SCOPE = sorted({_dpu_of(p) for p in csv_files})
