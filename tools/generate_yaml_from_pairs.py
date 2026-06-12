@@ -2,12 +2,12 @@
 """
 从 io_pairing_gen 配对结果生成新架构 YAML
 
-输入:  YQ3SIM-IO/*.csv 跑 pair_analog
+输入:  {io_full_dir}/*.csv 跑 pair_analog  (由 project.yaml: io_full_dir 决定)
 输出:
-  config/models.generated.yaml       — 每对 = 1 个 FirstOrder block
-  config/connections.generated.yaml  — 无横向连接(每个 block 独立: OPC→block→OPC)
-  config/tagmap.generated.yaml       — 每个 block 2 个 tag (in 读AQ / out 写AI)
-  config/_OPC_配对组态清单.md         — 人类可读
+  projects/<工程>/generated/models.generated.yaml       — 每对 = 1 个 FirstOrder block
+  projects/<工程>/generated/connections.generated.yaml  — 无横向连接(每个 block 独立: OPC→block→OPC)
+  projects/<工程>/generated/tagmap.generated.yaml       — 每个 block 2 个 tag (in 读AQ / out 写AI)
+  projects/<工程>/generated/_OPC_配对组态清单.md         — 人类可读
 
 设计:
 - 块命名: {dpu}_{kks_device}, 如 DPU3013_30HAG21AA — 跨 DPU 唯一
@@ -20,11 +20,12 @@ from pathlib import Path
 
 import yaml
 
+from src import project as _prj
 from src.sim_engine.io_pairing_gen import generate
 
-SRC_DIR = "YQ3SIM-IO"
-CONFIG_DIR = Path("config")
-SUMMARY_MD = CONFIG_DIR / "_OPC_配对组态清单.md"
+SRC_DIR = str(_prj.paths().io_full_dir)    # 全量点表目录 (project.yaml: io_full_dir)
+_OUT_DIR = _prj.paths().generated_dir
+SUMMARY_MD = _OUT_DIR / "_OPC_配对组态清单.md"
 
 
 def pair_to_block_and_tags(p: dict) -> tuple:
@@ -118,20 +119,21 @@ def write_summary_md(pairs_a: list, pairs_d: list):
     lines.append("")
     lines.append("## 1. 输出文件")
     lines.append("")
+    gen = str(_OUT_DIR)
     lines.append("| 文件 | 用途 |")
     lines.append("|---|---|")
-    lines.append("| `config/models.generated.yaml` | block 实例化清单 |")
-    lines.append("| `config/connections.generated.yaml` | block 间连接(配对场景为空) |")
-    lines.append("| `config/tagmap.generated.yaml` | OPC 测点映射 |")
+    lines.append(f"| `{gen}/models.generated.yaml` | block 实例化清单 |")
+    lines.append(f"| `{gen}/connections.generated.yaml` | block 间连接(配对场景为空) |")
+    lines.append(f"| `{gen}/tagmap.generated.yaml` | OPC 测点映射 |")
     lines.append("")
     lines.append("## 2. 用法")
     lines.append("")
     lines.append("```bash")
     lines.append("# 在线跑(需 NTVDPU 启动且 CSV 已导回工程生效)")
     lines.append("py -3.12 -m src.cli run --online --duration 30 \\")
-    lines.append("    --models config/models.generated.yaml \\")
-    lines.append("    --connections config/connections.generated.yaml \\")
-    lines.append("    --tagmap config/tagmap.generated.yaml")
+    lines.append(f"    --models {gen}/models.generated.yaml \\")
+    lines.append(f"    --connections {gen}/connections.generated.yaml \\")
+    lines.append(f"    --tagmap {gen}/tagmap.generated.yaml")
     lines.append("```")
     lines.append("")
     lines.append("## 3. Analog 配对(FirstOrder)")
@@ -193,14 +195,14 @@ def main():
         blocks.append(b)
         all_tags.extend(ts)
 
-    CONFIG_DIR.mkdir(exist_ok=True)
-    models_path = CONFIG_DIR / "models.generated.yaml"
-    conns_path = CONFIG_DIR / "connections.generated.yaml"
-    tagmap_path = CONFIG_DIR / "tagmap.generated.yaml"
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+    models_path = _OUT_DIR / "models.generated.yaml"
+    conns_path = _OUT_DIR / "connections.generated.yaml"
+    tagmap_path = _OUT_DIR / "tagmap.generated.yaml"
 
     # models.yaml
     header = (
-        "# 自动生成 - 来自 YQ3SIM-IO/ 的 AQ↔AI 配对\n"
+        f"# 自动生成 - 来自 {SRC_DIR}/ 的 AQ↔AI 配对\n"
         "# 重新生成: py -3.12 -m tools.generate_yaml_from_pairs\n"
         "# 手工修改建议放到独立的 models.yaml 里覆盖,不要直接改本文件\n\n"
     )
