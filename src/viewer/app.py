@@ -10,6 +10,7 @@ from flask import Flask, jsonify, render_template_string, request
 
 from src.engine import GraphRunner, TagMap, DataRecorder
 from . import runtime as rt
+from src import project as proj
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +18,19 @@ app = Flask(__name__)
 
 # 配置文件路径(可由 CLI 参数覆盖)
 CONFIG = {
-    "models": "config/models.generated.yaml",
-    "connections": "config/connections.generated.yaml",
-    "tagmap": "config/tagmap.generated.yaml",
+    "models": None,        # None = projects/<active>/generated/models.generated.yaml
+    "connections": None,   # CLI --models/--connections/--tagmap 仍可显式覆盖
+    "tagmap": None,
     "csv": "data/run.csv",
 }
 
-# 点表目录 + 文件名模式 — 当前用"简化"版
-POINT_TABLE_DIR = "YQ3SIM-IO/SIMPLE/简化"
-POINT_TABLE_GLOB = "*[_-]S.csv"   # 3001_S.csv / 3038-S.csv 都匹配
+
+def _cfg_path(kind: str) -> Path:
+    """models/connections/tagmap 的 generated yaml — CLI 覆盖优先, 否则当前工程目录"""
+    v = CONFIG.get(kind)
+    if v:
+        return Path(v)
+    return proj.paths().generated_dir / f"{kind}.generated.yaml"
 
 
 def _dpu_from_filename(stem: str) -> str:
@@ -47,7 +52,7 @@ CONFIG_DIR = Path("config")
 
 def _load_blocks() -> List[Dict[str, Any]]:
     """加载块清单 [{name, type, params, desc, dpu}]"""
-    p = Path(CONFIG["models"])
+    p = _cfg_path("models")
     if not p.exists():
         return []
     with open(p, "r", encoding="utf-8") as f:
@@ -68,7 +73,7 @@ def _load_blocks() -> List[Dict[str, Any]]:
 
 
 def _load_connections() -> List[Dict[str, str]]:
-    p = Path(CONFIG["connections"])
+    p = _cfg_path("connections")
     if not p.exists():
         return []
     with open(p, "r", encoding="utf-8") as f:
@@ -77,7 +82,7 @@ def _load_connections() -> List[Dict[str, str]]:
 
 
 def _load_tagmap() -> List[Dict[str, Any]]:
-    p = Path(CONFIG["tagmap"])
+    p = _cfg_path("tagmap")
     if not p.exists():
         return []
     with open(p, "r", encoding="utf-8") as f:
@@ -477,8 +482,14 @@ def edit_page():
 
 # ---------- 赋值脚本(主功能)----------
 
-SCRIPT_PATH = CONFIG_DIR / "script.txt"
-BACKUP_DIR = CONFIG_DIR / "script_backups"   # 时间戳备份目录
+def _script_path() -> Path:
+    return proj.paths().script
+
+
+def _backup_dir() -> Path:
+    return proj.paths().script_backups
+
+
 BACKUP_KEEP = 30                              # 保留最近 N 个
 
 def _make_script_backup(reason: str = "save"):
@@ -487,14 +498,14 @@ def _make_script_backup(reason: str = "save"):
     """
     import shutil
     from datetime import datetime
-    if not SCRIPT_PATH.exists(): return None
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    if not _script_path().exists(): return None
+    _backup_dir().mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_reason = "".join(c for c in reason if c.isalnum() or c in "-_")[:20] or "save"
-    bk = BACKUP_DIR / f"script_{ts}_{safe_reason}.txt"
-    shutil.copy2(SCRIPT_PATH, bk)
+    bk = _backup_dir() / f"script_{ts}_{safe_reason}.txt"
+    shutil.copy2(_script_path(), bk)
     # 清理: 只留最近 N 个
-    backups = sorted(BACKUP_DIR.glob("script_*.txt"))
+    backups = sorted(_backup_dir().glob("script_*.txt"))
     for old in backups[:-BACKUP_KEEP]:
         try: old.unlink()
         except OSError: pass
@@ -503,12 +514,12 @@ def _make_script_backup(reason: str = "save"):
 
 @app.route("/api/script")
 def api_script_get():
-    if not SCRIPT_PATH.exists():
+    if not _script_path().exists():
         return jsonify({"content": "", "exists": False})
     return jsonify({
-        "content": SCRIPT_PATH.read_text(encoding="utf-8"),
+        "content": _script_path().read_text(encoding="utf-8"),
         "exists": True,
-        "size": SCRIPT_PATH.stat().st_size,
+        "size": _script_path().stat().st_size,
     })
 
 
@@ -521,12 +532,12 @@ def api_script_save():
     except rt.ParseError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     # 备份后写: 单 .bak (上一份) + 时间戳备份(历史链)
-    if SCRIPT_PATH.exists():
-        bak = SCRIPT_PATH.with_suffix(".txt.bak")
-        bak.write_text(SCRIPT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    if _script_path().exists():
+        bak = _script_path().with_suffix(".txt.bak")
+        bak.write_text(_script_path().read_text(encoding="utf-8"), encoding="utf-8")
         _make_script_backup("save")
-    SCRIPT_PATH.parent.mkdir(exist_ok=True)
-    SCRIPT_PATH.write_text(content, encoding="utf-8")
+    _script_path().parent.mkdir(exist_ok=True)
+    _script_path().write_text(content, encoding="utf-8")
     rt.log_event("save", f"💾 保存脚本 ({len(content)} 字节, {len(pairs)} 对)",
                  {"bytes": len(content), "pairs": len(pairs)})
     # 保存(=编译): 自动清理过期 state — 新脚本不再引用的 LAG/RS/CCS key 直接剪掉,
@@ -556,7 +567,7 @@ def api_script_save():
 @app.route("/api/script/generate", methods=["POST"])
 def api_script_generate():
     """按工艺规则自动生成脚本 (analog + digital 全部)"""
-    text = rt.generate_script_from_tagmap(CONFIG["tagmap"])
+    text = rt.generate_script_from_tagmap(str(_cfg_path("tagmap")))
     return jsonify({"ok": True, "content": text})
 
 
@@ -568,9 +579,9 @@ def api_script_swap_pairs():
     body = request.get_json(force=True, silent=True) or {}
     content = body.get("content")
     if content is None:
-        if not SCRIPT_PATH.exists():
-            return jsonify({"ok": False, "error": "config/script.txt 不存在"}), 400
-        content = SCRIPT_PATH.read_text(encoding="utf-8")
+        if not _script_path().exists():
+            return jsonify({"ok": False, "error": f"{_script_path()} 不存在"}), 400
+        content = _script_path().read_text(encoding="utf-8")
     try:
         pairs = rt.parse_script(content)
     except rt.ParseError as e:
@@ -689,9 +700,9 @@ def api_var_rename_desc():
                 .replace("(", "[").replace(")", "]")
                 .replace("（", "[").replace("）", "]")
                 .replace("#", "＃"))[:60]   # 限 60 字
-    if not SCRIPT_PATH.exists():
-        return jsonify({"ok": False, "error": "config/script.txt 不存在"}), 400
-    content = SCRIPT_PATH.read_text(encoding="utf-8")
+    if not _script_path().exists():
+        return jsonify({"ok": False, "error": f"{_script_path()} 不存在"}), 400
+    content = _script_path().read_text(encoding="utf-8")
     new_content, count = _rewrite_var_desc(content, var_name, new_desc)
     if count == 0:
         return jsonify({"ok": False,
@@ -703,11 +714,11 @@ def api_var_rename_desc():
         return jsonify({"ok": False,
                         "error": f"重命名后脚本 parse 失败: {e}, 已放弃 (脚本未变)"}), 400
     # 备份 + 写
-    if SCRIPT_PATH.exists():
-        bak = SCRIPT_PATH.with_suffix(".txt.bak")
+    if _script_path().exists():
+        bak = _script_path().with_suffix(".txt.bak")
         bak.write_text(content, encoding="utf-8")
         _make_script_backup("rename_desc")
-    SCRIPT_PATH.write_text(new_content, encoding="utf-8")
+    _script_path().write_text(new_content, encoding="utf-8")
     rt.log_event("save",
                  f"✏ 重命名 {var_name} 描述 → '{new_desc[:20]}{'...' if len(new_desc) > 20 else ''}' ({count} 处)",
                  {"var": var_name, "count": count, "new_desc": new_desc})
@@ -722,9 +733,9 @@ def api_script_run():
     # 用脚本文件 or 请求里的 content
     content = body.get("content")
     if content is None:
-        if not SCRIPT_PATH.exists():
-            return jsonify({"ok": False, "error": "无 config/script.txt,先保存"}), 400
-        content = SCRIPT_PATH.read_text(encoding="utf-8")
+        if not _script_path().exists():
+            return jsonify({"ok": False, "error": f"无 {_script_path()},先保存"}), 400
+        content = _script_path().read_text(encoding="utf-8")
     try:
         pairs = rt.parse_script(content)
     except rt.ParseError as e:
@@ -1032,10 +1043,10 @@ def api_script_state_delete():
 def api_script_backups_list():
     """列出所有时间戳备份(新→旧)"""
     from datetime import datetime
-    if not BACKUP_DIR.exists():
+    if not _backup_dir().exists():
         return jsonify({"items": []})
     items = []
-    for fn in sorted(BACKUP_DIR.glob("script_*.txt"), reverse=True):
+    for fn in sorted(_backup_dir().glob("script_*.txt"), reverse=True):
         st = fn.stat()
         items.append({
             "name": fn.name,
@@ -1052,11 +1063,11 @@ def api_script_backup_get(name):
     if not name.startswith("script_") or not name.endswith(".txt") \
        or any(c in name for c in ("/", "\\", ":", "..", "\x00")):
         return jsonify({"error": "非法备份名"}), 400
-    fn = BACKUP_DIR / name
-    # 路径级校验: 解析后必须在 BACKUP_DIR 内 (防符号链/特殊解析)
+    fn = _backup_dir() / name
+    # 路径级校验: 解析后必须在 _backup_dir() 内 (防符号链/特殊解析)
     try:
         real = fn.resolve(strict=False)
-        bdir = BACKUP_DIR.resolve(strict=False)
+        bdir = _backup_dir().resolve(strict=False)
         if not str(real).startswith(str(bdir)):
             return jsonify({"error": "非法路径"}), 400
     except (OSError, ValueError):
@@ -1082,12 +1093,12 @@ def api_script_backup_make():
         # 备份 editor 内容
         if not content.strip():
             return jsonify({"ok": False, "error": "editor 为空,不备份"}), 400
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        _backup_dir().mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        bk = BACKUP_DIR / f"script_{ts}_{safe_reason}.txt"
+        bk = _backup_dir() / f"script_{ts}_{safe_reason}.txt"
         bk.write_text(content, encoding="utf-8")
         # 清理: 只留最近 N 个
-        backups = sorted(BACKUP_DIR.glob("script_*.txt"))
+        backups = sorted(_backup_dir().glob("script_*.txt"))
         for old in backups[:-BACKUP_KEEP]:
             try: old.unlink()
             except OSError: pass
@@ -1112,10 +1123,14 @@ def api_script_symbols():
         import csv as _csv
         import re as _re
         items = []
-        # 优先用"简化"目录, 找不到回退老路径
-        candidates = sorted(_g.glob(f"{POINT_TABLE_DIR}/{POINT_TABLE_GLOB}"))
+        # 优先用工程 io_dir, 找不到按 io_fallback_globs 回退
+        pp = proj.paths()
+        candidates = sorted(_g.glob(f"{pp.io_dir}/{pp.io_glob}"))
         if not candidates:
-            candidates = sorted(_g.glob("YQ3SIM-IO/DPU*.csv"))
+            for pat in pp.io_fallback_globs:
+                candidates = sorted(_g.glob(pat))
+                if candidates:
+                    break
             candidates = [c for c in candidates if "_" not in Path(c).stem
                           or Path(c).stem.startswith("DPU")]
         # SH 段正则: SH<图号>.<块名>.<端子>
@@ -1176,18 +1191,22 @@ def api_script_symbols_from_opc():
     dpus = body.get("dpus") or []
     opc_url = body.get("opc_url", "opc.tcp://localhost:9440")
 
-    # 默认: 浏览简化目录里所有 *_S.csv 对应的 DPU
+    # 默认: 浏览工程 io_dir 里所有点表对应的 DPU
     if not dpus:
         seen = set()
         import glob as _g
-        for fn in _g.glob(f"{POINT_TABLE_DIR}/{POINT_TABLE_GLOB}"):
+        pp = proj.paths()
+        for fn in _g.glob(f"{pp.io_dir}/{pp.io_glob}"):
             seen.add(_dpu_from_filename(Path(fn).stem))
-        # 回退
+        # 回退: 按 io_fallback_globs 扫
         if not seen:
-            for fn in _g.glob("YQ3SIM-IO/DPU*.csv"):
-                stem = Path(fn).stem
-                if "_" in stem: continue
-                seen.add(stem)
+            for pat in pp.io_fallback_globs:
+                for fn in _g.glob(pat):
+                    stem = Path(fn).stem
+                    if "_" in stem: continue
+                    seen.add(stem)
+                if seen:
+                    break
         dpus = sorted(seen)
 
     async def _run():
@@ -4270,9 +4289,9 @@ def run(host: str = "127.0.0.1", port: int = 5002, debug: bool = False) -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(message)s")
     print(f"DCS 仿真组态查看器 — http://{host}:{port}")
-    print(f"  models:      {CONFIG['models']}")
-    print(f"  connections: {CONFIG['connections']}")
-    print(f"  tagmap:      {CONFIG['tagmap']}")
+    print(f"  models:      {_cfg_path('models')}")
+    print(f"  connections: {_cfg_path('connections')}")
+    print(f"  tagmap:      {_cfg_path('tagmap')}")
     print(f"  csv:         {CONFIG['csv']}")
     print(f"  (Ctrl-C 退出)")
     # 启动后台 OPC 探活线程 — UI 顶栏的 🟢/🔴 状态点用它
