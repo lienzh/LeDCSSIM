@@ -76,6 +76,7 @@ py -3.12 -m src.cli run --online --duration 60
 #                🩺 诊断 (状态/失败统计/日志, 一键复制) / OPC 自动重连 /
 #                热重启 / 错误持久面板 errBox (📋 复制按钮)
 #   - 配置: OPC 端点切换 [本地]/[VM] (持久化, 顶栏 ✎ 改 VM IP)
+#   - 工程切换: 顶栏 工程 ▾ 下拉 (运行中禁止切换,切换清空内存 RS/LAG/$var 状态)
 py -3.12 -m src.viewer
 
 # 从 YQ3SIM-IO/*.csv 自动勾选 OPC 通讯(按 KKS 配对规则,改前自动备份)
@@ -86,8 +87,8 @@ py -3.12 -m tools.generate_yaml_from_pairs
 ```
 
 **点表目录约定** (viewer 自动扫描):
-- 简化版主点表:`YQ3SIM-IO/SIMPLE/简化/<dpu>_S.csv` (优先)
-- 老路径回退:`YQ3SIM-IO/DPU<num>.csv`
+- 主扫描路径:当前工程 `projects/<name>/project.yaml` 的 `io_dir` 字段(yq3 工程 = `YQ3SIM-IO/SIMPLE/简化`)
+- 回退路径:同 project.yaml 的 `io_fallback_globs` 列表(yq3 配置示例:`YQ3SIM-IO/DPU*.csv`)
 - 文件名后缀 `_S`/`-S` 自动剥离为 DPU 名(如 `3013_S` → `DPU3013`)
 
 **DSL 脚本语法概要** (完整说明按 F1 弹帮助):
@@ -102,8 +103,15 @@ DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
 ```
 函数库:`RS/RS_NOT/NOT/AND/OR/ADD/SUB/MUL/DIV/MAX/MIN/LIMIT/SEL/LAG`
 
+**CCS 工艺模型**(在 DSL 脚本中通过 `CCS_PST(...)` / `CCS_HM(...)` / `CCS_NE(...)` 等函数名调用):
+- 实现位置:`src/models/`(ccs_usc_otbt.py / steam.py)
+- 参数 yaml:`config/ccs_models/<preset>.yaml`(如 `660mw.yaml`、`1000mw.yaml`)
+- 工厂注册表:`src/models/dsl_registry.py` → `MODEL_FACTORIES` 字典
+- **加容量预设**:在 `MODEL_FACTORIES` 加一条 key + 新建对应参数 yaml,runtime 不动
+- 红线测试:`tests/test_models_isolation.py` — 保证 `src/models` 不依赖 viewer/flask/asyncua/opc_client/adapter
+
 **viewer OPC 端点切换**(顶栏 `OPC: [本地] [VM] ✎`):
-- 配置文件:`config/opc_endpoints.yaml`(`.gitignore` 已排除,机器相关)
+- 配置文件:`projects/<工程>/opc_endpoints.yaml`(`.gitignore` 已排除,机器相关)
   ```yaml
   mode: local                          # local | vm  (上次选择)
   local: opc.tcp://127.0.0.1:9440      # NTVDPU 跑在本机
@@ -114,13 +122,27 @@ DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
 - **运行中不允许切换**,会提示先点 [■ 停止]
 - yaml 不存在时,首次启动 viewer 会写入默认 `mode=local`
 - API:`GET/POST /api/opc/endpoint`(切换),`GET/POST /api/opc/probe`(探活)
-- **唯一真相源**:所有组件(viewer / `src/cli` / `tools/verify_opc`)都从 `opc_endpoints.yaml` 读端点,改一处全局生效;CLI 还可 `--opc-url` 显式覆盖
+- **唯一真相源**:所有组件(viewer / `src/cli` / `tools/verify_opc`)都经由 `src/project.py` 解析当前工程的 `opc_endpoints.yaml` 读端点,改一处全局生效;CLI 还可 `--opc-url` 显式覆盖
 - **顶栏 🟢/🔴 实时状态点**:不点【▶ 运行】也能看到当前端点是否可达
   - 后台 5s 一次 OPC UA HELLO/ACK 协议级探活(不开 session,~10ms)
   - 🟢 + 延迟 ms = 端口可达且对端是 OPC Server
   - 🔴 + 错因 = 不通(超时 / 拒绝 / 非 OPC 协议响应)
   - 点状态点 → 立即重新探一次
   - **为啥不用纯 TCP**:Tailscale / Meta(198.18/15)等代理会劫持任意 IP 的 TCP connect 让握手成功,必须看应用层 HELLO/ACK 才能戳穿假成功
+
+**工程切换**(顶栏 `工程 ▾`):
+- 工程 = `projects/<name>/` 目录,子项:
+  - `project.yaml` — display 名 / io_dir / io_glob / io_full_dir / io_fallback_globs
+  - `script.txt` — DSL 脚本内容
+  - `script_backups/` — 自动备份
+  - `opc_endpoints.yaml` — OPC 端点(gitignored,机器相关)
+  - `state/` — 状态镜像(gitignored)
+  - `generated/` — 工具生成产物(gitignored)
+- 激活指针:`config/active_project.yaml`(gitignored);唯一真相源 `src/project.py`
+- 切换仅在**停止态**允许;切换前自动备份 editor;切换后清空内存 RS/LAG/$var/模型实例(A 工程状态绝不带进 B 工程),整页 reload
+- 新建工程 = 建目录 + 写 project.yaml
+- 现有工程:`projects/yq3/`(YQ3 1000MW)
+- API:`GET /api/project`(列表 + 当前),`POST /api/project`(切换,body `{name}`)
 
 **viewer 运行前工作流**(📤 下载 / 📥 上载 / 🔍 预演):
 
