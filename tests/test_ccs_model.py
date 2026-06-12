@@ -10,7 +10,7 @@ import math
 import sys
 import traceback
 
-from src.viewer.ccs_model import CcsUscOtbt, load_params
+from src.models.ccs_usc_otbt import CcsUscOtbt, load_params
 
 
 PARAMS = load_params("config/ccs_models/usc-otbt-1000mw.yaml")

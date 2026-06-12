@@ -31,8 +31,8 @@ from typing import List, Tuple, Optional, Union
 from urllib.parse import urlparse
 
 from src.opc_client.client import OPCClient
-from .ccs_model import CcsUscOtbt, load_params as _load_ccs_params
-from .steam import steam_T_from_ph
+from src.models.ccs_usc_otbt import CcsUscOtbt, load_params as _load_ccs_params
+from src.models.steam import steam_T_from_ph
 
 # CCS 协调模型参数 (论文 USC-OTBT 1000MW) — 首次调用时懒加载
 _CCS_PARAMS_PATH = Path("config/ccs_models/usc-otbt-1000mw.yaml")
