@@ -4,7 +4,7 @@ OPC 联机验证 - 批量读 tagmap 里所有 in 端 tag, 看通讯是否生效
 
 OPC URL 来源 (按优先级):
     --opc-url <url>            # 显式覆盖
-    config/opc_endpoints.yaml  # 跟 viewer 共享
+    当前工程的 opc_endpoints.yaml (经 src/project.py 解析)  # 跟 viewer 共享
 
 输出:
 - 连接状态
@@ -130,7 +130,7 @@ def _parse_args():
     p.add_argument("--tagmap", default="config/tagmap.generated.yaml",
                    help="tagmap 路径 (默认 config/tagmap.generated.yaml)")
     p.add_argument("--opc-url", dest="opc_url", default=None,
-                   help="OPC URL 显式覆盖 (不指定则读 config/opc_endpoints.yaml)")
+                   help="OPC URL 显式覆盖 (不指定则读当前工程的 opc_endpoints.yaml)")
     return p.parse_args()
 
 

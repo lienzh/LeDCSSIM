@@ -574,7 +574,7 @@ def api_script_generate():
 @app.route("/api/script/swap_pairs", methods=["POST"])
 def api_script_swap_pairs():
     """在线下装: 不停 OPC 循环, 原子替换 pairs.
-    body 可选 {content}; 不传则从 config/script.txt 读.
+    body 可选 {content}; 不传则从当前工程的 script.txt 读.
     """
     body = request.get_json(force=True, silent=True) or {}
     content = body.get("content")
@@ -2651,7 +2651,7 @@ DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)
 <p>用浏览器 DOM 元素探测(<code>data-token</code> 属性 + elementFromPoint),换行/中文/Tab 都不会偏。</p>
 
 <h3>OPC 端点切换 (工具栏: OPC 本地 / VM)</h3>
-<p>配置文件 <code>config/opc_endpoints.yaml</code>(机器相关,<code>.gitignore</code> 排除):</p>
+<p>配置文件 <code>projects/&lt;工程&gt;/opc_endpoints.yaml</code>(机器相关,<code>.gitignore</code> 排除):</p>
 <pre>mode: local                          # local | vm  (上次选择)
 local: opc.tcp://127.0.0.1:9440      # NTVDPU 跑在本机
 vm:    opc.tcp://192.168.31.39:9440  # NTVDPU 跑在虚拟机, LAN IP 视实际改</pre>
@@ -3411,7 +3411,7 @@ function closeBackups() {
 async function restoreBackup(name) {
   if (!confirm(`把备份 ${name} 加载到编辑器?\n` +
                `当前 editor 内容会先打一个 "before-restore" 备份(不会丢)。\n` +
-               `加载后不会自动保存,点【保存】才会写入 config/script.txt。`)) return;
+               `加载后不会自动保存,点【保存】才会写入当前工程的 script.txt。`)) return;
   // 1) 加载前: 把 editor 当前内容先备份(防 textarea.value=X 不进 undo 栈)
   const cur = document.getElementById('editor').value;
   if (cur.trim()) {

@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="在线模式连接 NTVDPU OPC UA Server")
     run.add_argument("--opc-url", dest="opc_url", default=None,
                      help="显式覆盖 OPC UA Server URL "
-                          "(优先级最高, 不指定则读 config/opc_endpoints.yaml)")
+                          "(优先级最高, 不指定则读当前工程的 opc_endpoints.yaml)")
     run.set_defaults(func=_cmd_run)
 
     return p
