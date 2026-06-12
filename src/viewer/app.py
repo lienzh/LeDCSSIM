@@ -1039,6 +1039,27 @@ def api_script_state_delete():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ---------- 工程切换 ----------
+
+@app.route("/api/project")
+def api_project_get():
+    """工程清单 + 当前激活"""
+    items = [{"name": n, "display": proj.paths(n).display} for n in proj.list_projects()]
+    return jsonify({"active": proj.get_active(), "projects": items})
+
+
+@app.route("/api/project", methods=["POST"])
+def api_project_switch():
+    """切换工程 — 运行中拒绝; 成功后前端整页 reload"""
+    global _SYMBOLS_CACHE
+    name = (request.get_json(force=True, silent=True) or {}).get("name", "")
+    r = rt.switch_project(name)
+    if not r.get("ok"):
+        return jsonify(r), 409
+    _SYMBOLS_CACHE = None     # 点表跟工程走, 切换后重扫
+    return jsonify(r)
+
+
 @app.route("/api/script/backups")
 def api_script_backups_list():
     """列出所有时间戳备份(新→旧)"""
@@ -1433,7 +1454,7 @@ mark      { background: #ff8; padding: 0; }
 <!-- ────── 第 1 行: 工作流 (编辑 → 状态准备 → 运行) ────── -->
 <div class="toolbar">
   <span class="grp-label">编辑</span>
-  <button onclick="saveScript()" title="编辑器内容保存到 config/script.txt (自动备份). 想"放弃当前改动回到磁盘版"用 F5 刷新或点【↻ 重启 viewer】">💾 保存</button>
+  <button onclick="saveScript()" title="编辑器内容保存到当前工程的 script.txt (自动备份). 想"放弃当前改动回到磁盘版"用 F5 刷新或点【↻ 重启 viewer】">💾 保存</button>
   <span class="sep"></span>
 
   <span class="grp-label">运行准备</span>
@@ -1453,8 +1474,11 @@ mark      { background: #ff8; padding: 0; }
   <button class="stop" onclick="stopIt()" title="停 OPC 循环, 内存状态保留">■ 停止</button>
 </div>
 
-<!-- ────── 第 2 行: 查看 + 工程辅助 + 端点 ────── -->
+<!-- ────── 第 2 行: 工程 + 查看 + 工程辅助 + 端点 ────── -->
 <div class="toolbar toolbar-2nd">
+  <span class="grp-label">工程</span>
+  <select id="projSel" onchange="switchProject()" title="切换工程 (运行中禁止; 切换后整页重载)"></select>
+  <span class="sep"></span>
   <span class="grp-label">查看</span>
   <button onclick="openDebug()" title="运行状态 / 失败统计 / 日志 (沟通时复制)">🩺 诊断</button>
   <button onclick="openEvents()" title="事件时间线: 启停 / 重连 / 镜像 / 清状态 / 端点切换">📜 事件</button>
@@ -1465,7 +1489,7 @@ mark      { background: #ff8; padding: 0; }
           style="border-color:#a90">↻ 重启 viewer</button>
   <span class="sep"></span>
 
-  <span class="grp-label">工程</span>
+  <span class="grp-label">工程辅助</span>
   <div class="dropdown-wrap">
     <button onclick="toggleDropdown('engDrop', event)" title="工程初始化辅助 (建脚本时用, 日常用不上)">
       🔧 初始化 ▾
@@ -1799,6 +1823,32 @@ async function probeNow() {
   } catch(e) { /* 忽略 */ }
   refreshProbe();
 }
+async function loadProjects(){
+  try{
+    const d = await (await fetch('/api/project')).json();
+    const sel = document.getElementById('projSel');
+    sel.innerHTML = '';
+    for (const p of d.projects){
+      const o = document.createElement('option');
+      o.value = p.name; o.textContent = p.display;
+      if (p.name === d.active) o.selected = true;
+      sel.appendChild(o);
+    }
+  }catch(e){ /* 工程 API 不可用时下拉留空, 不影响其它功能 */ }
+}
+async function switchProject(){
+  const sel = document.getElementById('projSel');
+  const name = sel.value;
+  if (!confirm('切换到工程 [' + name + '] ?\n编辑器/状态/端点将切到该工程 (内存 RS/LAG 状态清空)。')){
+    await loadProjects(); return;
+  }
+  const r = await fetch('/api/project', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  const d = await r.json();
+  if (!d.ok){ alert(d.error || '切换失败'); await loadProjects(); return; }
+  location.reload();
+}
+loadProjects();
 setInterval(refreshProbe, 3000);  // 3s 轮询
 
 // ===== UI 重启 viewer 进程 =====
@@ -2469,7 +2519,7 @@ DPU3030.DI_跳闸 = OR(DPU3030.DI_轴温保护, DPU3030.DI_振动保护)</pre>
 DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)</pre>
 
 <h2>6. 脚本备份</h2>
-<p>每次会冲掉 editor 的操作都<b>自动备份</b>当前脚本到 <code>config/script_backups/</code>(保留最近 30 个):</p>
+<p>每次会冲掉 editor 的操作都<b>自动备份</b>当前脚本到 <code>工程目录的 script_backups/</code>(保留最近 30 个):</p>
 <ul>
 <li>【💾 保存】 → <code>_save</code></li>
 <li>【📝 生成样本】 → <code>_before-gen</code></li>
