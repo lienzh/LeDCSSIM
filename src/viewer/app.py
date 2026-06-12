@@ -998,7 +998,7 @@ def api_script_state_backup_delete():
     name = (body.get("path") or "").strip()
     if not name or "/" in name or "\\" in name or ".." in name or not name.endswith(".json"):
         return jsonify({"ok": False, "error": f"非法历史镜像名: {name!r}"}), 400
-    p = rt._SNAPSHOT_BAK_DIR / name
+    p = rt._snapshot_bak_dir() / name
     if not p.exists():
         return jsonify({"ok": False, "error": "文件不存在"}), 404
     try:
@@ -1019,10 +1019,10 @@ def api_script_state_info():
 @app.route("/api/script/state/delete", methods=["POST"])
 def api_script_state_delete():
     """删除镜像文件"""
-    from src.viewer.runtime import _SNAPSHOT_PATH
     try:
-        if _SNAPSHOT_PATH.exists():
-            _SNAPSHOT_PATH.unlink()
+        sp = rt._snapshot_path()
+        if sp.exists():
+            sp.unlink()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

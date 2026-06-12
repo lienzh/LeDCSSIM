@@ -1334,6 +1334,8 @@ def _migrate_legacy_bak() -> None:
     """老机制留下的 state_snapshot.json.bak → 搬进新历史目录(模块加载时跑一次).
     防丢失用户已有的"上一份"备份.
     """
+    if not proj.list_projects():
+        return    # 还没建任何工程 (新 clone) — 跳过迁移, 别让 import 崩
     from datetime import datetime
     import shutil
     legacy = _snapshot_path().with_suffix(_snapshot_path().suffix + ".bak")
