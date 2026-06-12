@@ -1839,9 +1839,18 @@ async function loadProjects(){
 async function switchProject(){
   const sel = document.getElementById('projSel');
   const name = sel.value;
-  if (!confirm('切换到工程 [' + name + '] ?\n编辑器/状态/端点将切到该工程 (内存 RS/LAG 状态清空)。')){
+  if (!confirm('切换到工程 [' + name + '] ?\n编辑器/状态/端点将切到该工程 (内存 RS/LAG 状态清空)。\n未保存的编辑内容会丢失 (切换前自动备份一份)。')){
     await loadProjects(); return;
   }
+  // 切换前把 editor 现状备份进当前工程 (沿用 loadScript/autoGen 的惯例)
+  try{
+    const cur = document.getElementById('editor').value;
+    if (cur && cur.trim()){
+      await fetch('/api/script/backup', {method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({content: cur, reason: 'before-switch'})});
+    }
+  }catch(e){ /* 备份失败不阻塞切换 */ }
   const r = await fetch('/api/project', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
   const d = await r.json();
