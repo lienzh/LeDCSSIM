@@ -25,12 +25,12 @@ YQ3SIM-IO/SIMPLE/简化/*
 !YQ3SIM-IO/SIMPLE/简化/*-S.csv
 _pdf_pages/
 config/_OPC_*.md
-config/opc_endpoints.yaml
-
-# 自动生成 / 备份
-config/script_backups/
-config/script.txt.bak
-config/*.generated.yaml
+config/active_project.yaml
+projects/*/opc_endpoints.yaml
+projects/*/script_backups/
+projects/*/state/
+projects/*/generated/
+projects/*/script.txt.bak
 
 # 调试临时文件
 _chk*.py

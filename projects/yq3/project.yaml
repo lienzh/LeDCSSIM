@@ -1,0 +1,8 @@
+# YQ3 工程 — 1000MW USC, 现网首个工程
+# io_dir: 简化点表目录 (viewer @ 补全 / 脚本生成扫这里)
+# io_full_dir: 全量点表目录 (tools/generate_yaml_from_pairs 配对用)
+display: YQ3 (1000MW)
+io_dir: YQ3SIM-IO/SIMPLE/简化
+io_full_dir: YQ3SIM-IO
+io_fallback_globs:
+  - YQ3SIM-IO/DPU*.csv
