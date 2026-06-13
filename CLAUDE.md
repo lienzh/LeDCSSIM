@@ -36,8 +36,8 @@ DCS 协调控制(CCS)逻辑仿真验证平台。Python 仿真模型通过 OPC UA
 
 - **Python**:3.12(3.14 不兼容 `asyncua`,严禁使用)
 - **启动命令**:统一用 `py -3.12`
-- **依赖**:`pip install asyncua pyyaml pandas`
-  - 旧依赖 `flask`、`matplotlib` 随画布层一起弃用,不要在新代码中引入
+- **依赖**:`py -3.12 -m pip install -r requirements.txt`
+  - viewer 当前仍使用 `Flask`;新代码不要再引入额外重型框架
 - **OPC UA Server**:`opc.tcp://localhost:9440`(NTVDPU)
 - **DPU 节点**:`DPU3013`
 
@@ -281,8 +281,10 @@ tests/  docs/
 | 新增 DSL 算法块 | `src/viewer/runtime.py` 的 `FUNC_ARITY` + `_eval_rhs` |
 | 工程/路径相关 | `src/project.py` |
 | 配对/点表工具 | `src/sim_engine/io_pairing_gen.py` + `tools/` |
+| 生成器规则(设备词表/白名单) | `config/drivers/{vocab,devices}.yaml`;引擎在 `src/viewer/gen/`(rules/generator/gateway) |
+| 柜间通讯生成 | `projects/<工程>/gateway.csv`(归一化柜间点对点表,Excel 清册转入);引擎 `src/viewer/gen/gateway.py` |
 
-**后续路线**(见架构讨论):驱动规则外置(设备/柜间通讯生成器规则 → yaml)→ 容量模板(`projects/_templates/`)。控制优化暂不建框架(模型库可独立 import 即留好了空间)。
+**后续路线**(见架构讨论):容量模板(`projects/_templates/`)。控制优化暂不建框架(模型库可独立 import 即留好了空间)。
 
 ## 8. OPC UA 通讯方案(已验证,DCS 硬约束)
 
