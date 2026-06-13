@@ -469,12 +469,12 @@ DPU3013.TC040208(主给水温度2), DPU3013.TC050306(主给水温度1) = 230
 
 $Model_ut = MAX(DPU3052.SH0027.PROYR.IN(central MIN selection output),20)
 $Model_uB = DPU3013.SH0098.AALMZML.PV(总煤量)
-$Model_DFW  = DPU3013.SH0500.PRO27137.IN(给水流量仿真量)
+$Model_DFW  = MAX(DPU3013.SH0500.PRO27137.IN(给水流量仿真量),500)
 $YQ3(协调模型) = CCS_1000($Model_uB/3.6, $Model_DFW/3.6,$Model_ut/100)
 $SIM_PT = $YQ3.PST
 $SIM_MW = $YQ3.NE
 $SIM_Hm = $YQ3.HM
-$T_sep(分离器温度) = STEAM_T($YQ3.HM, $YQ3.PST+1)
+$T_sep(分离器温度) = STEAM_T($SIM_Hm, $SIM_PT+1)
 
 DPU3013.AI010605(发电机功率1) = $SIM_MW
 DPU3013.AI020405(发电机功率2) = $SIM_MW
