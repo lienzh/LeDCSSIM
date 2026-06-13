@@ -206,7 +206,7 @@ DPU3013.AI010502(送风机动叶反馈) = DPU3013.AQ010101(送风机动叶指令
 DPU3002.DI060305(A给煤机故障) = 0
 ```
 - 短码 `DPU3013.AI010502` 自动展开为 `ns=0;s=DPU3013.HW.AI010502.PV`。
-- `(描述)` 仅可读性,解析忽略。函数库:`RS/RS_NOT/NOT/AND/OR/ADD/SUB/MUL/DIV/MAX/MIN/LIMIT/SEL/LAG/CHAR` + 模型工厂 `CCS_1000` + `STEAM_T`。
+- `(描述)` 仅可读性,解析忽略。函数库:`RS/RS_NOT/NOT/AND/OR/ADD/SUB/MUL/DIV/MAX/MIN/LIMIT/SEL/LAG/CHAR` + 模型工厂 `CCS_660` / `CCS_1000` + `STEAM_T`。
 - 段结构:`# ═══...` 分隔 + `# 【电机设备层 (开关量, RS 触发器)】` 等四段。
 
 ## 附录 E:环境与工具

@@ -727,7 +727,7 @@ def prune_state_to_pairs(pairs: list) -> dict:
     """保存脚本时调用 — 清掉新脚本不再引用的 LAG/RS/CCS state key,
     保留还在用的状态量. 让镜像保存不带历史脚本残留的死状态.
 
-    收集策略: 走 pairs 的 RHS 树, 看到 LAG/RS/RS_NOT/CCS_1000 就记下其 state_key,
+    收集策略: 走 pairs 的 RHS 树, 看到 LAG/RS/RS_NOT/模型工厂就记下其 state_key,
     然后对 lag_state/rs_state/ccs_state 三个 dict 做白名单过滤.
 
     INST_PIN 的 args 是 ["$YQ3.PST"], 不会触发 LAG/RS/CCS 收集.
@@ -1293,9 +1293,9 @@ def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
         s.lag_state[key] = y
         return y
 
-    # 模型工厂 (dsl_registry 注册) — $YQ3 = CCS_1000(uB, Dfw, ut)
+    # 模型工厂 (dsl_registry 注册) — $YQ3 = CCS_660(uB, Dfw, ut)
     # 返回 _CcsHandle 把柄, 后续 $YQ3.PST 等从把柄读管脚
-    # 入参 hashable 作 key → 同一脚本里多次写 $YQ3 = CCS_1000(...) 用同一份模型
+    # 入参 hashable 作 key → 同一脚本里多次写 $YQ3 = CCS_660(...) 用同一份模型
     if fname in MODEL_FACTORIES:
         spec = MODEL_FACTORIES[fname]
         key = (fname, _make_hashable(raw_args))
@@ -1818,7 +1818,7 @@ async def _opc_loop(initial_pairs: List[Tuple[str, Union[str, float]]], dt: floa
                         # 模型实例不能写到 OPC 节点 — 用户大概率写错了
                         if isinstance(v, _CcsHandle):
                             s.skip_count[lhs] = s.skip_count.get(lhs, 0) + 1
-                            s.skip_cause[lhs] = "模型实例只能绑到 $var (如 $YQ3=CCS_1000(...)), 读管脚用 $YQ3.PST"
+                            s.skip_cause[lhs] = "模型实例只能绑到 $var (如 $YQ3=CCS_660(...)), 读管脚用 $YQ3.PST"
                             continue
                         writes[lhs] = v
 

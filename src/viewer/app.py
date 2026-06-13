@@ -1449,7 +1449,7 @@ mark      { background: #ff8; padding: 0; }
 </header>
 <div class="hint">
   <b>快速</b>:<code>@关键词</code> 补全 · <code>Ctrl+G</code> 跳行 · <code>Ctrl+/</code> 注释 · <code>F1</code> 完整帮助
-  · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR CCS_1000 STEAM_T</code>
+  · 函数:<code>RS RS_NOT NOT AND OR ADD SUB MUL DIV POW SQRT ABS MAX MIN LIMIT SEL LAG CHAR CCS_660 CCS_1000 STEAM_T</code>
 </div>
 <!-- ────── 第 1 行: 工作流 (编辑 → 状态准备 → 运行) ────── -->
 <div class="toolbar">
@@ -1899,7 +1899,7 @@ async function restartViewer() {
 // ===== 语法高亮 =====
 const FN_NAMES = ['RS_NOT','RS','NOT','AND','OR','ADD','SUB','MUL','DIV',
                   'POW','SQRT','ABS','MAX','MIN','LIMIT','SEL','LAG','CHAR',
-                  'CCS_1000','STEAM_T'];
+                  'CCS_660','CCS_1000','STEAM_T'];
 const FN_RE = new RegExp('\\b(' + FN_NAMES.join('|') + ')\\b(?=\\s*\\()', 'g');
 
 function escHtml2(s) {
@@ -2422,30 +2422,32 @@ $Tmix(混合温度, 加权平均) = ADD(MUL($Vh_A, 200), MUL($Vc_A, 25)) / ($Vh_
       <td class="ex">$flow = CHAR(AI_x, 0,0, 25,5, 50,50, 75,80, 100,100)</td></tr>
 </table>
 
-<h3>协调模型 — USC-OTBT 1000MW (3 入 3 出)</h3>
-<p>论文 Fan/Su/Wang/Lee 2021 (Energy 226:120425) 的完整 CCS 动态模型。
-   <b>实例化 → 读管脚</b>:工厂函数 <code>CCS_1000(...)</code> 返回一个模型实例,绑到 <code>$实例名</code>;
+<h3>协调模型 — USC-OTBT 660MW / 1000MW (3 入 3 出)</h3>
+<p>基于论文 Fan/Su/Wang/Lee 2021 (Energy 226:120425) 的 CCS 动态模型。
+   <b>实例化 → 读管脚</b>:工厂函数 <code>CCS_660(...)</code> 或 <code>CCS_1000(...)</code> 返回一个模型实例,绑到 <code>$实例名</code>;
    后续用 <code>$实例名.PST/.HM/.NE</code> 读 3 个输出管脚。参数文件:
-   <code>config/ccs_models/usc-otbt-1000mw.yaml</code>(后续加 660MW 等 preset 时新增 <code>CCS_660</code> 工厂即可,脚本不动)。</p>
+   <code>config/ccs_models/usc-otbt-660mw.yaml</code> / <code>config/ccs_models/usc-otbt-1000mw.yaml</code>。</p>
 <table>
   <tr><th>语法</th><th>含义</th></tr>
-  <tr><td class="fn">$inst = CCS_1000(uB, Dfw, ut)</td>
-      <td>实例化论文 1000MW 模型, 绑到 <code>$inst</code>。
+  <tr><td class="fn">$inst = CCS_660(uB, Dfw, ut)</td>
+      <td>实例化 660MW 工程 preset, 绑到 <code>$inst</code>。
           <code>uB</code>=煤量指令(kg/s), <code>Dfw</code>=给水流量(kg/s), <code>ut</code>=调门开度(0~1)。
           每周期推进一步, 同一周期内被多次赋值不会重复积分。</td></tr>
+  <tr><td class="fn">$inst = CCS_1000(uB, Dfw, ut)</td>
+      <td>实例化论文 1000MW 模型, 其他用法同上。</td></tr>
   <tr><td class="fn">$inst.PST</td><td>主汽压力 (MPa)</td></tr>
   <tr><td class="fn">$inst.HM</td><td>分离器焓 (kJ/kg)</td></tr>
   <tr><td class="fn">$inst.NE</td><td>机组负荷 (MW)</td></tr>
 </table>
 <p>调用示例:</p>
 <pre># 1. 实例化 (1 次)
-$YQ3(协调模型) = CCS_1000(DPU3013.AQ_UB, DPU3013.AQ_DFW, DPU3013.AQ_UT)
+$YQ3(协调模型) = CCS_660(DPU3013.AQ_UB, DPU3013.AQ_DFW, DPU3013.AQ_UT)
 # 2. 读管脚 (任意次, 自由组合)
 DPU3013.AI_PST(主汽压力)  = $YQ3.PST
 DPU3013.AI_HM (分离器焓)  = $YQ3.HM
 DPU3013.AI_NE (机组负荷)  = $YQ3.NE</pre>
 <p><b>状态管理</b>:模型内部 4 个状态量(rB/pm/hm/Ne)+ 煤粉 τ=20s 延迟队列。
-   点【🗑 重置初值】或【🔥 清空状态】会按 yaml seed(600.9MW THA 工况)重置;启动后约 10 分钟收敛到当前输入对应的稳态。
+   点【🗑 重置初值】或【🔥 清空状态】会按对应 yaml seed 重置;启动后约 10 分钟收敛到当前输入对应的稳态。
    <b>论文模型</b>静态参数 R²: k1=0.71、λ=0.88(残差较大),稳态 Ne 误差最大 6.6%(论文 Table 7)— 这是论文模型本身的精度,非实现 bug。</p>
 
 <h3>水蒸气热力性质 — STEAM_T</h3>

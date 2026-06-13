@@ -14,6 +14,7 @@ from src.models.ccs_usc_otbt import CcsUscOtbt, load_params
 
 
 PARAMS = load_params("config/ccs_models/usc-otbt-1000mw.yaml")
+PARAMS_660 = load_params("config/ccs_models/usc-otbt-660mw.yaml")
 
 
 # ---------- 1. 参数文件加载 ----------
@@ -29,6 +30,16 @@ def test_params_load():
         assert len(coeffs) == 4, f"{name} 应有 4 个三次多项式系数, 实际 {len(coeffs)}"
 
 
+def test_660_params_load():
+    """660MW 工程 preset 字段齐全, 且负荷范围按 660MW 机组收紧"""
+    assert PARAMS_660["meta"]["scale_from_1000mw"] == 0.66
+    assert PARAMS_660["meta"]["Ne_range_MW"] == [198, 693]
+    assert PARAMS_660["limits"]["uB"] == [20, 80]
+    for name in ("hfw", "k1", "k2", "lam", "alpha"):
+        coeffs = PARAMS_660["static_poly"][name]
+        assert len(coeffs) == 4, f"{name} 应有 4 个三次多项式系数, 实际 {len(coeffs)}"
+
+
 # ---------- 2. 模型实例化 + 初始稳态 ----------
 
 def test_reset_to_seed():
@@ -36,6 +47,16 @@ def test_reset_to_seed():
     m = CcsUscOtbt(PARAMS)
     seed = PARAMS["seed"]
     assert abs(m.Ne - seed["Ne0"]) < 1e-6
+    assert abs(m.rB - seed["uB0"]) < 1e-6
+    assert abs(m.hm - seed["hm0"]) < 1e-6
+    assert abs(m.pm - seed["pm0"]) < 1e-6
+
+
+def test_660_reset_to_seed():
+    """660MW preset 使用接近 YQ3 高负荷的 600.9MW 种子点"""
+    m = CcsUscOtbt(PARAMS_660)
+    seed = PARAMS_660["seed"]
+    assert abs(m.Ne - 600.9) < 1e-6
     assert abs(m.rB - seed["uB0"]) < 1e-6
     assert abs(m.hm - seed["hm0"]) < 1e-6
     assert abs(m.pm - seed["pm0"]) < 1e-6
@@ -60,12 +81,38 @@ def test_steady_state_stability():
     assert drift_pct < 10, f"600s 稳态漂移 {drift_pct:.1f}% > 10%"
 
 
+def test_660_steady_state_stability():
+    """660MW preset 保持同一高负荷工况 600 秒, Ne 不发散"""
+    m = CcsUscOtbt(PARAMS_660)
+    seed = PARAMS_660["seed"]
+    dt = 0.2
+    _, _, Ne_init = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
+    for _ in range(int(600 / dt) - 1):
+        _, _, Ne = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
+    assert math.isfinite(Ne), f"Ne 发散到非有限值: {Ne}"
+    drift_pct = abs(Ne - Ne_init) / Ne_init * 100
+    assert drift_pct < 10, f"660MW preset 600s 稳态漂移 {drift_pct:.1f}% > 10%"
+
+
 # ---------- 4. 阶跃响应方向 ----------
 
 def _settle_then_step(uB, Dfw, ut, T_step=300):
     """先稳 100s, 再阶跃跑 T_step 秒, 返回前后变化量"""
     m = CcsUscOtbt(PARAMS)
     seed = PARAMS["seed"]
+    dt = 0.2
+    for _ in range(int(100 / dt)):
+        m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
+    pst0, hm0, Ne0 = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
+    for _ in range(int(T_step / dt)):
+        pst, hm, Ne = m.step(uB, Dfw, ut, dt)
+    return (pst - pst0, hm - hm0, Ne - Ne0)
+
+
+def _settle_then_step_with(params, uB, Dfw, ut, T_step=300):
+    """指定参数集的阶跃测试工具"""
+    m = CcsUscOtbt(params)
+    seed = params["seed"]
     dt = 0.2
     for _ in range(int(100 / dt)):
         m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
@@ -95,6 +142,27 @@ def test_step_ut_up_lowers_pst():
     assert dpst < 0, f"调门↑ pst 应降, 实际 {dpst:+.3f}"
 
 
+def test_660_step_directions():
+    """660MW preset 保持 CCS 基本方向: 煤增升负荷、给水增降焓、调门增降压"""
+    seed = PARAMS_660["seed"]
+    dpst, dhm, dNe = _settle_then_step_with(
+        PARAMS_660, seed["uB0"] + 10.0, seed["Dfw0"], seed["ut0"]
+    )
+    assert dpst > 0, f"660MW 煤量↑ pst 应升, 实际 {dpst:+.3f}"
+    assert dhm > 0, f"660MW 煤量↑ hm 应升, 实际 {dhm:+.1f}"
+    assert dNe > 0, f"660MW 煤量↑ Ne 应升, 实际 {dNe:+.2f}"
+
+    dpst, dhm, dNe = _settle_then_step_with(
+        PARAMS_660, seed["uB0"], seed["Dfw0"] + 30.0, seed["ut0"]
+    )
+    assert dhm < 0, f"660MW 给水↑ hm 应降, 实际 {dhm:+.1f}"
+
+    dpst, dhm, dNe = _settle_then_step_with(
+        PARAMS_660, seed["uB0"], seed["Dfw0"], seed["ut0"] + 0.1
+    )
+    assert dpst < 0, f"660MW 调门↑ pst 应降, 实际 {dpst:+.3f}"
+
+
 # ---------- 5. 数值鲁棒性 — 极限输入不出 NaN ----------
 
 def test_extreme_inputs_no_nan():
@@ -109,6 +177,20 @@ def test_extreme_inputs_no_nan():
         assert math.isfinite(m.pm) and math.isfinite(m.hm) \
             and math.isfinite(m.Ne) and math.isfinite(m.rB), \
             f"{label}: 状态出非有限值 pm={m.pm} hm={m.hm} Ne={m.Ne} rB={m.rB}"
+
+
+def test_660_extreme_inputs_no_nan():
+    """660MW preset 极限输入保持 finite"""
+    for label, (uB, Dfw, ut) in [
+        ("max", (80.0, 33 + 16 * 80, 1.0)),
+        ("min", (20.0, 33.0, 0.5)),
+    ]:
+        m = CcsUscOtbt(PARAMS_660)
+        for _ in range(500):
+            m.step(uB, Dfw, ut, 0.2)
+        assert math.isfinite(m.pm) and math.isfinite(m.hm) \
+            and math.isfinite(m.Ne) and math.isfinite(m.rB), \
+            f"660MW {label}: 状态出非有限值 pm={m.pm} hm={m.hm} Ne={m.Ne} rB={m.rB}"
 
 
 # ---------- 6. 煤粉延迟 — τ=20s 后才看到输入影响 ----------

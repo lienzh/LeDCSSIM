@@ -101,10 +101,11 @@ DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
 ```
 函数库:`RS/RS_NOT/NOT/AND/OR/ADD/SUB/MUL/DIV/MAX/MIN/LIMIT/SEL/LAG`
 
-**CCS 工艺模型**(在 DSL 脚本中通过 `CCS_PST(...)` / `CCS_HM(...)` / `CCS_NE(...)` 等函数名调用):
+**CCS 工艺模型**(在 DSL 脚本中通过 `CCS_660(...)` / `CCS_1000(...)` 等工厂函数调用):
 - 实现位置:`src/models/`(ccs_usc_otbt.py / steam.py)
-- 参数 yaml:`config/ccs_models/<preset>.yaml`(如 `660mw.yaml`、`1000mw.yaml`)
+- 参数 yaml:`config/ccs_models/<preset>.yaml`(现有 `usc-otbt-660mw.yaml`、`usc-otbt-1000mw.yaml`)
 - 工厂注册表:`src/models/dsl_registry.py` → `MODEL_FACTORIES` 字典
+- 当前 YQ3 为 660MW 机组,工程脚本使用 `CCS_660`;`CCS_1000` 仅保留为论文 1000MW preset
 - **加容量预设**:在 `MODEL_FACTORIES` 加一条 key + 新建对应参数 yaml,runtime 不动
 - 红线测试:`tests/test_models_isolation.py` — 保证 `src/models` 不依赖 viewer/flask/asyncua/opc_client/adapter
 
@@ -139,7 +140,7 @@ DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
 - 激活指针:`config/active_project.yaml`(gitignored);唯一真相源 `src/project.py`
 - 切换仅在**停止态**允许;切换前自动备份 editor;切换后清空内存 RS/LAG/$var/模型实例(A 工程状态绝不带进 B 工程),整页 reload
 - 新建工程 = 建目录 + 写 project.yaml
-- 现有工程:`projects/yq3/`(YQ3 1000MW)
+- 现有工程:`projects/yq3/`(YQ3 660MW)
 - API:`GET /api/project`(列表 + 当前),`POST /api/project`(切换,body `{name}`)
 
 **viewer 运行前工作流**(📤 下载 / 📥 上载 / 🔍 预演):

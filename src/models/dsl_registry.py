@@ -21,6 +21,13 @@ class ModelFactorySpec:
 
 
 MODEL_FACTORIES = {
+    # $YQ3 = CCS_660(uB, Dfw, ut);  读管脚: $YQ3.PST / $YQ3.HM / $YQ3.NE
+    "CCS_660": ModelFactorySpec(
+        arity=3,
+        pins=("PST", "HM", "NE"),
+        params_path="config/ccs_models/usc-otbt-660mw.yaml",
+        make=lambda params: CcsUscOtbt(params),
+    ),
     # $YQ3 = CCS_1000(uB, Dfw, ut);  读管脚: $YQ3.PST / $YQ3.HM / $YQ3.NE
     "CCS_1000": ModelFactorySpec(
         arity=3,

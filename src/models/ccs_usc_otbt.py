@@ -12,7 +12,7 @@
     输出  Y = [pst, hm, Ne]    主汽压力 / 分离器焓 / 机组负荷
     状态  X = [rB, pm, hm, Ne]
 
-参数由 yaml 注入, 论文 1000MW USC-OTBT 的全部系数见 config/ccs_models/usc-otbt-1000mw.yaml
+参数由 yaml 注入, 容量 preset 见 config/ccs_models/usc-otbt-660mw.yaml / usc-otbt-1000mw.yaml
 """
 from __future__ import annotations
 

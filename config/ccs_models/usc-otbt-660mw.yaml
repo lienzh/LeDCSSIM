@@ -1,0 +1,89 @@
+# USC-OTBT 660MW 协调控制系统模型 (CCS) 参数
+# 来源说明:
+#   公开英文文献可找到 660MW 超临界直流炉动态仿真论文, 但未公开一套可直接
+#   复刻到 YQ3 的 CCS 三入三出控制用完整系数表。本 preset 采用项目现有
+#   Fan/Su/Wang/Lee 2021 USC-OTBT 方程与热力回归, 以 600.9MW 工况作为
+#   YQ3 660MW 机组的高负荷种子点, 并按 0.66 缩放锅炉/金属蓄热库存量。
+#   后续若拿到 YQ3 趋势数据, 优先校准 seed、dyn.Vm、dyn.mj、energy.mu。
+#
+# 论文结构:
+#   Fan H., Su Z.-g., Wang P.-h., Lee K.Y.
+#   "A dynamic nonlinear model for a wide-load range operation of
+#    ultra-supercritical once-through boiler-turbine units"
+#   Energy 226 (2021) 120425
+#
+# 660MW 参考文献:
+#   Zhao et al., Applied Energy 2018, 660MW supercritical once-through boiler
+#   Liu et al., Energy 2025, 660MW supercritical deep peak shaving
+#
+# 3 输入 (uB, Dfw, ut) → 3 输出 (pst, hm, Ne); 4 状态 (rB, pm, hm, Ne)
+# DSL 调用: $YQ3 = CCS_660(uB, Dfw, ut); $YQ3.PST / $YQ3.HM / $YQ3.NE
+
+meta:
+  name: USC-OTBT 660MW engineering preset
+  source: "Derived from Fan/Su/Wang/Lee 2021 Energy 226:120425; 660MW inventory scaled for YQ3"
+  Ne_range_MW: [198, 693]    # 约 30%~105% 660MW 机组负荷范围
+  scale_from_1000mw: 0.66
+  calibration_status: "engineering preset; tune against YQ3 trends when available"
+
+# 静态参数: y = a·Ne³ + b·Ne² + c·Ne + d  (Ne 单位 MW)
+# 保留 1000MW 论文回归。YQ3 当前关心的 330~660MW 区间仍在原论文实测范围内。
+static_poly:
+  hfw:   [9.778e-7,   -2.4e-3,    2.27,       449.3   ]   # 给水焓 kJ/kg
+  k1:    [-5.55e-5,    0.12,     -84.87,    35634.5   ]   # 单位煤热 kJ/kg
+  k2:    [2.341e-13,  -6.56e-10,  7.15e-7,    3.02e-4 ]   # 汽轮机系数
+  lam:   [-1.383e-10,  1.314e-7,  1.578e-4,   1.116   ]   # 主汽焓/分离器焓比
+  alpha: [-2.24e-8,    5.182e-5, -3.851e-2,  16.075   ]   # 水煤比 Dfw/rB
+
+# 动态参数
+# c0/c3/tau 保留原动态时间尺度; mj/Vm 为库存量, 按 0.66 缩放。
+dyn:
+  c0:  380       # 制粉惯性时间 s
+  c3:   40       # 汽轮机惯性时间 s
+  tau:  20       # 制粉纯延迟 s
+  cj:   0.46     # 金属比热 kJ/(kg·℃)
+  mj:  462000    # 金属质量 kg = 700000 * 0.66
+  Vm:     421.74 # 锅炉容积 m³ = 639 * 0.66
+
+# 能量错配函数 + 节流损失
+# 先保留原回归增益, 避免在无 YQ3 趋势数据时同时改静态与动态灵敏度。
+energy:
+  mu:    334496.1
+  gamma:    171.4
+  eta:        8
+
+# 蒸汽热力性质回归式
+steam:
+  dp:
+    a: 0.0522
+    b: -0.00281
+  Dst:
+    a: 145191.5
+    b: -199.47
+  rho_m:
+    a: -0.005248
+    b: -0.003204
+    c: 19.7835
+    d: 9.7266
+  T_m_dh:
+    a: 0.0018113
+    b: 0.2012
+  T_m_dp:
+    a: 0.0018113
+    b: 11.143
+
+# 输入约束
+limits:
+  uB:       [20, 80]       # 煤量 kg/s, 660MW 工程范围
+  ut:       [0.5, 1.0]     # 调门开度
+  Dfw_band_from_arB: 33    # kg/s, 约 50 * 0.66
+
+# 初始稳态种子
+# 600.9MW 对 660MW 机组约 91% 负荷, 比按容量缩放到 396MW 更贴近 YQ3 高负荷调试。
+seed:
+  Ne0:  600.9    # MW
+  uB0:   65.5    # kg/s
+  Dfw0: 452.8    # kg/s
+  ut0:    0.6733
+  hm0:  2880.6   # kJ/kg
+  pm0:   16.462  # MPa
