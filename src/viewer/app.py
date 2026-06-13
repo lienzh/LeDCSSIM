@@ -973,13 +973,22 @@ def api_script_reinit():
 @app.route("/api/script/reinit_from_dcs", methods=["POST"])
 def api_script_reinit_from_dcs():
     """从 DCS 读当前值, 把直接写 OPC 的 LAG 的 lag_state 设为 DCS 值 (VM 镜像还原后用)"""
-    return jsonify(rt.reinit_lag_from_dcs())
+    try:
+        return jsonify(rt.reinit_lag_from_dcs())
+    except Exception as e:
+        app.logger.exception("reinit_from_dcs failed")
+        return jsonify({"ok": False, "error": f"上载异常: {e}",
+                        "msg": f"✗ 上载异常: {e}"})
 
 
 @app.route("/api/script/dryrun_preview", methods=["POST"])
 def api_script_dryrun_preview():
     """干运行预演: 读 DCS 现状 → 算一遍 → 报告 (computed vs actual vs diff vs risk)"""
-    return jsonify(rt.dryrun_preview())
+    try:
+        return jsonify(rt.dryrun_preview())
+    except Exception as e:
+        app.logger.exception("dryrun_preview failed")
+        return jsonify({"ok": False, "error": f"预演异常: {e}"})
 
 
 @app.route("/api/script/state/save", methods=["POST"])
@@ -2935,15 +2944,25 @@ function renderDryrun() {
 async function syncLagFromDcs() {
   if (!confirm('上载?\n\n方向: 工程 (NTVDPU) → 本项目\n\n4 步流程:\n  1. 检查 OPC 状态 (确认工程可达, 不行直接给清晰错误)\n  2. 读 DCS 当前值 — 所有直接写 OPC 的 LHS (含 LAG / RS / RS_NOT)\n  3. 无扰跟踪处理:\n       · LAG (含嵌套, 穿过 $var/LIMIT 等): lag_state = DCS 值\n       · RS (合位/开位等): Q = DCS 值\n       · RS_NOT (跳位/关位等): Q = NOT DCS 值 (反算)\n       · last_written 清空, 第 1 周期强制重写\n  4. 接着点【▶ 运行】, 第 1 周期写出去 = DCS 现状 → 零跳变,\n     后续按各 τ 平滑过渡到算法目标\n\n· 只动 LAG / RS state (RS_NOT 也用同一个 rs_state)\n· $var / 镜像文件 / 配置 都不变\n· 普通编辑保存的工作流不受影响\n\n前置: OPC 循环必须已停\n典型场景: VM 镜像还原 / CCMStudio 重下组态 / DCS 端被人工改过')) return;
   setStatus('📥 正在 4 步上载 (OPC 检查 → 读 → 无扰同步 → 待运行)...', 'run');
-  const r = await fetch('/api/script/reinit_from_dcs', {method: 'POST'});
-  const d = await r.json();
-  if (d.ok) {
-    setStatus(`📥 上载完成:\n${d.msg}`, 'ok');
-    // 拉新 status (含刚灌进的 last_read), 强制刷一次面板 (停止状态下 panel 被冻结 skip)
-    await pollStatus();
-    renderValsForced();
-  } else {
-    setStatus(`✗ ${d.msg || d.error}`, 'err');
+  try {
+    const r = await fetch('/api/script/reinit_from_dcs', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const msg = `📥 上载成功\n\n${d.msg || ''}`;
+      setStatus(msg, 'ok');
+      alert(msg);
+      // 拉新 status (含刚灌进的 last_read), 强制刷一次面板 (停止状态下 panel 被冻结 skip)
+      await pollStatus();
+      renderValsForced();
+    } else {
+      const msg = `📥 上载失败\n\n${d.msg || d.error || '未知错误'}`;
+      setStatus(`✗ ${d.msg || d.error || '上载失败'}`, 'err');
+      alert(msg);
+    }
+  } catch (e) {
+    const msg = `📥 上载请求失败\n\n${e}`;
+    setStatus(`✗ 上载请求失败: ${e}`, 'err');
+    alert(msg);
   }
 }
 

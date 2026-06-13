@@ -559,11 +559,7 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
                 except Exception: pass
     # 模拟一周期更新 $var + LHS 显示值 (用 sim 副本 + dt=0, 不影响真实 lag_state/rs_state)
     # 否则 panel 显示的 $M_X 等中间变量是上次跑停下来的 stale, 跟刚读的 DCS 对不上
-    class _Sim: pass
-    sim = _Sim()
-    sim.lag_state = dict(s.lag_state)   # 用刚锚定的 state
-    sim.rs_state = dict(s.rs_state)
-    sim.intermediates = {}
+    sim = _EvalSimState(s, cycle_count=s.cycle_count + 1)
     refreshed = 0
     for lhs, rhs in pairs:
         try:
@@ -644,11 +640,7 @@ def dryrun_preview(opc_url: Optional[str] = None) -> dict:
         return {"ok": False, "error": f"OPC 读失败: {e}"}
 
     # 模拟一个周期 (用当前 lag_state/rs_state 副本, intermediates 从空算起)
-    class _Sim: pass
-    sim = _Sim()
-    sim.lag_state = dict(s.lag_state)
-    sim.rs_state = dict(s.rs_state)
-    sim.intermediates = {}
+    sim = _EvalSimState(s, cycle_count=s.cycle_count + 1)
 
     def _classify(rhs):
         if isinstance(rhs, tuple): return rhs[0]
@@ -1187,6 +1179,40 @@ class _CcsHandle:
             self.last_cycle = cycle
             outs = self.model.step(*vals, dt)
             self.outputs = dict(zip(self.pins, outs))
+
+
+class _EvalSimState:
+    """上载/预演用的临时求值状态, 避免干运行污染真实运行状态。"""
+
+    def __init__(self, src_state=None, cycle_count: int = 0):
+        self.lag_state = dict(getattr(src_state, "lag_state", {}))
+        self.rs_state = dict(getattr(src_state, "rs_state", {}))
+        self.intermediates = {}
+        self.ccs_state = _clone_ccs_state(getattr(src_state, "ccs_state", {}))
+        self.cycle_count = cycle_count
+
+
+def _clone_ccs_state(ccs_state: dict) -> dict:
+    """复制 CCS 模型实例池, 供预演/上载刷新使用。
+
+    不能直接 dict() 浅拷贝: _CcsHandle 内部模型有积分状态, 干运行 step 会污染真实状态。
+    """
+    cloned = {}
+    for key, handle in ccs_state.items():
+        try:
+            fname = key[0]
+            spec = MODEL_FACTORIES[fname]
+            params = get_factory_params(fname)
+            if params is None:
+                continue
+            new_handle = _CcsHandle(spec.make(params), spec.pins)
+            if hasattr(handle.model, "get_state") and hasattr(new_handle.model, "set_state"):
+                new_handle.model.set_state(handle.model.get_state())
+            new_handle.outputs = dict(handle.outputs)
+            cloned[key] = new_handle
+        except Exception:
+            continue
+    return cloned
 
 
 def _eval_rhs(rhs, val_by_node: dict, s, dt: float):
