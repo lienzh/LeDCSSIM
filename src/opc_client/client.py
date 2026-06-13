@@ -188,16 +188,20 @@ class OPCClient:
         try:
             await node.write_value(ua.DataValue(ua.Variant(adapted, variant_type)))
         except ua.uaerrors.BadTypeMismatch:
-            # NTVDPU read/write VariantType 不一致 — 用 Float 重试
-            float_val = self._adapt_value(value, ua.VariantType.Float)
-            try:
-                await node.write_value(ua.DataValue(ua.Variant(float_val, ua.VariantType.Float)))
-            except Exception:
-                raise   # Float 也不行就抛原异常类型
-            else:
-                # Float 写成功, 标记节点, 下次绕开 Boolean
+            # NTVDPU read/write VariantType 不一致, 且 schema 会随通道状态翻转
+            # (实测 2026-06-13: 同一 DI 点先是只收 Float, 下装/重启后变只收 Boolean)
+            # → 用"另一边"类型重试: 刚试 Float 就换 Boolean, 其余换 Float
+            alt = (ua.VariantType.Boolean if variant_type == ua.VariantType.Float
+                   else ua.VariantType.Float)
+            alt_val = self._adapt_value(value, alt)
+            await node.write_value(ua.DataValue(ua.Variant(alt_val, alt)))  # 仍失败则抛给上层
+            # 重试成功 → 缓存跟着翻转, 下次直接用对的类型
+            if alt == ua.VariantType.Float:
                 self._FORCE_FLOAT_NODES.add(node_id)
-                logger.info(f"[NTVDPU quirk] {node_id} 用 Float 写成功 (Boolean 被拒), 已缓存")
+                logger.info(f"[NTVDPU quirk] {node_id} 用 Float 写成功 (原类型被拒), 已缓存")
+            else:
+                self._FORCE_FLOAT_NODES.discard(node_id)
+                logger.info(f"[NTVDPU quirk] {node_id} 用 Boolean 写成功 (Float 被拒), 缓存翻转")
 
     async def write_values(self, values: Dict[str, Any],
                            variant_types: Dict[str, ua.VariantType] = None):
