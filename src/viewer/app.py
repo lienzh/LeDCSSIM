@@ -3002,7 +3002,7 @@ async function refreshSnapInfo() {
   }
   html += `<div style="color:#888;font-size:11px;margin-bottom:8px">
     保存时间 <b>${info.saved_at}</b> (${info.age_s} 秒前) ·
-    文件 <code style="font-size:10px">${info.path||'data/state_snapshot.json'}</code> · ${info.size_bytes} B
+    文件 <code style="font-size:10px">${info.path||'(当前工程 state/state_snapshot.json)'}</code> · ${info.size_bytes} B
   </div>`;
 
   // 详情表
