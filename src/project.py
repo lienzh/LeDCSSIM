@@ -66,6 +66,10 @@ class ProjectPaths:
             Path(meta.get("io_full_dir")) if meta.get("io_full_dir") else self.io_dir
         )
 
+        # 驱动规则目录: 工程级 projects/<name>/drivers/ 优先, 否则仓库默认 config/drivers/
+        _proj_drivers = self.root / "drivers"
+        self.drivers_dir = _proj_drivers if _proj_drivers.is_dir() else Path("config/drivers")
+
 
 def list_projects() -> List[str]:
     """列出 projects/ 下所有工程名 (排除 _ 开头的目录), 按名称排序"""

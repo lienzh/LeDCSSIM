@@ -55,3 +55,18 @@ def test_set_active_and_underscore_excluded(tmp_path, monkeypatch):
         assert False, "不存在的工程应当抛 ValueError"
     except ValueError:
         pass
+
+
+def test_drivers_dir_project_first_then_config(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    root = tmp_path / "projects" / "demo"
+    root.mkdir(parents=True)
+
+    # 无工程级 drivers/ → 兜底 config/drivers
+    p = prj.paths("demo")
+    assert p.drivers_dir == Path("config/drivers")
+
+    # 有工程级 drivers/ → 用工程自己的规则目录
+    (root / "drivers").mkdir()
+    p2 = prj.paths("demo")
+    assert p2.drivers_dir == root / "drivers"
