@@ -1,10 +1,9 @@
 # USC-OTBT 660MW 协调控制系统模型 (CCS) 参数
 # 来源说明:
-#   公开英文文献可找到 660MW 超临界直流炉动态仿真论文, 但未公开一套可直接
-#   复刻到 YQ3 的 CCS 三入三出控制用完整系数表。本 preset 采用项目现有
-#   Fan/Su/Wang/Lee 2021 USC-OTBT 方程与热力回归, 以 600.9MW 工况作为
-#   YQ3 660MW 机组的高负荷种子点, 并按 0.66 缩放锅炉/金属蓄热库存量。
-#   后续若拿到 YQ3 趋势数据, 优先校准 seed、dyn.Vm、dyn.mj、energy.mu。
+#   模型动态结构来自 Fan/Su/Wang/Lee 2021 USC-OTBT 方程。
+#   YQ3 适配层采用现场静态曲线: NE-uB、NE-PST、NE-DFW。
+#   本 preset 优先保证 200-600MW 段静态曲线准确; 过热度 30℃仅记录为
+#   后续 HM/温度校准目标, 本轮不从温度反推焓。
 #
 # 论文结构:
 #   Fan H., Su Z.-g., Wang P.-h., Lee K.Y.
@@ -20,11 +19,48 @@
 # DSL 调用: $YQ3 = CCS_660(uB, Dfw, ut); $YQ3.PST / $YQ3.HM / $YQ3.NE
 
 meta:
-  name: USC-OTBT 660MW engineering preset
-  source: "Derived from Fan/Su/Wang/Lee 2021 Energy 226:120425; 660MW inventory scaled for YQ3"
+  name: YQ3 USC-OTBT 660MW curve-calibrated preset
+  source: "Fan/Su/Wang/Lee 2021 model structure + YQ3 static curves"
   Ne_range_MW: [198, 693]    # 约 30%~105% 660MW 机组负荷范围
   scale_from_1000mw: 0.66
-  calibration_status: "engineering preset; tune against YQ3 trends when available"
+  calibration_status: "YQ3 static curve calibrated for 200-600MW"
+
+# YQ3 静态曲线校准层
+# - 曲线点来自现场静态曲线截图
+# - uB / Dfw 原始单位为 t/h, 模型内部仍用 kg/s
+# - 200-600MW 为主要精度区间; 区间外端点钳位, 不做高阶外推
+yq3_static_curves:
+  valid_ne_range: [200, 600]
+  ut_nominal: 0.70
+  superheat_target_c: 30
+  tau_ne: 40
+  tau_pst: 40
+  ne_to_ub_tph:
+    - [0, 0]
+    - [198, 83]
+    - [231, 96]
+    - [330, 132.3]
+    - [495, 182.4]
+    - [600, 217.1]
+    - [660, 236.92]
+    - [700, 252.7]
+  ne_to_pst_mpa:
+    - [0, 8.5]
+    - [198, 8.5]
+    - [231, 10.3]
+    - [270, 12.4]
+    - [330, 13.9]
+    - [396, 16.4]
+    - [450, 18.4]
+    - [528, 21.6]
+    - [600, 23.9]
+    - [660, 25.0]
+  ne_to_dfw_tph:
+    - [132, 1045]
+    - [242, 1100]
+    - [330, 1118]
+    - [495, 1220]
+    - [660, 1300]
 
 # 静态参数: y = a·Ne³ + b·Ne² + c·Ne + d  (Ne 单位 MW)
 # 保留 1000MW 论文回归。YQ3 当前关心的 330~660MW 区间仍在原论文实测范围内。
@@ -79,11 +115,11 @@ limits:
   Dfw_band_from_arB: 33    # kg/s, 约 50 * 0.66
 
 # 初始稳态种子
-# 600.9MW 对 660MW 机组约 91% 负荷, 比按容量缩放到 396MW 更贴近 YQ3 高负荷调试。
+# 按 YQ3 静态曲线 600MW 工况给定; 上载后仍会锚到工程当前实际值。
 seed:
-  Ne0:  600.9    # MW
-  uB0:   65.5    # kg/s
-  Dfw0: 452.8    # kg/s
-  ut0:    0.6733
+  Ne0:  600.0    # MW
+  uB0:   60.3055555556  # kg/s = 217.1 t/h
+  Dfw0: 353.0303030303  # kg/s = 1270.909 t/h
+  ut0:    0.70
   hm0:  2880.6   # kJ/kg
-  pm0:   16.462  # MPa
+  pm0:   25.2130618274  # MPa, 对应 pst=23.9MPa

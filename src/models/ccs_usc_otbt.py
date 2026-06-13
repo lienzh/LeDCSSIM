@@ -18,7 +18,36 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from typing import Tuple
+from typing import Optional, Tuple
+
+
+def _as_points(points) -> list[tuple[float, float]]:
+    """YAML 点列 → 按 x 升序的 float 点列。"""
+    return sorted((float(x), float(y)) for x, y in points)
+
+
+def interp_y(x: float, points) -> float:
+    """分段线性插值: 用 x 查 y, 端点外钳位。"""
+    pts = _as_points(points)
+    if not pts:
+        raise ValueError("插值点列为空")
+    x = float(x)
+    if x <= pts[0][0]:
+        return pts[0][1]
+    if x >= pts[-1][0]:
+        return pts[-1][1]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        if x0 <= x <= x1:
+            if x1 == x0:
+                return y0
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return pts[-1][1]
+
+
+def interp_x(y: float, points) -> float:
+    """反向分段线性插值: 用 y 查 x, 端点外钳位。"""
+    pts = sorted((float(y0), float(x0)) for x0, y0 in points)
+    return interp_y(float(y), pts)
 
 
 class CcsUscOtbt:
@@ -26,6 +55,7 @@ class CcsUscOtbt:
 
     def __init__(self, params: dict):
         self.p = params
+        self._curves: dict = params.get("yq3_static_curves") or {}
         # 煤粉纯延迟队列 (FIFO, 长度由 dt 在首次 step 时确定)
         self._delay_q: deque[float] = deque()
         self._delay_dt: float = 0.0
@@ -50,6 +80,38 @@ class CcsUscOtbt:
     def k2_of(self, Ne: float)  -> float: return self._poly("k2",  Ne)
     def lam_of(self, Ne: float) -> float: return self._poly("lam", Ne)
     def alpha_of(self, Ne: float) -> float: return self._poly("alpha", Ne)
+
+    # ─── YQ3 静态曲线校准层 ─────────────────────────────────
+    def has_yq3_curves(self) -> bool:
+        return bool(self._curves)
+
+    def curve_ne_from_ub(self, uB_kg_s: float) -> Optional[float]:
+        """用煤量 kg/s 反查曲线目标负荷 MW。"""
+        if not self._curves:
+            return None
+        return interp_x(float(uB_kg_s) * 3.6, self._curves["ne_to_ub_tph"])
+
+    def curve_pst_from_ne(self, Ne: float) -> Optional[float]:
+        """用负荷 MW 查曲线主汽压力 MPa。"""
+        if not self._curves:
+            return None
+        return interp_y(float(Ne), self._curves["ne_to_pst_mpa"])
+
+    def curve_dfw_from_ne(self, Ne: float) -> Optional[float]:
+        """用负荷 MW 查曲线给水流量 kg/s。"""
+        if not self._curves:
+            return None
+        return interp_y(float(Ne), self._curves["ne_to_dfw_tph"]) / 3.6
+
+    def curve_targets(self, uB_kg_s: float) -> Optional[dict]:
+        """按当前煤量给出曲线目标值。"""
+        if not self._curves:
+            return None
+        ne = self.curve_ne_from_ub(uB_kg_s)
+        pst = self.curve_pst_from_ne(ne)
+        dfw = self.curve_dfw_from_ne(ne)
+        ub_target = interp_y(ne, self._curves["ne_to_ub_tph"]) / 3.6
+        return {"Ne": ne, "pst": pst, "Dfw": dfw, "uB": ub_target}
 
     # ─── 蒸汽热力性质 ──────────────────────────────────────────
     def _rho_m(self, pm: float, hm: float) -> float:
@@ -76,6 +138,15 @@ class CcsUscOtbt:
         """主汽压降 Δp = a·pm + b → pst = pm - Δp"""
         s = self.p["steam"]["dp"]
         return s["a"] * pm + s["b"]
+
+    def _pm_from_pst(self, pst: float) -> float:
+        """由 pst = pm - (a·pm + b) 反算 pm。"""
+        s = self.p["steam"]["dp"]
+        a = float(s["a"])
+        b = float(s["b"])
+        if abs(1.0 - a) < 1e-9:
+            return pst
+        return (float(pst) + b) / (1.0 - a)
 
     def _f_pst_hst(self, pst: float, hst: float) -> float:
         """Dst = ut · f(pst, hst), 这里只算 f = a·pst / (hst + b)"""
@@ -131,6 +202,10 @@ class CcsUscOtbt:
         k2  = self.k2_of(Ne)
         lam = self.lam_of(Ne)
         alpha = self.alpha_of(Ne)
+        curve_targets = self.curve_targets(uB)
+        if curve_targets:
+            # YQ3 静态曲线提供当前负荷下的水煤比参考, 原 Q1 仍负责给水偏差对焓的影响。
+            alpha = curve_targets["Dfw"] / max(curve_targets["uB"], 1e-6)
 
         # ── 中间量 ────────────────────────────────────────
         dp = self._delta_p(pm)
@@ -197,6 +272,23 @@ class CcsUscOtbt:
 
         # 论文 (15): dNe/dt = (k2·(hst-hfw)·Dst + ΔQloss)/c3 - Ne/c3
         dNe_dt = (k2 * (hst - hfw) * Dst + DQloss) / c3 - Ne / c3
+
+        if curve_targets:
+            # YQ3 曲线校准: NE/PST 的稳态目标贴合机组静态曲线, 动态仍走一阶平滑。
+            # HM 不从过热度/温度反推, 仅按给水相对曲线基准的偏差做工程校正。
+            tau_ne = float(self._curves.get("tau_ne", c3))
+            tau_pst = float(self._curves.get("tau_pst", c3))
+            tau_hm = float(self._curves.get("tau_hm", 120.0))
+            tau_ne = max(tau_ne, dt)
+            tau_pst = max(tau_pst, dt)
+            tau_hm = max(tau_hm, dt)
+            dNe_dt = (curve_targets["Ne"] - Ne) / tau_ne
+            pm_target = self._pm_from_pst(curve_targets["pst"])
+            dpm_dt = (pm_target - pm) / tau_pst
+            hm_ref = float(self.p["seed"]["hm0"])
+            hm_dfw_gain = float(self._curves.get("hm_dfw_gain", 2.0))
+            hm_target = hm_ref - hm_dfw_gain * (Dfw - curve_targets["Dfw"])
+            dhm_dt = (hm_target - hm) / tau_hm
 
         # ── Euler 推进 ────────────────────────────────────
         self.rB = rB + dt * drB_dt

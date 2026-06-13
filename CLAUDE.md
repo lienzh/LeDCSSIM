@@ -105,7 +105,7 @@ DPU3013.SH0500.PRO21120.IN = 100.0             # SH 组态段 (无 HW. / .PV)
 - 实现位置:`src/models/`(ccs_usc_otbt.py / steam.py)
 - 参数 yaml:`config/ccs_models/<preset>.yaml`(现有 `usc-otbt-660mw.yaml`、`usc-otbt-1000mw.yaml`)
 - 工厂注册表:`src/models/dsl_registry.py` → `MODEL_FACTORIES` 字典
-- 当前 YQ3 为 660MW 机组,工程脚本使用 `CCS_660`;`CCS_1000` 仅保留为论文 1000MW preset
+- 当前 YQ3 为 660MW 机组,工程脚本使用 `CCS_660`;`CCS_660` 已按 YQ3 静态曲线(NE-uB/NE-PST/NE-DFW)校准 200-600MW 段,`CCS_1000` 仅保留为论文 1000MW preset
 - **加容量预设**:在 `MODEL_FACTORIES` 加一条 key + 新建对应参数 yaml,runtime 不动
 - 红线测试:`tests/test_models_isolation.py` — 保证 `src/models` 不依赖 viewer/flask/asyncua/opc_client/adapter
 

@@ -2439,7 +2439,7 @@ $Tmix(混合温度, 加权平均) = ADD(MUL($Vh_A, 200), MUL($Vc_A, 25)) / ($Vh_
 <table>
   <tr><th>语法</th><th>含义</th></tr>
   <tr><td class="fn">$inst = CCS_660(uB, Dfw, ut)</td>
-      <td>实例化 660MW 工程 preset, 绑到 <code>$inst</code>。
+      <td>实例化 YQ3 660MW 静态曲线校准 preset, 绑到 <code>$inst</code>。
           <code>uB</code>=煤量指令(kg/s), <code>Dfw</code>=给水流量(kg/s), <code>ut</code>=调门开度(0~1)。
           每周期推进一步, 同一周期内被多次赋值不会重复积分。</td></tr>
   <tr><td class="fn">$inst = CCS_1000(uB, Dfw, ut)</td>

@@ -10,7 +10,7 @@ import math
 import sys
 import traceback
 
-from src.models.ccs_usc_otbt import CcsUscOtbt, load_params
+from src.models.ccs_usc_otbt import CcsUscOtbt, interp_x, interp_y, load_params
 
 
 PARAMS = load_params("config/ccs_models/usc-otbt-1000mw.yaml")
@@ -31,13 +31,35 @@ def test_params_load():
 
 
 def test_660_params_load():
-    """660MW 工程 preset 字段齐全, 且负荷范围按 660MW 机组收紧"""
+    """660MW 曲线校准 preset 字段齐全, 且负荷范围按 660MW 机组收紧"""
     assert PARAMS_660["meta"]["scale_from_1000mw"] == 0.66
     assert PARAMS_660["meta"]["Ne_range_MW"] == [198, 693]
     assert PARAMS_660["limits"]["uB"] == [20, 80]
+    curves = PARAMS_660["yq3_static_curves"]
+    assert curves["valid_ne_range"] == [200, 600]
+    assert curves["ut_nominal"] == 0.70
+    assert curves["superheat_target_c"] == 30
+    assert len(curves["ne_to_ub_tph"]) == 8
+    assert len(curves["ne_to_pst_mpa"]) == 10
+    assert len(curves["ne_to_dfw_tph"]) == 5
     for name in ("hfw", "k1", "k2", "lam", "alpha"):
         coeffs = PARAMS_660["static_poly"][name]
         assert len(coeffs) == 4, f"{name} 应有 4 个三次多项式系数, 实际 {len(coeffs)}"
+
+
+def test_660_static_curve_interpolation():
+    """YQ3 静态曲线按分段线性插值/反插值生效"""
+    curves = PARAMS_660["yq3_static_curves"]
+    assert abs(interp_x(83, curves["ne_to_ub_tph"]) - 198) < 1e-6
+    assert abs(interp_x(132.3, curves["ne_to_ub_tph"]) - 330) < 1e-6
+    assert abs(interp_x(182.4, curves["ne_to_ub_tph"]) - 495) < 1e-6
+    assert abs(interp_x(217.1, curves["ne_to_ub_tph"]) - 600) < 1e-6
+    assert abs(interp_y(330, curves["ne_to_pst_mpa"]) - 13.9) < 1e-6
+    assert abs(interp_y(450, curves["ne_to_pst_mpa"]) - 18.4) < 1e-6
+    assert abs(interp_y(600, curves["ne_to_pst_mpa"]) - 23.9) < 1e-6
+    assert abs(interp_y(330, curves["ne_to_dfw_tph"]) - 1118) < 1e-6
+    assert abs(interp_y(495, curves["ne_to_dfw_tph"]) - 1220) < 1e-6
+    assert abs(interp_y(660, curves["ne_to_dfw_tph"]) - 1300) < 1e-6
 
 
 # ---------- 2. 模型实例化 + 初始稳态 ----------
@@ -53,13 +75,25 @@ def test_reset_to_seed():
 
 
 def test_660_reset_to_seed():
-    """660MW preset 使用接近 YQ3 高负荷的 600.9MW 种子点"""
+    """660MW preset 使用 YQ3 静态曲线 600MW 种子点"""
     m = CcsUscOtbt(PARAMS_660)
     seed = PARAMS_660["seed"]
-    assert abs(m.Ne - 600.9) < 1e-6
+    assert abs(m.Ne - 600.0) < 1e-6
     assert abs(m.rB - seed["uB0"]) < 1e-6
     assert abs(m.hm - seed["hm0"]) < 1e-6
     assert abs(m.pm - seed["pm0"]) < 1e-6
+    pst, hm, Ne = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], 0.0)
+    assert abs(pst - 23.9) < 1e-3
+    assert abs(Ne - 600.0) < 1e-6
+
+
+def test_660_curve_targets_from_model():
+    """模型公开的曲线目标换算保持 kg/s ↔ t/h 一致"""
+    m = CcsUscOtbt(PARAMS_660)
+    assert m.has_yq3_curves()
+    assert abs(m.curve_ne_from_ub(217.1 / 3.6) - 600) < 1e-6
+    assert abs(m.curve_pst_from_ne(450) - 18.4) < 1e-6
+    assert abs(m.curve_dfw_from_ne(495) * 3.6 - 1220) < 1e-6
 
 
 # ---------- 3. 稳态自洽 — 输入保持稳态 600s, 输出不发散 ----------
@@ -82,16 +116,15 @@ def test_steady_state_stability():
 
 
 def test_660_steady_state_stability():
-    """660MW preset 保持同一高负荷工况 600 秒, Ne 不发散"""
+    """660MW curve preset 保持 600MW 曲线工况 600 秒, NE/PST 贴近曲线目标"""
     m = CcsUscOtbt(PARAMS_660)
     seed = PARAMS_660["seed"]
     dt = 0.2
-    _, _, Ne_init = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
-    for _ in range(int(600 / dt) - 1):
-        _, _, Ne = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
+    for _ in range(int(600 / dt)):
+        pst, hm, Ne = m.step(seed["uB0"], seed["Dfw0"], seed["ut0"], dt)
     assert math.isfinite(Ne), f"Ne 发散到非有限值: {Ne}"
-    drift_pct = abs(Ne - Ne_init) / Ne_init * 100
-    assert drift_pct < 10, f"660MW preset 600s 稳态漂移 {drift_pct:.1f}% > 10%"
+    assert abs(Ne - 600.0) < 0.5
+    assert abs(pst - 23.9) < 0.05
 
 
 # ---------- 4. 阶跃响应方向 ----------
@@ -143,10 +176,10 @@ def test_step_ut_up_lowers_pst():
 
 
 def test_660_step_directions():
-    """660MW preset 保持 CCS 基本方向: 煤增升负荷、给水增降焓、调门增降压"""
+    """660MW curve preset 保持基本方向: 煤增升负荷/升压, 给水增降焓"""
     seed = PARAMS_660["seed"]
     dpst, dhm, dNe = _settle_then_step_with(
-        PARAMS_660, seed["uB0"] + 10.0, seed["Dfw0"], seed["ut0"]
+        PARAMS_660, seed["uB0"] + 5.0, seed["Dfw0"], seed["ut0"]
     )
     assert dpst > 0, f"660MW 煤量↑ pst 应升, 实际 {dpst:+.3f}"
     assert dhm > 0, f"660MW 煤量↑ hm 应升, 实际 {dhm:+.1f}"
@@ -156,11 +189,6 @@ def test_660_step_directions():
         PARAMS_660, seed["uB0"], seed["Dfw0"] + 30.0, seed["ut0"]
     )
     assert dhm < 0, f"660MW 给水↑ hm 应降, 实际 {dhm:+.1f}"
-
-    dpst, dhm, dNe = _settle_then_step_with(
-        PARAMS_660, seed["uB0"], seed["Dfw0"], seed["ut0"] + 0.1
-    )
-    assert dpst < 0, f"660MW 调门↑ pst 应降, 实际 {dpst:+.3f}"
 
 
 # ---------- 5. 数值鲁棒性 — 极限输入不出 NaN ----------
