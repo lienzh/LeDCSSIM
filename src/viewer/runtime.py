@@ -486,9 +486,37 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
             return _collect_rs_keys(args[0], not inverted, depth + 1, seen)
         return []
 
+    def _collect_ccs_pin_refs(expr, depth=0, seen=None):
+        """收集 RHS 直接引用的模型输出管脚, 支持穿透 $var。
+
+        仅处理直接传递关系, 如 AI=$SIM_MW、$SIM_MW=$YQ3.NE。
+        不从 ADD/STEAM_T/LAG 等表达式反推, 避免非线性或量纲混合导致误锚定。
+        """
+        if seen is None:
+            seen = set()
+        if depth > 12:
+            return []
+        if isinstance(expr, str):
+            if expr.startswith("$") and expr in var_defs and expr not in seen:
+                seen.add(expr)
+                return _collect_ccs_pin_refs(var_defs[expr], depth + 1, seen)
+            return []
+        if not isinstance(expr, tuple) or expr[0] != "INST_PIN":
+            return []
+        inst_name, pin = expr[1][0].split(".", 1)
+        inst_rhs = var_defs.get(inst_name)
+        if not (isinstance(inst_rhs, tuple) and inst_rhs[0] in MODEL_FACTORIES):
+            return []
+        spec = MODEL_FACTORIES[inst_rhs[0]]
+        if pin not in spec.pins:
+            return []
+        key = (inst_rhs[0], _make_hashable(inst_rhs[1]))
+        return [(key, pin)]
+
     # 对每个 OPC LHS 收集: LAG (递归但不跨 $var) + RS (支持 $var/NOT/RS_NOT 反相)
     lhs_lag_keys = {}   # {lhs_full: [lag_key, ...]}
     lhs_rs = {}         # {lhs_full: [(rs_key, inverted), ...]}  inverted=True 表示 NOT/RS_NOT
+    lhs_ccs_pins = {}   # {lhs_full: [(ccs_key, pin), ...]}
     for lhs, rhs in pairs:
         if not isinstance(lhs, str) or lhs.startswith("$"):
             continue
@@ -498,6 +526,9 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
         rs_keys = _collect_rs_keys(rhs)
         if rs_keys:
             lhs_rs[lhs] = rs_keys
+        ccs_pins = _collect_ccs_pin_refs(rhs)
+        if ccs_pins:
+            lhs_ccs_pins[lhs] = ccs_pins
 
     # 除了 LHS 锚定用的节点, 也把脚本里所有 RHS 引用的 OPC 节点一起读
     # (跟正常 OPC 循环一样收集 read_set), 让面板"读取"列在停止状态下也能看到全貌
@@ -511,13 +542,15 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
     rhs_opc = set()
     for _lhs, rhs in pairs:
         _collect_rhs_opc(rhs, rhs_opc)
-    nodes_to_read = sorted(set(lhs_lag_keys.keys()) | set(lhs_rs.keys()) | rhs_opc)
+    nodes_to_read = sorted(set(lhs_lag_keys.keys()) | set(lhs_rs.keys()) |
+                           set(lhs_ccs_pins.keys()) | rhs_opc)
     if not nodes_to_read:
         log_event("state", "📥 上载 Step 2 — 脚本里没有 LHS=LAG/RS(...) 的直接写, 跳过")
         return {"ok": True, "synced_lag": 0, "synced_rs": 0,
                 "msg": "脚本里没有 LHS=LAG/RS(...) 直接写, 无需同步"}
 
-    steps.append(f"  收集到 {len(lhs_lag_keys)} 个 LAG-LHS + {len(lhs_rs)} 个 RS-LHS (含 $var/NOT 反算, 合并去重 {len(nodes_to_read)} 个 OPC 节点)")
+    steps.append(f"  收集到 {len(lhs_lag_keys)} 个 LAG-LHS + {len(lhs_rs)} 个 RS-LHS"
+                 f" + {len(lhs_ccs_pins)} 个 CCS-LHS (合并去重 {len(nodes_to_read)} 个 OPC 节点)")
 
     # ════════ Step 3: 读 DCS 当前值 + 无扰跟踪处理 ════════
     t0 = _time.perf_counter()
@@ -566,6 +599,54 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
             anchored_rs.add(rs_key)
             synced_rs += 1
 
+    synced_ccs = 0
+    ccs_targets = {}  # {ccs_key: {pin: [actual, ...]}}
+    for lhs_full, refs in lhs_ccs_pins.items():
+        v = val_map.get(lhs_full)
+        if v is None:
+            continue
+        try:
+            v_float = float(v)
+        except (TypeError, ValueError):
+            continue
+        for ccs_key, pin in refs:
+            ccs_targets.setdefault(ccs_key, {}).setdefault(pin, []).append(v_float)
+    for ccs_key, pin_vals in ccs_targets.items():
+        fname = ccs_key[0]
+        spec = MODEL_FACTORIES.get(fname)
+        params = get_factory_params(fname)
+        if spec is None or params is None:
+            continue
+        handle = s.ccs_state.get(ccs_key)
+        if handle is None:
+            handle = _CcsHandle(spec.make(params), spec.pins)
+            s.ccs_state[ccs_key] = handle
+        if not hasattr(handle.model, "get_state") or not hasattr(handle.model, "set_state"):
+            continue
+        st = handle.model.get_state()
+        changed = False
+        for pin, vals_for_pin in pin_vals.items():
+            actual = sum(vals_for_pin) / len(vals_for_pin)
+            if pin == "NE":
+                st["Ne"] = actual
+                changed = True
+            elif pin == "HM":
+                st["hm"] = actual
+                changed = True
+            elif pin == "PST":
+                dp = params.get("steam", {}).get("dp", {})
+                a = float(dp.get("a", 0.0))
+                b = float(dp.get("b", 0.0))
+                if abs(1.0 - a) > 1e-9:
+                    # pst = pm - (a*pm + b) = (1-a)*pm - b
+                    st["pm"] = (actual + b) / (1.0 - a)
+                    changed = True
+        if changed:
+            handle.model.set_state(st)
+            handle.outputs = {}
+            handle.last_cycle = -1
+            synced_ccs += 1
+
     # 清 last_written, 强制下周期重写一遍同步 DCS
     s.last_written = {}
     # 清掉没锚定的 LAG state — 否则旧 run 的残留 y_prev 可能在 LIMIT 门控下卡住, 让锚定值
@@ -598,16 +679,18 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
             sim.intermediates[lhs] = v   # ★ 关键: 下一对 RHS 用 $var 时要在 sim 里找得到
             s.intermediates[lhs] = v
         refreshed += 1
-    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG + {synced_rs} 个 RS, last_written 清空, 非锚 LAG 清 {cleared_lag} 个")
+    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG + {synced_rs} 个 RS + {synced_ccs} 个 CCS, last_written 清空, 非锚 LAG 清 {cleared_lag} 个")
     steps.append(f"  → 刷新面板显示值: {len(val_map)} 个 DCS 节点 → last_read, 算 {refreshed} 对 LHS → last_values/$var")
     steps.append("✓ Step 4: 现在可以点【▶ 运行】, 第 1 周期写出去 = DCS 现状, 后续按 τ 平滑过渡")
 
     log_event("state",
               f"📥 上载: LAG {synced_lag} (含嵌套) + RS {synced_rs} (含 RS_NOT) ← 工程当前值",
               {"synced_lag": synced_lag, "synced_rs": synced_rs,
+               "synced_ccs": synced_ccs,
                "no_val": no_val, "url": url, "probe_ms": int(probe_ms), "read_ms": int(read_ms)})
     return {"ok": True,
             "synced_lag": synced_lag, "synced_rs": synced_rs,
+            "synced_ccs": synced_ccs,
             "no_val": no_val,
             "lhs_count": len(nodes_to_read),
             "msg": "\n".join(steps)}
