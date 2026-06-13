@@ -31,3 +31,27 @@ def test_match_device_motor_exclude():
 def test_match_device_none_for_unknown():
     rules = load_rules(prj.paths("yq3"))
     assert rules.match_device("主蒸汽压力") is None
+
+
+def test_load_rules_project_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(prj, "PROJECTS_ROOT", tmp_path / "projects")
+    monkeypatch.setattr(prj, "ACTIVE_PTR", tmp_path / "active.yaml")
+    drivers = tmp_path / "projects" / "demo" / "drivers"
+    drivers.mkdir(parents=True)
+    (drivers / "vocab.yaml").write_text(
+        "fault: [故障]\n"
+        "start_cmd: [启动]\n",
+        encoding="utf-8",
+    )
+    (drivers / "devices.yaml").write_text(
+        "motor_exclude_common: [排除词]\n"
+        "devices:\n"
+        "  - { name: 自定义泵, type: motor, include: [自定义泵] }\n",
+        encoding="utf-8",
+    )
+
+    rules = load_rules(prj.paths("demo"))
+
+    assert rules.vocab["start_cmd"] == ["启动"]
+    assert rules.motor_exclude_common == ["排除词"]
+    assert rules.match_device("A自定义泵运行")["name"] == "自定义泵"
