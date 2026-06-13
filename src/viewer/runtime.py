@@ -460,20 +460,44 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
         # 不跨 $var (原来这里会 recurse into var_defs[expr], 现已删除)
         return keys
 
-    # 对每个 OPC LHS 收集: LAG (递归) + RS (顶层, 含 RS_NOT)
+    def _collect_rs_keys(expr, inverted=False, depth=0, seen=None):
+        """走 RHS 树收集 RS state key, 支持跨 $var 和 NOT 反相。
+
+        RS 是布尔锁存, 可以从合位/跳位反馈安全反算; 这和 LAG 不同, 不存在
+        "把温度 DCS 值锚到煤量 LAG" 这种物理量级串线风险。
+        """
+        if seen is None:
+            seen = set()
+        if depth > 12:
+            return []
+        if isinstance(expr, str):
+            if expr.startswith("$") and expr in var_defs and expr not in seen:
+                seen.add(expr)
+                return _collect_rs_keys(var_defs[expr], inverted, depth + 1, seen)
+            return []
+        if not isinstance(expr, tuple):
+            return []
+        fname, args = expr
+        if fname == "RS":
+            return [(("RS", _make_hashable(args)), inverted)]
+        if fname == "RS_NOT":
+            return [(("RS", _make_hashable(args)), not inverted)]
+        if fname == "NOT" and args:
+            return _collect_rs_keys(args[0], not inverted, depth + 1, seen)
+        return []
+
+    # 对每个 OPC LHS 收集: LAG (递归但不跨 $var) + RS (支持 $var/NOT/RS_NOT 反相)
     lhs_lag_keys = {}   # {lhs_full: [lag_key, ...]}
-    lhs_rs = {}         # {lhs_full: (rs_key, inverted)}  inverted=True 表示 RS_NOT
+    lhs_rs = {}         # {lhs_full: [(rs_key, inverted), ...]}  inverted=True 表示 NOT/RS_NOT
     for lhs, rhs in pairs:
         if not isinstance(lhs, str) or lhs.startswith("$"):
             continue
         lag_keys = _collect_lag_keys(rhs)
         if lag_keys:
             lhs_lag_keys[lhs] = lag_keys
-        if isinstance(rhs, tuple):
-            if rhs[0] == "RS":
-                lhs_rs[lhs] = (("RS", _make_hashable(rhs[1])), False)
-            elif rhs[0] == "RS_NOT":
-                lhs_rs[lhs] = (("RS", _make_hashable(rhs[1])), True)
+        rs_keys = _collect_rs_keys(rhs)
+        if rs_keys:
+            lhs_rs[lhs] = rs_keys
 
     # 除了 LHS 锚定用的节点, 也把脚本里所有 RHS 引用的 OPC 节点一起读
     # (跟正常 OPC 循环一样收集 read_set), 让面板"读取"列在停止状态下也能看到全貌
@@ -493,7 +517,7 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
         return {"ok": True, "synced_lag": 0, "synced_rs": 0,
                 "msg": "脚本里没有 LHS=LAG/RS(...) 直接写, 无需同步"}
 
-    steps.append(f"  收集到 {len(lhs_lag_keys)} 个 LAG-LHS + {len(lhs_rs)} 个 RS-LHS (合并去重 {len(nodes_to_read)} 个 OPC 节点)")
+    steps.append(f"  收集到 {len(lhs_lag_keys)} 个 LAG-LHS + {len(lhs_rs)} 个 RS-LHS (含 $var/NOT 反算, 合并去重 {len(nodes_to_read)} 个 OPC 节点)")
 
     # ════════ Step 3: 读 DCS 当前值 + 无扰跟踪处理 ════════
     t0 = _time.perf_counter()
@@ -530,15 +554,17 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
                 anchored_lag.add(k)
                 synced_lag += 1
     anchored_rs = set()
-    for lhs_full, (rs_key, inverted) in lhs_rs.items():
+    for lhs_full, keys in lhs_rs.items():
         v = val_map.get(lhs_full)
         if v is None: continue
-        if rs_key in anchored_rs: continue
-        # RS_NOT 输出 = NOT Q, 所以从 LHS 反算 Q = NOT LHS
-        q = (not bool(v)) if inverted else bool(v)
-        s.rs_state[rs_key] = q
-        anchored_rs.add(rs_key)
-        synced_rs += 1
+        for rs_key, inverted in keys:
+            if rs_key in anchored_rs:
+                continue
+            # NOT/RS_NOT 输出 = NOT Q, 所以从 LHS 反算 Q = NOT LHS
+            q = (not bool(v)) if inverted else bool(v)
+            s.rs_state[rs_key] = q
+            anchored_rs.add(rs_key)
+            synced_rs += 1
 
     # 清 last_written, 强制下周期重写一遍同步 DCS
     s.last_written = {}
