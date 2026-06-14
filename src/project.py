@@ -35,6 +35,7 @@ class ProjectPaths:
         self.script = self.root / "script.txt"
         self.script_backups = self.root / "script_backups"
         self.endpoints = self.root / "opc_endpoints.yaml"
+        self.model_overrides = self.root / "model_overrides.yaml"
         self.state_dir = self.root / "state"
         self.snapshot = self.state_dir / "state_snapshot.json"
         self.snapshot_backups = self.state_dir / "snapshot_backups"

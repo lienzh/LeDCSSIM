@@ -7,8 +7,12 @@
                                 make=lambda p: CcsUscOtbt(p)),
 """
 from dataclasses import dataclass
+from copy import deepcopy
 from typing import Callable, Optional, Tuple
 
+import yaml
+
+from src import project as proj
 from .ccs_usc_otbt import CcsUscOtbt, load_params
 
 
@@ -42,13 +46,53 @@ _params_cache: dict = {}
 _params_err: dict = {}
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """递归合并 dict, 用工程覆盖值替换基准参数。"""
+    out = deepcopy(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = deepcopy(v)
+    return out
+
+
+def load_project_overrides() -> dict:
+    """读取当前工程的模型参数覆盖文件。缺文件返回空 dict。"""
+    try:
+        p = proj.paths().model_overrides
+    except Exception:
+        return {}
+    if not p.exists():
+        return {}
+    doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"{p} 顶层必须是 mapping")
+    return doc
+
+
+def get_base_params(fname: str) -> Optional[dict]:
+    """只读基准 preset, 不叠加工程覆盖。viewer 参数面板用。"""
+    try:
+        return load_params(MODEL_FACTORIES[fname].params_path)
+    except Exception as e:
+        _params_err[fname] = str(e)
+        return None
+
+
 def get_factory_params(fname: str) -> Optional[dict]:
     if fname in _params_cache:
         return _params_cache[fname]
     if fname in _params_err:
         return None
     try:
-        _params_cache[fname] = load_params(MODEL_FACTORIES[fname].params_path)
+        params = load_params(MODEL_FACTORIES[fname].params_path)
+        overrides = load_project_overrides().get(fname) or {}
+        if overrides:
+            if not isinstance(overrides, dict):
+                raise ValueError(f"{fname} 覆盖值必须是 mapping")
+            params = _deep_merge(params, overrides)
+        _params_cache[fname] = params
         return _params_cache[fname]
     except Exception as e:          # KeyError(未注册) / FileNotFoundError / yaml 错都走这
         _params_err[fname] = str(e)
@@ -58,3 +102,9 @@ def get_factory_params(fname: str) -> Optional[dict]:
 def get_factory_error(fname: str) -> Optional[str]:
     """诊断面板用: 参数加载失败的错因"""
     return _params_err.get(fname)
+
+
+def clear_param_cache() -> None:
+    """清参数缓存。工程覆盖文件改动后调用, 下一次建模型会重读。"""
+    _params_cache.clear()
+    _params_err.clear()

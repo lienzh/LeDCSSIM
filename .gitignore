@@ -28,6 +28,7 @@ config/_OPC_*.md
 config/*.generated.yaml
 config/active_project.yaml
 projects/*/opc_endpoints.yaml
+projects/*/model_overrides.yaml
 projects/*/script_backups/
 projects/*/state/
 projects/*/generated/

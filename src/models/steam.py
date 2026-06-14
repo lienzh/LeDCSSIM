@@ -50,3 +50,37 @@ def steam_T_from_ph(h_kJkg: float, p_MPa: float) -> Optional[float]:
     except Exception as e:
         logger.warning(f"STEAM_T 求解失败 h={h_kJkg} p={p_MPa}: {e}")
         return None
+
+
+def steam_h_from_Tp(T_C: float, p_MPa: float) -> Optional[float]:
+    """根据温度 + 压力反算水蒸气比焓.
+
+    Args:
+        T_C:   温度 (°C)
+        p_MPa: 压力 (MPa)
+
+    Returns:
+        比焓 (kJ/kg); 输入越界或求解失败时返 None.
+    """
+    try:
+        from iapws import IAPWS97
+    except ImportError:
+        logger.warning("iapws 未安装, STEAM_T/反算焓不可用 (pip install iapws)")
+        return None
+
+    if not (0.001 <= p_MPa <= 100):
+        return None
+    T_K = float(T_C) + 273.15
+    if not (273.15 <= T_K <= 2273.15):
+        return None
+
+    try:
+        s = IAPWS97(P=float(p_MPa), T=T_K)
+        if s.h is None:
+            return None
+        return float(s.h)
+    except (NotImplementedError, ValueError, ZeroDivisionError):
+        return None
+    except Exception as e:
+        logger.warning(f"反算焓失败 T={T_C} p={p_MPa}: {e}")
+        return None

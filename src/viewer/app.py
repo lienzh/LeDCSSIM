@@ -2,6 +2,7 @@
 """Flask Web 仪表板 — 只读查看模型组态和最新 CSV 数据"""
 import csv
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
@@ -11,6 +12,12 @@ from flask import Flask, jsonify, render_template_string, request
 from src.engine import GraphRunner, TagMap, DataRecorder
 from . import runtime as rt
 from src import project as proj
+from src.models.dsl_registry import (
+    MODEL_FACTORIES,
+    clear_param_cache,
+    get_base_params,
+    load_project_overrides,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +30,37 @@ CONFIG = {
     "tagmap": None,
     "csv": "data/run.csv",
 }
+
+MODEL_PARAM_FIELDS = [
+    {"path": "dyn.c0", "label": "制粉/燃烧惯性 c0", "unit": "s",
+     "desc": "主要影响煤量扰动进入锅炉吸热、汽压和负荷的速度。"},
+    {"path": "dyn.tau", "label": "煤粉纯延迟 tau", "unit": "s",
+     "desc": "煤量指令到炉膛煤粉量的纯延迟。"},
+    {"path": "dyn.c3", "label": "汽轮机惯性 c3", "unit": "s",
+     "desc": "主要影响调门/蒸汽流量到负荷的响应速度。"},
+    {"path": "dyn.Vm", "label": "锅炉有效容积 Vm", "unit": "m3",
+     "desc": "影响压力、焓动态库存。"},
+    {"path": "dyn.mj", "label": "金属质量 mj", "unit": "kg",
+     "desc": "影响锅炉金属蓄热惯性。"},
+    {"path": "energy.mu", "label": "水煤错配增益 mu", "unit": "",
+     "desc": "影响给水/煤量偏差对吸热和焓值的影响。"},
+    {"path": "energy.gamma", "label": "水煤错配负荷偏置 gamma", "unit": "MW",
+     "desc": "影响水煤错配项随负荷变化的强弱。"},
+    {"path": "energy.eta", "label": "节流损失增益 eta", "unit": "",
+     "desc": "影响调门开度变化对负荷动态的冲击。"},
+    {"path": "steam.Dst.a", "label": "主汽流量系数 Dst.a", "unit": "",
+     "desc": "论文 Dst=ut*f(pst,hst) 的基础流量系数。"},
+    {"path": "steam.Dst.b", "label": "主汽流量偏置 Dst.b", "unit": "kJ/kg",
+     "desc": "论文主汽流量公式分母偏置。"},
+    {"path": "steam.dp.a", "label": "主汽压降斜率 dp.a", "unit": "",
+     "desc": "pm 到 pst 的压降关系斜率。"},
+    {"path": "steam.dp.b", "label": "主汽压降偏置 dp.b", "unit": "MPa",
+     "desc": "pm 到 pst 的压降关系偏置。"},
+    {"path": "seed.hm0", "label": "分离器焓初值 hm0", "unit": "kJ/kg",
+     "desc": "重置初值时的 HM 种子。"},
+    {"path": "yq3_static_curves.ut_nominal", "label": "YQ3 名义调门开度", "unit": "",
+     "desc": "用于按静态曲线反算 YQ3 参考流量系数。"},
+]
 
 
 def _cfg_path(kind: str) -> Path:
@@ -112,6 +150,73 @@ def _load_latest_csv() -> Dict[str, Any]:
     }
 
 
+def _get_path(doc: dict, dotted: str):
+    cur = doc
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _set_path(doc: dict, dotted: str, value) -> None:
+    cur = doc
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _del_path(doc: dict, dotted: str) -> None:
+    stack = []
+    cur = doc
+    for part in dotted.split(".")[:-1]:
+        if not isinstance(cur, dict) or part not in cur:
+            return
+        stack.append((cur, part))
+        cur = cur[part]
+    if isinstance(cur, dict):
+        cur.pop(dotted.split(".")[-1], None)
+    for parent, key in reversed(stack):
+        val = parent.get(key)
+        if isinstance(val, dict) and not val:
+            parent.pop(key, None)
+
+
+def _almost_same(a, b) -> bool:
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) < 1e-12
+    return a == b
+
+
+def _model_override_path() -> Path:
+    return proj.paths().model_overrides
+
+
+def _write_model_overrides(doc: dict) -> None:
+    p = _model_override_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        bak = p.with_suffix(p.suffix + ".bak")
+        shutil.copy2(p, bak)
+    cleaned = {k: v for k, v in (doc or {}).items()
+               if isinstance(v, dict) and v}
+    if not cleaned:
+        if p.exists():
+            p.unlink()
+        return
+    text = (
+        "# 工程级模型参数覆盖。只写与 config/ccs_models/*.yaml 不同的调试值。\n"
+        "# 保存后 viewer 会清 CCS 模型实例, 下次预演/运行按这里的值重建。\n"
+        + yaml.safe_dump(cleaned, allow_unicode=True, sort_keys=False)
+    )
+    p.write_text(text, encoding="utf-8")
+
+
 # ---------- API ----------
 
 @app.route("/api/blocks")
@@ -132,6 +237,121 @@ def api_tagmap():
 @app.route("/api/latest")
 def api_latest():
     return jsonify(_load_latest_csv())
+
+
+@app.route("/api/model/params")
+def api_model_params_get():
+    """当前工程的模型调试参数: 基准值 + 工程覆盖 + 有效值。"""
+    overrides = load_project_overrides()
+    models = {}
+    for fname in MODEL_FACTORIES:
+        base = get_base_params(fname) or {}
+        model_ov = overrides.get(fname) if isinstance(overrides.get(fname), dict) else {}
+        rows = []
+        for meta in MODEL_PARAM_FIELDS:
+            path = meta["path"]
+            base_val = _get_path(base, path)
+            override_val = _get_path(model_ov, path)
+            if base_val is None and override_val is None:
+                continue
+            effective = override_val if override_val is not None else base_val
+            rows.append({
+                **meta,
+                "base": base_val,
+                "override": override_val,
+                "effective": effective,
+                "overridden": override_val is not None,
+            })
+        models[fname] = {
+            "name": _get_path(base, "meta.name") or fname,
+            "params_path": MODEL_FACTORIES[fname].params_path,
+            "rows": rows,
+        }
+    return jsonify({
+        "ok": True,
+        "project": proj.get_active(),
+        "path": str(_model_override_path()),
+        "exists": _model_override_path().exists(),
+        "models": models,
+    })
+
+
+@app.route("/api/model/params", methods=["POST"])
+def api_model_params_save():
+    """保存模型参数覆盖。运行中禁止切换, 避免半周期改模型。"""
+    body = request.get_json(force=True, silent=True) or {}
+    if rt.get_debug().get("running"):
+        return jsonify({"ok": False, "error": "OPC 循环运行中, 请先停止再修改模型参数"}), 400
+    fname = str(body.get("model") or "")
+    values = body.get("values") or {}
+    if fname not in MODEL_FACTORIES:
+        return jsonify({"ok": False, "error": f"未知模型: {fname}"}), 400
+    if not isinstance(values, dict):
+        return jsonify({"ok": False, "error": "values 必须是 {path: value}"}), 400
+
+    allowed = {f["path"] for f in MODEL_PARAM_FIELDS}
+    base = get_base_params(fname) or {}
+    overrides = load_project_overrides()
+    model_ov = overrides.get(fname)
+    if not isinstance(model_ov, dict):
+        model_ov = {}
+
+    changed = 0
+    for path, raw in values.items():
+        if path not in allowed:
+            return jsonify({"ok": False, "error": f"不允许修改的参数路径: {path}"}), 400
+        base_val = _get_path(base, path)
+        if base_val is None:
+            return jsonify({"ok": False, "error": f"{fname} 没有参数: {path}"}), 400
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"{path} 必须是数字"}), 400
+        if _almost_same(val, base_val):
+            _del_path(model_ov, path)
+        else:
+            _set_path(model_ov, path, val)
+        changed += 1
+
+    if model_ov:
+        overrides[fname] = model_ov
+    else:
+        overrides.pop(fname, None)
+    _write_model_overrides(overrides)
+    clear_param_cache()
+    cleared = rt.clear_ccs_model_state("模型参数调整")
+    rt.log_event("save", f"🧪 保存模型参数覆盖 {fname} ({changed} 项), CCS 实例清 {cleared} 个",
+                 {"model": fname, "changed": changed, "ccs_cleared": cleared})
+    return jsonify({
+        "ok": True,
+        "msg": f"已保存 {fname} 参数覆盖 ({changed} 项), CCS 实例清 {cleared} 个",
+        "path": str(_model_override_path()),
+        "ccs_cleared": cleared,
+    })
+
+
+@app.route("/api/model/params/reset", methods=["POST"])
+def api_model_params_reset():
+    """清除某个模型的工程覆盖。"""
+    body = request.get_json(force=True, silent=True) or {}
+    if rt.get_debug().get("running"):
+        return jsonify({"ok": False, "error": "OPC 循环运行中, 请先停止再恢复默认"}), 400
+    fname = str(body.get("model") or "")
+    if fname not in MODEL_FACTORIES:
+        return jsonify({"ok": False, "error": f"未知模型: {fname}"}), 400
+    overrides = load_project_overrides()
+    had = fname in overrides
+    overrides.pop(fname, None)
+    _write_model_overrides(overrides)
+    clear_param_cache()
+    cleared = rt.clear_ccs_model_state("模型参数恢复默认")
+    rt.log_event("save", f"↩ 恢复 {fname} 模型默认参数, CCS 实例清 {cleared} 个",
+                 {"model": fname, "had_override": had, "ccs_cleared": cleared})
+    return jsonify({
+        "ok": True,
+        "msg": f"已恢复 {fname} 默认参数",
+        "ccs_cleared": cleared,
+    })
 
 
 @app.route("/api/summary")
@@ -1491,6 +1711,7 @@ mark      { background: #ff8; padding: 0; }
   <span class="grp-label">查看</span>
   <button onclick="openDebug()" title="运行状态 / 失败统计 / 日志 (沟通时复制)">🩺 诊断</button>
   <button onclick="openEvents()" title="事件时间线: 启停 / 重连 / 镜像 / 清状态 / 端点切换">📜 事件</button>
+  <button onclick="openModelParams()" title="查看/修改协调模型关键参数 (需停止运行后保存)">🧪 模型参数</button>
   <button onclick="openBackups()" title="脚本时间戳备份历史 (每次保存自动留底)">📚 备份</button>
   <button onclick="openHelp()" title="DSL 语法 / 函数 / 快捷键 (F1)">❓ 帮助</button>
   <button onclick="restartViewer()"
@@ -1647,6 +1868,36 @@ mark      { background: #ff8; padding: 0; }
              oninput="renderDryrun()" style="font-size:11px;padding:1px 5px;margin-left:8px;width:140px">
     </div>
     <div id="dryrunbody" style="overflow-y:auto; padding:0; font-size:11px;
+         line-height:1.45; color:#222; font-family:'Consolas',monospace;"></div>
+  </div>
+</div>
+
+<!-- 模型参数模态框 -->
+<div id="modelmodal" style="display:none; position:fixed; inset:0; z-index:2260;
+     background:rgba(0,0,0,.4);" onclick="if(event.target===this) closeModelParams()">
+  <div style="background:#fff; max-width:980px; margin:35px auto; padding:0;
+       box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:88vh; display:flex; flex-direction:column;">
+    <div style="background:#111; color:#eee; padding:8px 14px; display:flex;
+         justify-content:space-between; align-items:center;">
+      <b>🧪 模型参数 — 工程级调试覆盖</b>
+      <span>
+        <button onclick="refreshModelParams()" style="font-size:11px;padding:3px 10px;background:#06a;color:#fff;border:0;cursor:pointer;">⟳ 刷新</button>
+        <span style="cursor:pointer;font-size:18px;margin-left:10px" onclick="closeModelParams()">×</span>
+      </span>
+    </div>
+    <div style="padding:8px 14px; background:#fffce0; color:#666; font-size:11px; border-bottom:1px solid #eec">
+      覆盖文件保存在当前工程 <code>model_overrides.yaml</code>。保存前请先停止运行; 保存后会清 CCS 模型实例, 后续预演/运行按新参数重建。
+    </div>
+    <div style="padding:8px 14px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:10px; font-size:11px;">
+      <label>模型
+        <select id="modelParamSelect" onchange="renderModelParams()" style="font-size:11px;padding:2px 6px"></select>
+      </label>
+      <span id="modelParamPath" style="color:#888;font-family:Consolas,monospace"></span>
+      <span style="flex:1"></span>
+      <button onclick="saveModelParams()" style="background:#0a0;color:#fff;border:0;padding:5px 14px;cursor:pointer;font-size:12px">💾 保存覆盖</button>
+      <button onclick="resetModelParams()" style="background:#999;color:#fff;border:0;padding:5px 14px;cursor:pointer;font-size:12px">↩ 恢复默认</button>
+    </div>
+    <div id="modelParamBody" style="overflow-y:auto; padding:0; font-size:11px;
          line-height:1.45; color:#222; font-family:'Consolas',monospace;"></div>
   </div>
 </div>
@@ -2738,6 +2989,127 @@ async function openDebug() {
 }
 function closeDebug() { document.getElementById('dbgmodal').style.display = 'none'; }
 
+// ===== 模型参数调试 =====
+let _modelParamData = null;
+
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function openModelParams() {
+  document.getElementById('modelmodal').style.display = 'block';
+  await refreshModelParams();
+}
+function closeModelParams() {
+  document.getElementById('modelmodal').style.display = 'none';
+}
+
+async function refreshModelParams() {
+  const body = document.getElementById('modelParamBody');
+  body.innerHTML = '<div style="padding:24px;color:#999;text-align:center">载入中...</div>';
+  try {
+    const r = await fetch('/api/model/params');
+    const d = await r.json();
+    if (!d.ok) {
+      body.innerHTML = `<div style="padding:24px;color:#c00">${_escHtml(d.error || '载入失败')}</div>`;
+      return;
+    }
+    _modelParamData = d;
+    const sel = document.getElementById('modelParamSelect');
+    const old = sel.value;
+    sel.innerHTML = '';
+    for (const name of Object.keys(d.models || {})) {
+      sel.add(new Option(`${name} — ${d.models[name].name || ''}`, name));
+    }
+    if (old && d.models[old]) sel.value = old;
+    else if (d.models.CCS_660) sel.value = 'CCS_660';
+    renderModelParams();
+  } catch (e) {
+    body.innerHTML = `<div style="padding:24px;color:#c00">载入失败: ${_escHtml(e)}</div>`;
+  }
+}
+
+function renderModelParams() {
+  if (!_modelParamData) return;
+  const fname = document.getElementById('modelParamSelect').value;
+  const m = _modelParamData.models[fname];
+  const body = document.getElementById('modelParamBody');
+  document.getElementById('modelParamPath').textContent =
+    `覆盖文件: ${_modelParamData.path || ''}`;
+  if (!m || !m.rows || !m.rows.length) {
+    body.innerHTML = '<div style="padding:24px;color:#999;text-align:center">该模型没有可调试字段</div>';
+    return;
+  }
+  const rows = m.rows.map(r => {
+    const val = (r.effective === null || r.effective === undefined) ? '' : r.effective;
+    const ov = r.overridden
+      ? `<span style="background:#fff3cd;color:#a60;padding:1px 5px;border-radius:2px;font-weight:bold">覆盖</span>`
+      : `<span style="color:#aaa">默认</span>`;
+    return `<tr style="border-bottom:1px solid #eee">
+      <td style="padding:5px 8px;width:150px"><b>${_escHtml(r.label)}</b><br><code style="color:#048">${_escHtml(r.path)}</code></td>
+      <td style="padding:5px 8px;text-align:right;width:90px;color:#666">${r.base}</td>
+      <td style="padding:5px 8px;width:120px">
+        <input data-param-path="${_escHtml(r.path)}" value="${_escHtml(val)}"
+               type="number" step="any"
+               style="width:110px;font-family:Consolas,monospace;font-size:11px;padding:2px 4px;text-align:right">
+      </td>
+      <td style="padding:5px 8px;width:50px;color:#666">${_escHtml(r.unit || '')}</td>
+      <td style="padding:5px 8px;width:56px;text-align:center">${ov}</td>
+      <td style="padding:5px 8px;color:#666">${_escHtml(r.desc || '')}</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11px;">
+    <thead><tr style="background:#222;color:#eee;position:sticky;top:0">
+      <th style="padding:5px 8px;text-align:left">参数</th>
+      <th style="padding:5px 8px;text-align:right">基准值</th>
+      <th style="padding:5px 8px;text-align:left">当前有效值</th>
+      <th style="padding:5px 8px;text-align:left">单位</th>
+      <th style="padding:5px 8px;text-align:center">状态</th>
+      <th style="padding:5px 8px;text-align:left">作用</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function saveModelParams() {
+  const fname = document.getElementById('modelParamSelect').value;
+  if (!fname) return;
+  const values = {};
+  document.querySelectorAll('#modelParamBody input[data-param-path]').forEach(inp => {
+    values[inp.dataset.paramPath] = inp.value;
+  });
+  const r = await fetch('/api/model/params', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: fname, values})
+  });
+  const d = await r.json();
+  if (!d.ok) {
+    setStatus(`✗ ${d.error || '模型参数保存失败'}`, 'err');
+    alert(d.error || '模型参数保存失败');
+    return;
+  }
+  setStatus(`🧪 ${d.msg}`, 'ok');
+  await refreshModelParams();
+}
+
+async function resetModelParams() {
+  const fname = document.getElementById('modelParamSelect').value;
+  if (!fname) return;
+  if (!confirm(`恢复 ${fname} 的默认模型参数?\n\n会删除该模型在当前工程 model_overrides.yaml 里的覆盖项。`)) return;
+  const r = await fetch('/api/model/params/reset', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({model: fname})
+  });
+  const d = await r.json();
+  if (!d.ok) {
+    setStatus(`✗ ${d.error || '恢复默认失败'}`, 'err');
+    alert(d.error || '恢复默认失败');
+    return;
+  }
+  setStatus(`↩ ${d.msg}`, 'ok');
+  await refreshModelParams();
+}
+
 // ===== 事件时间线 =====
 async function openEvents() {
   document.getElementById('evtmodal').style.display = 'block';
@@ -3355,6 +3727,7 @@ document.addEventListener('keydown', (e) => {
     if (document.getElementById('helpmodal').style.display === 'block') closeHelp();
     if (document.getElementById('bkmodal').style.display === 'block') closeBackups();
     if (document.getElementById('dbgmodal').style.display === 'block') closeDebug();
+    if (document.getElementById('modelmodal').style.display === 'block') closeModelParams();
     if (document.getElementById('snapmodal').style.display === 'block') closeSnapshot();
   }
   // Ctrl/Shift 按下 — popup hdr 切"连选 ON"

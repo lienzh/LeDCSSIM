@@ -103,6 +103,12 @@ class CcsUscOtbt:
             return None
         return interp_y(float(Ne), self._curves["ne_to_dfw_tph"]) / 3.6
 
+    def curve_ub_from_ne(self, Ne: float) -> Optional[float]:
+        """用负荷 MW 查曲线煤量 kg/s, 供上载跟踪锚定内部煤量状态。"""
+        if not self._curves:
+            return None
+        return interp_y(float(Ne), self._curves["ne_to_ub_tph"]) / 3.6
+
     def curve_targets(self, uB_kg_s: float) -> Optional[dict]:
         """按当前煤量给出曲线目标值。"""
         if not self._curves:
@@ -110,8 +116,100 @@ class CcsUscOtbt:
         ne = self.curve_ne_from_ub(uB_kg_s)
         pst = self.curve_pst_from_ne(ne)
         dfw = self.curve_dfw_from_ne(ne)
-        ub_target = interp_y(ne, self._curves["ne_to_ub_tph"]) / 3.6
+        ub_target = self.curve_ub_from_ne(ne)
         return {"Ne": ne, "pst": pst, "Dfw": dfw, "uB": ub_target}
+
+    def _curve_ref_inputs(self, Ne: float) -> Optional[dict]:
+        """YQ3 曲线给出的当前负荷参考输入, 只用于校准论文静态参数。"""
+        if not self._curves:
+            return None
+        ne = float(Ne)
+        uB = self.curve_ub_from_ne(ne)
+        Dfw = interp_y(ne, self._curves["ne_to_dfw_tph"]) / 3.6
+        pst = interp_y(ne, self._curves["ne_to_pst_mpa"])
+        ut = float(self._curves.get("ut_nominal", self.p["seed"]["ut0"]))
+        return {"Ne": ne, "uB": uB, "Dfw": Dfw, "pst": pst, "ut": ut}
+
+    def _thermo_coeffs(self, pm: float, hm: float) -> Optional[dict]:
+        """论文 b/c/d 系数, 由热力性质偏导计算。"""
+        rho = self._rho_m(pm, hm)
+        drho_dp = self._drho_dpm(hm)
+        drho_dh = self._drho_dhm(pm)
+        dT_dh = self._dTm_dhm(pm)
+        dT_dp = self._dTm_dpm(hm)
+        dyn = self.p["dyn"]
+        Vm, cj, mj = dyn["Vm"], dyn["cj"], dyn["mj"]
+
+        b11 = Vm * drho_dp
+        b12 = Vm * drho_dh
+        b21 = Vm * hm * drho_dp + cj * mj * dT_dp
+        b22 = Vm * (hm * drho_dh + rho) + cj * mj * dT_dh
+
+        if abs(b11) < 1e-9 or abs(b12) < 1e-9:
+            return None
+        c1 = b21 - b11 * b22 / b12
+        c2 = b22 - b12 * b21 / b11
+        d1 = b22 / b12
+        d2 = b21 / b11
+        if abs(c1) < 1e-9 or abs(c2) < 1e-9:
+            return None
+        return {"c1": c1, "c2": c2, "d1": d1, "d2": d2}
+
+    def _yq3_alpha_of(self, Ne: float, fallback: float) -> float:
+        """用 YQ3 NE-DFW/NE-uB 曲线替代论文水煤比 alpha 多项式。"""
+        ref = self._curve_ref_inputs(Ne)
+        if not ref or ref["uB"] <= 1e-9:
+            return fallback
+        return ref["Dfw"] / ref["uB"]
+
+    def _yq3_k1_of(self, Ne: float, hfw: float, lam: float, fallback: float) -> float:
+        """按 YQ3 曲线参考点反算锅炉吸热系数 k1, 保持论文 Q1 结构不变。"""
+        ref = self._curve_ref_inputs(Ne)
+        if not ref or ref["uB"] <= 1e-9:
+            return fallback
+        hm_ref = float(self.p["seed"]["hm0"])
+        pm_ref = self._pm_from_pst(ref["pst"])
+        hst_ref = lam * hm_ref
+        Dst_ref = ref["Dfw"]
+        coeffs = self._thermo_coeffs(pm_ref, hm_ref)
+        if not coeffs:
+            return fallback
+
+        q1_for_pm = -((hfw - coeffs["d1"]) * ref["Dfw"]
+                      + (coeffs["d1"] - hst_ref) * Dst_ref)
+        q1_for_hm = -((hfw - coeffs["d2"]) * ref["Dfw"]
+                      + (coeffs["d2"] - hst_ref) * Dst_ref)
+        q1_ref = 0.5 * (q1_for_pm + q1_for_hm)
+        k1 = q1_ref / ref["uB"]
+        return k1 if math.isfinite(k1) and k1 > 0 else fallback
+
+    def _yq3_k2_of(self, Ne: float, hfw: float, lam: float, fallback: float) -> float:
+        """按 YQ3 曲线参考点反算汽轮机系数 k2, 保持论文 Ne 方程不变。"""
+        ref = self._curve_ref_inputs(Ne)
+        if not ref:
+            return fallback
+        hm_ref = float(self.p["seed"]["hm0"])
+        hst_ref = lam * hm_ref
+        Dst_ref = ref["Dfw"]
+        denom = (hst_ref - hfw) * Dst_ref
+        if abs(denom) < 1e-9:
+            return fallback
+        k2 = ref["Ne"] / denom
+        return k2 if math.isfinite(k2) and k2 > 0 else fallback
+
+    def _yq3_dst_scale_of(self, Ne: float, lam: float) -> float:
+        """校准论文 Dst=f(pst,hst) 系数, 使 YQ3 静态点满足 Dst≈Dfw。"""
+        ref = self._curve_ref_inputs(Ne)
+        if not ref or ref["ut"] <= 1e-9:
+            return 1.0
+        hm_ref = float(self.p["seed"]["hm0"])
+        hst_ref = lam * hm_ref
+        raw_f = self._f_pst_hst(ref["pst"], hst_ref)
+        if raw_f <= 1e-9:
+            return 1.0
+        target_f = ref["Dfw"] / ref["ut"]
+        scale = target_f / raw_f
+        return scale if math.isfinite(scale) and scale > 0 else 1.0
 
     # ─── 蒸汽热力性质 ──────────────────────────────────────────
     def _rho_m(self, pm: float, hm: float) -> float:
@@ -202,16 +300,19 @@ class CcsUscOtbt:
         k2  = self.k2_of(Ne)
         lam = self.lam_of(Ne)
         alpha = self.alpha_of(Ne)
-        curve_targets = self.curve_targets(uB)
-        if curve_targets:
-            # YQ3 静态曲线提供当前负荷下的水煤比参考, 原 Q1 仍负责给水偏差对焓的影响。
-            alpha = curve_targets["Dfw"] / max(curve_targets["uB"], 1e-6)
+        if self._curves:
+            # YQ3 适配只修正论文中的静态参数函数, 不替换论文状态方程。
+            alpha = self._yq3_alpha_of(Ne, alpha)
+            k1 = self._yq3_k1_of(Ne, hfw, lam, k1)
+            k2 = self._yq3_k2_of(Ne, hfw, lam, k2)
 
         # ── 中间量 ────────────────────────────────────────
         dp = self._delta_p(pm)
         pst = pm - dp
         hst = lam * hm
         f_val = self._f_pst_hst(pst, hst)
+        if self._curves:
+            f_val *= self._yq3_dst_scale_of(Ne, lam)
         Dst = ut * f_val                                   # 论文 (13)
 
         # 论文 (4): Q1 = k1·rB + μ/(Ne+γ)·(Dfw - α·rB)
@@ -219,33 +320,15 @@ class CcsUscOtbt:
         Q1 = k1 * rB + e["mu"] / (Ne + e["gamma"]) * (Dfw - alpha * rB)
 
         # 论文 c1/c2/d1/d2 — 由热力性质偏导给出 (论文 5.3 节展开)
-        rho = self._rho_m(pm, hm)
-        drho_dp = self._drho_dpm(hm)
-        drho_dh = self._drho_dhm(pm)
-        dT_dh   = self._dTm_dhm(pm)
-        dT_dp   = self._dTm_dpm(hm)
-        dyn = self.p["dyn"]
-        Vm, cj, mj = dyn["Vm"], dyn["cj"], dyn["mj"]
-
-        # b11 = Vm·∂ρ/∂p; b12 = Vm·∂ρ/∂h
-        # b21 = Vm·hm·∂ρ/∂p + cj·mj·∂T/∂p
-        # b22 = Vm·(hm·∂ρ/∂h + ρ) + cj·mj·∂T/∂h
-        b11 = Vm * drho_dp
-        b12 = Vm * drho_dh
-        b21 = Vm * hm * drho_dp + cj * mj * dT_dp
-        b22 = Vm * (hm * drho_dh + rho) + cj * mj * dT_dh
-
-        # 论文 (11): c1 = b21 - b11·b22/b12; c2 = b22 - b12·b21/b11
-        #          d1 = b22/b12;             d2 = b21/b11
-        # 这里 b11, b12 都是分母, 防 0
-        if abs(b11) < 1e-9 or abs(b12) < 1e-9:
+        coeffs = self._thermo_coeffs(pm, hm)
+        if not coeffs:
             # 数值病态: 用上一步状态, 不积分这一步
             self._ut_prev = ut
             return self._outputs()
-        c1 = b21 - b11 * b22 / b12
-        c2 = b22 - b12 * b21 / b11
-        d1 = b22 / b12
-        d2 = b21 / b11
+        c1 = coeffs["c1"]
+        c2 = coeffs["c2"]
+        d1 = coeffs["d1"]
+        d2 = coeffs["d2"]
 
         # ── 节流损失 ΔQloss = η·Δut·pst ────────────────────
         # Δut 取"对上一步差分", 稳态时自动 0, 不影响稳态负荷
@@ -255,6 +338,7 @@ class CcsUscOtbt:
 
         # ── 4 个 ODE (显式 Euler) ─────────────────────────
         # 论文 (16) 完整状态方程
+        dyn = self.p["dyn"]
         c0 = dyn["c0"]
         c3 = dyn["c3"]
 
@@ -264,31 +348,11 @@ class CcsUscOtbt:
         # 论文 (9)(10): c1·dpm/dt = (hfw-d1)·Dfw + (d1-hst)·Dst + Q1
         #              c2·dhm/dt = (hfw-d2)·Dfw + (d2-hst)·Dst + Q1
         # 注: 论文式 16 写的是 "ẋ2 = (hfw-d1)/c1·u2 + ..." (u2=Dfw), 形式一致
-        if abs(c1) < 1e-9 or abs(c2) < 1e-9:
-            self._ut_prev = ut
-            return self._outputs()
         dpm_dt = ((hfw - d1) * Dfw + (d1 - hst) * Dst + Q1) / c1
         dhm_dt = ((hfw - d2) * Dfw + (d2 - hst) * Dst + Q1) / c2
 
         # 论文 (15): dNe/dt = (k2·(hst-hfw)·Dst + ΔQloss)/c3 - Ne/c3
         dNe_dt = (k2 * (hst - hfw) * Dst + DQloss) / c3 - Ne / c3
-
-        if curve_targets:
-            # YQ3 曲线校准: NE/PST 的稳态目标贴合机组静态曲线, 动态仍走一阶平滑。
-            # HM 不从过热度/温度反推, 仅按给水相对曲线基准的偏差做工程校正。
-            tau_ne = float(self._curves.get("tau_ne", c3))
-            tau_pst = float(self._curves.get("tau_pst", c3))
-            tau_hm = float(self._curves.get("tau_hm", 120.0))
-            tau_ne = max(tau_ne, dt)
-            tau_pst = max(tau_pst, dt)
-            tau_hm = max(tau_hm, dt)
-            dNe_dt = (curve_targets["Ne"] - Ne) / tau_ne
-            pm_target = self._pm_from_pst(curve_targets["pst"])
-            dpm_dt = (pm_target - pm) / tau_pst
-            hm_ref = float(self.p["seed"]["hm0"])
-            hm_dfw_gain = float(self._curves.get("hm_dfw_gain", 2.0))
-            hm_target = hm_ref - hm_dfw_gain * (Dfw - curve_targets["Dfw"])
-            dhm_dt = (hm_target - hm) / tau_hm
 
         # ── Euler 推进 ────────────────────────────────────
         self.rB = rB + dt * drB_dt

@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from src.opc_client.client import OPCClient
 from src.models.dsl_registry import MODEL_FACTORIES, get_factory_params
-from src.models.steam import steam_T_from_ph
+from src.models.steam import steam_T_from_ph, steam_h_from_Tp
 from src import project as proj
 
 
@@ -373,6 +373,16 @@ def reinit_tracking_state() -> dict:
     return n
 
 
+def clear_ccs_model_state(reason: str = "模型参数调整") -> int:
+    """仅清协调模型实例池, 保留 RS/LAG/$var。调参后让新参数立即用于后续计算。"""
+    s = _STATE
+    n = len(s.ccs_state)
+    s.ccs_state = {}
+    log_event("state", f"♻ {reason}: CCS 模型实例清 {n} 个, 下周期按新参数重建",
+              {"ccs": n})
+    return n
+
+
 def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
     """上载: 工程 → 本项目. 4 步无扰跟踪起步.
 
@@ -513,10 +523,34 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
         key = (inst_rhs[0], _make_hashable(inst_rhs[1]))
         return [(key, pin)]
 
+    def _collect_ccs_temp_refs(expr, depth=0, seen=None):
+        """收集可安全反算 HM 的温度输出: LAG/变量/STEAM_T(HM, p) 链路。"""
+        if seen is None:
+            seen = set()
+        if depth > 12:
+            return []
+        if isinstance(expr, str):
+            if expr.startswith("$") and expr in var_defs and expr not in seen:
+                seen.add(expr)
+                return _collect_ccs_temp_refs(var_defs[expr], depth + 1, seen)
+            return []
+        if not isinstance(expr, tuple):
+            return []
+        fname, args = expr
+        if fname == "LAG" and args:
+            return _collect_ccs_temp_refs(args[0], depth + 1, seen)
+        if fname == "LIMIT" and args:
+            return _collect_ccs_temp_refs(args[0], depth + 1, seen)
+        if fname != "STEAM_T" or len(args) != 2:
+            return []
+        hm_refs = [(key, pin) for key, pin in _collect_ccs_pin_refs(args[0]) if pin == "HM"]
+        return [(key, args[1]) for key, _pin in hm_refs]
+
     # 对每个 OPC LHS 收集: LAG (递归但不跨 $var) + RS (支持 $var/NOT/RS_NOT 反相)
     lhs_lag_keys = {}   # {lhs_full: [lag_key, ...]}
     lhs_rs = {}         # {lhs_full: [(rs_key, inverted), ...]}  inverted=True 表示 NOT/RS_NOT
     lhs_ccs_pins = {}   # {lhs_full: [(ccs_key, pin), ...]}
+    lhs_ccs_temps = {}  # {lhs_full: [(ccs_key, pressure_expr), ...]}
     for lhs, rhs in pairs:
         if not isinstance(lhs, str) or lhs.startswith("$"):
             continue
@@ -529,6 +563,9 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
         ccs_pins = _collect_ccs_pin_refs(rhs)
         if ccs_pins:
             lhs_ccs_pins[lhs] = ccs_pins
+        ccs_temps = _collect_ccs_temp_refs(rhs)
+        if ccs_temps:
+            lhs_ccs_temps[lhs] = ccs_temps
 
     # 除了 LHS 锚定用的节点, 也把脚本里所有 RHS 引用的 OPC 节点一起读
     # (跟正常 OPC 循环一样收集 read_set), 让面板"读取"列在停止状态下也能看到全貌
@@ -543,14 +580,16 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
     for _lhs, rhs in pairs:
         _collect_rhs_opc(rhs, rhs_opc)
     nodes_to_read = sorted(set(lhs_lag_keys.keys()) | set(lhs_rs.keys()) |
-                           set(lhs_ccs_pins.keys()) | rhs_opc)
+                           set(lhs_ccs_pins.keys()) | set(lhs_ccs_temps.keys()) |
+                           rhs_opc)
     if not nodes_to_read:
         log_event("state", "📥 上载 Step 2 — 脚本里没有 LHS=LAG/RS(...) 的直接写, 跳过")
         return {"ok": True, "synced_lag": 0, "synced_rs": 0,
                 "msg": "脚本里没有 LHS=LAG/RS(...) 直接写, 无需同步"}
 
     steps.append(f"  收集到 {len(lhs_lag_keys)} 个 LAG-LHS + {len(lhs_rs)} 个 RS-LHS"
-                 f" + {len(lhs_ccs_pins)} 个 CCS-LHS (合并去重 {len(nodes_to_read)} 个 OPC 节点)")
+                 f" + {len(lhs_ccs_pins)} 个 CCS-LHS + {len(lhs_ccs_temps)} 个 CCS温度-LHS"
+                 f" (合并去重 {len(nodes_to_read)} 个 OPC 节点)")
 
     # ════════ Step 3: 读 DCS 当前值 + 无扰跟踪处理 ════════
     t0 = _time.perf_counter()
@@ -611,6 +650,80 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
             continue
         for ccs_key, pin in refs:
             ccs_targets.setdefault(ccs_key, {}).setdefault(pin, []).append(v_float)
+
+    def _ccs_pin_value_map():
+        out = {}
+        for key, pins in ccs_targets.items():
+            for pin, vals_for_pin in pins.items():
+                if vals_for_pin:
+                    out[(key, pin)] = sum(vals_for_pin) / len(vals_for_pin)
+        return out
+
+    def _eval_anchor_expr(expr, ccs_pin_values, depth=0, seen=None):
+        """用已锚定的模型管脚和本次 OPC 读值, 静态求表达式值。"""
+        if seen is None:
+            seen = set()
+        if depth > 12:
+            return None
+        if isinstance(expr, (int, float)):
+            return float(expr)
+        if isinstance(expr, str):
+            if expr.startswith("$"):
+                if expr in var_defs and expr not in seen:
+                    seen.add(expr)
+                    return _eval_anchor_expr(var_defs[expr], ccs_pin_values, depth + 1, seen)
+                return None
+            v = val_map.get(expr)
+            try:
+                return None if v is None else float(v)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(expr, tuple):
+            return None
+        if expr[0] == "INST_PIN":
+            inst_name, pin = expr[1][0].split(".", 1)
+            inst_rhs = var_defs.get(inst_name)
+            if not (isinstance(inst_rhs, tuple) and inst_rhs[0] in MODEL_FACTORIES):
+                return None
+            key = (inst_rhs[0], _make_hashable(inst_rhs[1]))
+            return ccs_pin_values.get((key, pin))
+        fname, args = expr
+        vals = [_eval_anchor_expr(a, ccs_pin_values, depth + 1, seen) for a in args]
+        if any(v is None for v in vals):
+            return None
+        try:
+            if fname == "ADD": return vals[0] + vals[1]
+            if fname == "SUB": return vals[0] - vals[1]
+            if fname == "MUL": return vals[0] * vals[1]
+            if fname == "DIV": return vals[0] / vals[1] if vals[1] != 0 else None
+            if fname == "MAX": return max(vals[0], vals[1])
+            if fname == "MIN": return min(vals[0], vals[1])
+            if fname == "LIMIT": return max(vals[1], min(vals[2], vals[0]))
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+        return None
+
+    ccs_pin_values = _ccs_pin_value_map()
+    synced_ccs_hm_from_temp = 0
+    for lhs_full, refs in lhs_ccs_temps.items():
+        t_actual = val_map.get(lhs_full)
+        if t_actual is None:
+            continue
+        try:
+            t_actual = float(t_actual)
+        except (TypeError, ValueError):
+            continue
+        for ccs_key, pressure_expr in refs:
+            p_actual = _eval_anchor_expr(pressure_expr, ccs_pin_values)
+            if p_actual is None:
+                continue
+            hm_actual = steam_h_from_Tp(t_actual, p_actual)
+            if hm_actual is None:
+                continue
+            ccs_targets.setdefault(ccs_key, {}).setdefault("HM", []).append(hm_actual)
+            ccs_pin_values[(ccs_key, "HM")] = hm_actual
+            synced_ccs_hm_from_temp += 1
+
     for ccs_key, pin_vals in ccs_targets.items():
         fname = ccs_key[0]
         spec = MODEL_FACTORIES.get(fname)
@@ -624,14 +737,17 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
         if not hasattr(handle.model, "get_state") or not hasattr(handle.model, "set_state"):
             continue
         st = handle.model.get_state()
+        anchored_outputs = dict(handle.outputs)
         changed = False
         for pin, vals_for_pin in pin_vals.items():
             actual = sum(vals_for_pin) / len(vals_for_pin)
             if pin == "NE":
                 st["Ne"] = actual
+                anchored_outputs["NE"] = actual
                 changed = True
             elif pin == "HM":
                 st["hm"] = actual
+                anchored_outputs["HM"] = actual
                 changed = True
             elif pin == "PST":
                 dp = params.get("steam", {}).get("dp", {})
@@ -640,10 +756,27 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
                 if abs(1.0 - a) > 1e-9:
                     # pst = pm - (a*pm + b) = (1-a)*pm - b
                     st["pm"] = (actual + b) / (1.0 - a)
+                    anchored_outputs["PST"] = actual
                     changed = True
         if changed:
+            if "Ne" in st and "rB" in st and hasattr(handle.model, "curve_ub_from_ne"):
+                try:
+                    ub_ref = handle.model.curve_ub_from_ne(st["Ne"])
+                except Exception:
+                    ub_ref = None
+                if ub_ref is not None:
+                    # CCS_660 恢复论文结构后, rB/煤粉延迟会继续影响汽压动态。
+                    # 上载锚定输出时也同步内部煤量, 避免旧 seed 或上一工况拖着模型漂移。
+                    st["rB"] = float(ub_ref)
+                    st["delay_q"] = []
+                    st["delay_dt"] = 0.0
             handle.model.set_state(st)
-            handle.outputs = {}
+            handle.outputs = {
+                pin: anchored_outputs[pin]
+                for pin in handle.pins
+                if pin in anchored_outputs
+            }
+            handle.hold_once = bool(handle.outputs)
             handle.last_cycle = -1
             synced_ccs += 1
 
@@ -679,7 +812,8 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
             sim.intermediates[lhs] = v   # ★ 关键: 下一对 RHS 用 $var 时要在 sim 里找得到
             s.intermediates[lhs] = v
         refreshed += 1
-    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG + {synced_rs} 个 RS + {synced_ccs} 个 CCS, last_written 清空, 非锚 LAG 清 {cleared_lag} 个")
+    steps.append(f"✓ Step 3: 无扰跟踪同步 — {synced_lag} 个 LAG + {synced_rs} 个 RS + {synced_ccs} 个 CCS"
+                 f" (温度反算 HM {synced_ccs_hm_from_temp} 点), last_written 清空, 非锚 LAG 清 {cleared_lag} 个")
     steps.append(f"  → 刷新面板显示值: {len(val_map)} 个 DCS 节点 → last_read, 算 {refreshed} 对 LHS → last_values/$var")
     steps.append("✓ Step 4: 现在可以点【▶ 运行】, 第 1 周期写出去 = DCS 现状, 后续按 τ 平滑过渡")
 
@@ -687,10 +821,12 @@ def reinit_lag_from_dcs(opc_url: Optional[str] = None) -> dict:
               f"📥 上载: LAG {synced_lag} (含嵌套) + RS {synced_rs} (含 RS_NOT) ← 工程当前值",
               {"synced_lag": synced_lag, "synced_rs": synced_rs,
                "synced_ccs": synced_ccs,
+               "synced_ccs_hm_from_temp": synced_ccs_hm_from_temp,
                "no_val": no_val, "url": url, "probe_ms": int(probe_ms), "read_ms": int(read_ms)})
     return {"ok": True,
             "synced_lag": synced_lag, "synced_rs": synced_rs,
             "synced_ccs": synced_ccs,
+            "synced_ccs_hm_from_temp": synced_ccs_hm_from_temp,
             "no_val": no_val,
             "lhs_count": len(nodes_to_read),
             "msg": "\n".join(steps)}
@@ -1275,17 +1411,21 @@ class _CcsHandle:
     """模型工厂函数返回的运行时把柄 — 装到 s.intermediates['$YQ3'] 里.
     持有: 模型对象 + 管脚名 + 上次输出 + 上次积分的 cycle (整周期只 step 一次)
     """
-    __slots__ = ("model", "pins", "outputs", "last_cycle")
+    __slots__ = ("model", "pins", "outputs", "last_cycle", "hold_once")
 
     def __init__(self, model, pins):
         self.model = model
         self.pins = tuple(pins)
         self.outputs: dict = {}        # {pin: float}
         self.last_cycle: int = -1
+        self.hold_once: bool = False
 
     def step_if_needed(self, vals, dt: float, cycle: int) -> None:
         if self.last_cycle != cycle:
             self.last_cycle = cycle
+            if self.hold_once and self.outputs:
+                self.hold_once = False
+                return
             outs = self.model.step(*vals, dt)
             self.outputs = dict(zip(self.pins, outs))
 
@@ -1318,6 +1458,8 @@ def _clone_ccs_state(ccs_state: dict) -> dict:
             if hasattr(handle.model, "get_state") and hasattr(new_handle.model, "set_state"):
                 new_handle.model.set_state(handle.model.get_state())
             new_handle.outputs = dict(handle.outputs)
+            new_handle.last_cycle = handle.last_cycle
+            new_handle.hold_once = handle.hold_once
             cloned[key] = new_handle
         except Exception:
             continue

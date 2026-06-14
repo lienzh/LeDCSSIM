@@ -94,6 +94,7 @@ def test_660_curve_targets_from_model():
     assert abs(m.curve_ne_from_ub(217.1 / 3.6) - 600) < 1e-6
     assert abs(m.curve_pst_from_ne(450) - 18.4) < 1e-6
     assert abs(m.curve_dfw_from_ne(495) * 3.6 - 1220) < 1e-6
+    assert abs(m.curve_ub_from_ne(425) * 3.6 - 161.14545454545456) < 1e-6
 
 
 # ---------- 3. 稳态自洽 — 输入保持稳态 600s, 输出不发散 ----------
@@ -176,7 +177,7 @@ def test_step_ut_up_lowers_pst():
 
 
 def test_660_step_directions():
-    """660MW curve preset 保持基本方向: 煤增升负荷/升压, 给水增降焓"""
+    """660MW curve preset 保持论文结构的基本方向: 煤增升负荷/升压, 给水增降焓"""
     seed = PARAMS_660["seed"]
     dpst, dhm, dNe = _settle_then_step_with(
         PARAMS_660, seed["uB0"] + 5.0, seed["Dfw0"], seed["ut0"]
@@ -189,6 +190,12 @@ def test_660_step_directions():
         PARAMS_660, seed["uB0"], seed["Dfw0"] + 30.0, seed["ut0"]
     )
     assert dhm < 0, f"660MW 给水↑ hm 应降, 实际 {dhm:+.1f}"
+
+    dpst, dhm, dNe = _settle_then_step_with(
+        PARAMS_660, seed["uB0"], seed["Dfw0"], seed["ut0"] + 0.05
+    )
+    assert dpst < 0, f"660MW 调门↑ pst 应降, 实际 {dpst:+.3f}"
+    assert abs(dNe) > 0.1, f"660MW 调门扰动应影响负荷动态, 实际 {dNe:+.2f}"
 
 
 # ---------- 5. 数值鲁棒性 — 极限输入不出 NaN ----------

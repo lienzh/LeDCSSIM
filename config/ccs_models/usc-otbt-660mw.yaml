@@ -1,9 +1,9 @@
 # USC-OTBT 660MW 协调控制系统模型 (CCS) 参数
 # 来源说明:
 #   模型动态结构来自 Fan/Su/Wang/Lee 2021 USC-OTBT 方程。
-#   YQ3 适配层采用现场静态曲线: NE-uB、NE-PST、NE-DFW。
-#   本 preset 优先保证 200-600MW 段静态曲线准确; 过热度 30℃仅记录为
-#   后续 HM/温度校准目标, 本轮不从温度反推焓。
+#   YQ3 适配层采用现场静态曲线校准论文静态参数: NE-uB、NE-PST、NE-DFW。
+#   状态方程仍保持论文 USC-OTBT 结构, 不把输出改成曲线一阶跟踪。
+#   过热度 30℃仅记录为后续 HM/温度校准目标, 本轮不从温度反推焓。
 #
 # 论文结构:
 #   Fan H., Su Z.-g., Wang P.-h., Lee K.Y.
@@ -19,8 +19,8 @@
 # DSL 调用: $YQ3 = CCS_660(uB, Dfw, ut); $YQ3.PST / $YQ3.HM / $YQ3.NE
 
 meta:
-  name: YQ3 USC-OTBT 660MW curve-calibrated preset
-  source: "Fan/Su/Wang/Lee 2021 model structure + YQ3 static curves"
+  name: YQ3 USC-OTBT 660MW paper-structure calibrated preset
+  source: "Fan/Su/Wang/Lee 2021 model structure + YQ3 static-parameter calibration"
   Ne_range_MW: [198, 693]    # 约 30%~105% 660MW 机组负荷范围
   scale_from_1000mw: 0.66
   calibration_status: "YQ3 static curve calibrated for 200-600MW"
@@ -28,13 +28,12 @@ meta:
 # YQ3 静态曲线校准层
 # - 曲线点来自现场静态曲线截图
 # - uB / Dfw 原始单位为 t/h, 模型内部仍用 kg/s
+# - 曲线用于校准 alpha/k1/k2 和 Dst 系数, 不替代论文状态方程
 # - 200-600MW 为主要精度区间; 区间外端点钳位, 不做高阶外推
 yq3_static_curves:
   valid_ne_range: [200, 600]
   ut_nominal: 0.70
   superheat_target_c: 30
-  tau_ne: 40
-  tau_pst: 40
   ne_to_ub_tph:
     - [0, 0]
     - [198, 83]
@@ -72,9 +71,10 @@ static_poly:
   alpha: [-2.24e-8,    5.182e-5, -3.851e-2,  16.075   ]   # 水煤比 Dfw/rB
 
 # 动态参数
-# c0/c3/tau 保留原动态时间尺度; mj/Vm 为库存量, 按 0.66 缩放。
+# c0 按 YQ3 开环曲线调慢煤量→锅炉吸热/汽压响应; c3/tau 保留原动态时间尺度。
+# mj/Vm 为库存量, 按 0.66 缩放。
 dyn:
-  c0:  380       # 制粉惯性时间 s
+  c0:  600       # 制粉惯性时间 s
   c3:   40       # 汽轮机惯性时间 s
   tau:  20       # 制粉纯延迟 s
   cj:   0.46     # 金属比热 kJ/(kg·℃)

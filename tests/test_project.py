@@ -23,6 +23,7 @@ def test_paths_layout_and_meta(tmp_path, monkeypatch):
     p = prj.paths()
     assert p.script == root / "script.txt"
     assert p.endpoints == root / "opc_endpoints.yaml"
+    assert p.model_overrides == root / "model_overrides.yaml"
     assert p.snapshot == root / "state" / "state_snapshot.json"
     assert p.snapshot_backups == root / "state" / "snapshot_backups"
     assert p.script_backups == root / "script_backups"
