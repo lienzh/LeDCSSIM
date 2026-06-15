@@ -1,0 +1,13 @@
+# LH3 工程
+# 由工程创建向导生成; io/raw=原始点表, io/filtered=粗筛点表, io/simple=最终精简点表
+display: LH3
+template: usc_ccs_1000mw
+capacity_mw: 1000
+model_factory: CCS_1000
+io_dir: projects/lh3/io/simple
+io_full_dir: projects/lh3/io/filtered
+io_raw_dir: projects/lh3/io/raw
+io_filtered_dir: projects/lh3/io/filtered
+io_simple_dir: projects/lh3/io/simple
+io_fallback_globs:
+  - projects/lh3/io/filtered/DPU*.csv

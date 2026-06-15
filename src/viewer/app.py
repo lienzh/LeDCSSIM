@@ -2,6 +2,7 @@
 """Flask Web 仪表板 — 只读查看模型组态和最新 CSV 数据"""
 import csv
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -12,6 +13,7 @@ from flask import Flask, jsonify, render_template_string, request
 from src.engine import GraphRunner, TagMap, DataRecorder
 from . import runtime as rt
 from src import project as proj
+from src import project_wizard
 from src.models.dsl_registry import (
     MODEL_FACTORIES,
     clear_param_cache,
@@ -76,6 +78,8 @@ def _dpu_from_filename(stem: str) -> str:
     base = stem.replace("_S", "").replace("-S", "").replace("_FULL", "")
     if base.isdigit():
         return f"DPU{base}"
+    if re.fullmatch(r"DPU\d{4}", base, flags=re.IGNORECASE):
+        return base.upper()
     return stem  # 退路: 老 'DPU3013.csv' 命名直接用
 
 # Web 编辑器允许的文件白名单(防止任意路径写入)
@@ -788,6 +792,9 @@ def api_script_save():
 def api_script_generate():
     """按工艺规则自动生成脚本 (analog + digital 全部)"""
     text = rt.generate_script_from_tagmap(str(_cfg_path("tagmap")))
+    if _script_path().exists():
+        current = _script_path().read_text(encoding="utf-8")
+        text = rt.merge_manual_model_blocks(text, current)
     return jsonify({"ok": True, "content": text})
 
 
@@ -949,7 +956,7 @@ def api_var_rename_desc():
 @app.route("/api/script/run", methods=["POST"])
 def api_script_run():
     body = request.get_json(force=True) or {}
-    dt = float(body.get("dt", 0.2))
+    dt = float(body.get("dt", 1.0))
     # 用脚本文件 or 请求里的 content
     content = body.get("content")
     if content is None:
@@ -1043,6 +1050,22 @@ def api_script_validate():
     return jsonify({"ok": True,
                     "errors": errors, "count": len(errors),
                     "warnings": warnings, "warn_count": len(warnings)})
+
+
+@app.route("/api/script/diagnostics", methods=["GET", "POST"])
+def api_script_diagnostics():
+    """工程级脚本诊断: 点表引用、写入目标类型、模型工厂匹配。"""
+    body = request.get_json(force=True, silent=True) if request.method == "POST" else None
+    content = (body or {}).get("content")
+    try:
+        return jsonify(rt.validate_project_script(content))
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "errors": [{"type": "diagnostics", "message": str(e)}],
+            "warnings": [],
+            "summary": {},
+        }), 500
 
 
 @app.route("/api/opc/endpoint")
@@ -1275,6 +1298,42 @@ def api_project_get():
     """工程清单 + 当前激活"""
     items = [{"name": n, "display": proj.paths(n).display} for n in proj.list_projects()]
     return jsonify({"active": proj.get_active(), "projects": items})
+
+
+@app.route("/api/project/templates")
+def api_project_templates():
+    """工程创建向导:列出可用模板。"""
+    return jsonify({"templates": project_wizard.list_templates()})
+
+
+@app.route("/api/project/create", methods=["POST"])
+def api_project_create():
+    """工程创建向导:按模板创建工程。"""
+    global _SYMBOLS_CACHE
+    if rt.get_status().get("running"):
+        return jsonify({"ok": False, "error": "OPC 循环运行中, 先点【■ 停止】再创建工程"}), 409
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        result = project_wizard.create_project_from_template(
+            name=(body.get("name") or "").strip(),
+            template=(body.get("template") or "usc_ccs_1000mw").strip(),
+            display=(body.get("display") or None),
+            capacity_mw=body.get("capacity_mw"),
+            model_factory=(body.get("model_factory") or None),
+            local_url=(body.get("local_url") or None),
+            vm_url=(body.get("vm_url") or None),
+            mode=body.get("mode") or "local",
+            overwrite=bool(body.get("overwrite", False)),
+            overwrite_script=bool(body.get("overwrite_script", False)),
+            overwrite_endpoints=bool(body.get("overwrite_endpoints", False)),
+            activate=bool(body.get("activate", True)),
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    if result.get("activated"):
+        rt.switch_project(result["name"])
+        _SYMBOLS_CACHE = None
+    return jsonify(result)
 
 
 @app.route("/api/project", methods=["POST"])
@@ -2559,7 +2618,7 @@ async function runIt() {
   validateScript();   // 保存通过 → 触发一次完整校验 (徽章从 "未校验" 翻成 "✓N 错 / ⚠N 警告" 真实结果)
   // 启动
   const r = await fetch('/api/script/run', {method: 'POST',
-    headers: {'Content-Type': 'application/json'}, body: '{}'});
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({dt: 1.0})});
   const d = await r.json();
   setStatus(d.ok ? `▶ ${d.msg}` : `✗ ${d.msg || d.error}`, d.ok ? 'run' : 'err');
 }

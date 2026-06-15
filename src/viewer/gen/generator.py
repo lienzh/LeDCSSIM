@@ -16,6 +16,16 @@ from .gateway import gateway_lines_from_csv
 from .rules import load_rules
 
 
+def _dpu_from_csv_name(stem: str) -> str:
+    """点表文件名 → DPU 名: 3001_S / DPU3001_S / DPU3001."""
+    base = stem.replace("_S", "").replace("-S", "").replace("_FULL", "")
+    if base.upper().startswith("DPU") and base[3:].isdigit():
+        return base.upper()
+    if base.isdigit():
+        return f"DPU{base}"
+    return base
+
+
 def _recommend_cmd(fb_pt: dict, cmd_pts: list, threshold: float = 0.55):
     """
     为未配对反馈推荐最可能的指令 (基于 KKS 前缀 + 描述相似度)
@@ -79,13 +89,13 @@ def generate(project_paths=None) -> str:
     rules = load_rules(pp)
     csv_files = sorted(pp.io_dir.glob(pp.io_glob))
     if csv_files:
-        def _dpu_of(p): return "DPU" + p.stem.replace("_S","").replace("-S","")
+        def _dpu_of(p): return _dpu_from_csv_name(p.stem)
     else:
         for pat in pp.io_fallback_globs:
             csv_files = sorted(Path(f) for f in _glob.glob(pat))
             if csv_files:
                 break
-        def _dpu_of(p): return p.stem
+        def _dpu_of(p): return _dpu_from_csv_name(p.stem)
 
     DPU_SCOPE = sorted({_dpu_of(p) for p in csv_files})
     csv_by_dpu = {_dpu_of(p): p for p in csv_files}

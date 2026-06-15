@@ -16,9 +16,10 @@ DSL 语法 (一行一对赋值):
     - 读所有"右边引用的点" → 取值 → 写到"左边目标点"
     - 左边是 AI 点 (HW.AI....) → 自动走 HR/LR 双写(NTVDPU 硬约束)
     - 左边是 DI 点 → 普通 write_value (NTVDPU 实际不接受,日志告警)
-    - 周期默认 200ms
+    - 周期默认 1s
 """
 import asyncio
+import csv
 import logging
 import re
 import socket
@@ -1368,6 +1369,250 @@ def parse_script(text: str) -> List[Tuple[str, Union[str, float]]]:
     return result
 
 
+def _point_dpu_from_csv_name(stem: str) -> str:
+    """点表文件名 → DPU 名: DPU3012_S / DPU3012 / 3012_S."""
+    base = stem.replace("_S", "").replace("-S", "").replace("_FULL", "")
+    if base.upper().startswith("DPU") and base[3:].isdigit():
+        return base.upper()
+    if base.isdigit():
+        return f"DPU{base}"
+    return base.upper()
+
+
+def _load_project_hw_points(project_paths=None) -> set:
+    """读取当前工程点表索引, 返回 {(DPU3012, HW.AI010101.PV), ...}."""
+    return set(_load_project_hw_point_map(project_paths).keys())
+
+
+def _load_project_hw_point_map(project_paths=None) -> dict:
+    """读取当前工程点表, 返回 {(dpu, point): {code, desc}}。"""
+    pp = project_paths or proj.paths()
+    csv_files = sorted(pp.io_dir.glob(pp.io_glob))
+    if not csv_files:
+        import glob as _glob
+        for pat in pp.io_fallback_globs:
+            csv_files = sorted(Path(f) for f in _glob.glob(pat))
+            if csv_files:
+                break
+
+    points = {}
+    for fn in csv_files:
+        dpu = _point_dpu_from_csv_name(fn.stem)
+        try:
+            lines = fn.read_bytes().decode("gbk", errors="replace").splitlines()
+        except Exception:
+            continue
+        for row in csv.reader(lines[2:]):
+            if len(row) < 2:
+                continue
+            name = row[1].strip()
+            if name:
+                short = name.split(".")[1] if name.startswith("HW.") and "." in name else ""
+                m = re.match(r"^([A-Z]+)\d+$", short)
+                points[(dpu, name)] = {
+                    "code": m.group(1) if m else "?",
+                    "desc": row[2].strip() if len(row) > 2 else "",
+                }
+    return points
+
+
+def _node_hw_key(node: str):
+    """完整节点 → (dpu, HW.xxx.PV, code)。非 HW PV 返回 None。"""
+    if not isinstance(node, str) or not node.startswith("ns=0;s="):
+        return None
+    body = node[len("ns=0;s="):]
+    parts = body.split(".")
+    if len(parts) != 4 or parts[1] != "HW" or parts[3] != "PV":
+        return None
+    m = re.match(r"^([A-Z]+)\d+$", parts[2])
+    code = m.group(1) if m else "?"
+    return (parts[0].upper(), f"HW.{parts[2]}.PV", code)
+
+
+def _walk_expr_nodes(expr, out: set) -> None:
+    """收集 RHS 表达式里的 OPC 节点引用。"""
+    if isinstance(expr, tuple):
+        for arg in expr[1]:
+            _walk_expr_nodes(arg, out)
+    elif isinstance(expr, str) and not expr.startswith("$"):
+        out.add(expr)
+
+
+def _walk_expr_funcs(expr, out: set) -> None:
+    """收集 RHS 表达式里的函数/模型工厂名。"""
+    if isinstance(expr, tuple):
+        out.add(expr[0])
+        for arg in expr[1]:
+            _walk_expr_funcs(arg, out)
+
+
+def validate_project_script(text: Optional[str] = None, project_paths=None) -> dict:
+    """工程脚本诊断: 点表引用、LHS 类型、模型工厂与当前工程配置一致性。
+
+    这是运行前的结构性检查, 不连接 OPC。通讯实测仍以预演/运行统计为准。
+    """
+    pp = project_paths or proj.paths()
+    if text is None:
+        text = pp.script.read_text(encoding="utf-8")
+
+    try:
+        pairs = parse_script(text)
+    except Exception as e:
+        return {
+            "ok": False,
+            "errors": [{"type": "parse", "message": str(e)}],
+            "warnings": [],
+            "summary": {"pairs": 0, "opc_lhs": 0, "vars": 0},
+        }
+
+    errors = []
+    warnings = []
+    point_map = _load_project_hw_point_map(pp)
+    point_index = set(point_map.keys())
+    lhs_codes = {}
+    lhs_points = set()
+    rhs_points = set()
+    rhs_nodes = set()
+    funcs = set()
+    for lhs, rhs in pairs:
+        if isinstance(lhs, str) and lhs.startswith("ns=0;s="):
+            key = _node_hw_key(lhs)
+            if key:
+                dpu, point, code = key
+                lhs_codes[code] = lhs_codes.get(code, 0) + 1
+                lhs_points.add((dpu, point))
+                if (dpu, point) not in point_index:
+                    errors.append({
+                        "type": "missing_lhs_point",
+                        "node": lhs,
+                        "message": f"LHS 不在当前工程点表中: {dpu}.{point}",
+                    })
+                if code in ("AQ", "DQ"):
+                    errors.append({
+                        "type": "unsafe_lhs_type",
+                        "node": lhs,
+                        "message": f"{code} 是 DCS 输出指令侧, 不建议作为脚本写入目标",
+                    })
+            else:
+                warnings.append({
+                    "type": "non_hw_lhs",
+                    "node": lhs,
+                    "message": "LHS 不是 HW.*.PV 点, 需要确认 DCS 端允许外部写入",
+                })
+        _walk_expr_nodes(rhs, rhs_nodes)
+        _walk_expr_funcs(rhs, funcs)
+
+    for node in sorted(rhs_nodes):
+        key = _node_hw_key(node)
+        if not key:
+            continue
+        dpu, point, _code = key
+        rhs_points.add((dpu, point))
+        if (dpu, point) not in point_index:
+            errors.append({
+                "type": "missing_rhs_point",
+                "node": node,
+                "message": f"RHS 不在当前工程点表中: {dpu}.{point}",
+            })
+
+    try:
+        import yaml as _yaml
+        meta = _yaml.safe_load(pp.project_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:
+        meta = {}
+    expected_factory = meta.get("model_factory")
+    used_factories = sorted(f for f in funcs if f in MODEL_FACTORIES)
+    if expected_factory and used_factories and expected_factory not in used_factories:
+        errors.append({
+            "type": "model_factory_mismatch",
+            "message": f"工程要求 {expected_factory}, 脚本使用 {used_factories}",
+        })
+
+    var_count = sum(1 for lhs, _rhs in pairs if isinstance(lhs, str) and lhs.startswith("$"))
+    opc_lhs = len(pairs) - var_count
+
+    point_usage = {}
+    for key, info in point_map.items():
+        code = info["code"]
+        slot = point_usage.setdefault(code, {
+            "total": 0,
+            "lhs": 0,
+            "rhs": 0,
+            "used": 0,
+            "unused": 0,
+            "unused_examples": [],
+        })
+        slot["total"] += 1
+        used_lhs = key in lhs_points
+        used_rhs = key in rhs_points
+        if used_lhs:
+            slot["lhs"] += 1
+        if used_rhs:
+            slot["rhs"] += 1
+        if used_lhs or used_rhs:
+            slot["used"] += 1
+        else:
+            slot["unused"] += 1
+            if len(slot["unused_examples"]) < 20:
+                dpu, point = key
+                slot["unused_examples"].append({
+                    "point": f"{dpu}.{point}",
+                    "desc": info["desc"],
+                })
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "summary": {
+            "pairs": len(pairs),
+            "opc_lhs": opc_lhs,
+            "vars": var_count,
+            "lhs_codes": lhs_codes,
+            "rhs_nodes": len(rhs_nodes),
+            "model_factory": expected_factory,
+            "used_factories": used_factories,
+            "point_count": len(point_index),
+            "point_usage": point_usage,
+        },
+    }
+
+
+MANUAL_MODEL_BEGIN = "# BEGIN MANUAL MODEL INTERFACE"
+MANUAL_MODEL_END = "# END MANUAL MODEL INTERFACE"
+
+
+def extract_manual_model_blocks(text: str) -> List[str]:
+    """提取由 marker 包住的手工模型接口段。"""
+    blocks = []
+    pos = 0
+    while True:
+        start = text.find(MANUAL_MODEL_BEGIN, pos)
+        if start < 0:
+            break
+        end = text.find(MANUAL_MODEL_END, start)
+        if end < 0:
+            break
+        end += len(MANUAL_MODEL_END)
+        while end < len(text) and text[end] in "\r\n":
+            end += 1
+        blocks.append(text[start:end].rstrip())
+        pos = end
+    return blocks
+
+
+def merge_manual_model_blocks(generated: str, current: str) -> str:
+    """自动生成脚本后, 保留当前脚本中的手工模型接口段。"""
+    blocks = extract_manual_model_blocks(current or "")
+    if not blocks:
+        return generated
+    body = generated.rstrip()
+    for block in blocks:
+        if block not in body:
+            body += "\n\n" + block
+    return body + "\n"
+
+
 # ---------- 求值 ----------
 
 class _SkipCycle(Exception):
@@ -1850,7 +2095,7 @@ class _State:
         self.last_error: Optional[str] = None
         self.started_at: Optional[float] = None
         self.pairs: List[Tuple[str, Union[str, float]]] = []
-        self.dt: float = 0.2
+        self.dt: float = 1.0
         self.opc_url: str = DEFAULT_OPC_URL
         self.last_values: dict = {}     # {full_node: latest_value} 已写入(LHS)
         self.last_read: dict = {}       # {full_node: latest_value} 读到的(RHS 源)
@@ -2211,7 +2456,7 @@ def swap_pairs(new_pairs: List[Tuple[str, Union[str, float]]]) -> dict:
 
 
 def start(pairs: List[Tuple[str, Union[str, float]]],
-          dt: float = 0.2, opc_url: Optional[str] = None) -> Tuple[bool, str]:
+          dt: float = 1.0, opc_url: Optional[str] = None) -> Tuple[bool, str]:
     s = _STATE
     if s.running:
         return False, "已在运行,请先停止"

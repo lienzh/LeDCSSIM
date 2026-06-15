@@ -2,51 +2,55 @@
 
 > **交接时间**:2026-06-13
 > **接手方**:另一个 AI 会话
-> **一句话**:正在用「子代理逐 task 执行」实施"驱动规则外置",**8 个 task 已完成 Task 1,从 Task 2 接着做**。计划文件是唯一施工依据。
+> **当前状态(2026-06-14 已核对)**:驱动规则外置 8 个 task 已完成。设备词表/白名单已外置到 `config/drivers/`,生成器已迁到 `src/viewer/gen/`,原 `runtime.generate_script_from_tagmap` 已是薄壳委托。
 
 ---
 
-## 0. 立刻要做的(TL;DR)
+## 0. 当前结论(TL;DR)
 
-1. 读计划:`docs/superpowers/plans/2026-06-13-driver-rules-externalization.md`(8 个 task,逐字带代码)。
-2. 读设计依据:`docs/superpowers/specs/2026-06-13-driver-rules-externalization-design.md`。
-3. **Task 1 已提交(commit `f178cda`)但其两阶段审查被打断** —— 先补一个轻量审查(它只是抓金标准 fixture + 一个回归测试,`py -3.12 -m pytest tests/test_generator_golden.py -v` 过即可认为合格),然后**从 Task 2 开始**逐 task 实施。
-4. 执行方法:`superpowers:subagent-driven-development`(每 task 派实施子代理 → 规格审查 → 质量审查 → 修 → 标记完成,再下一个)。
-5. 全部 8 个 task 完成后:跑全套测试 + 通知用户**自行重启 viewer**(不要替用户重启),点【🔧 初始化 → 生成样本】验证生成脚本与之前一致。
-
----
-
-## 1. 当前精确状态(交接快照)
-
-- **分支**:`main`(本会话一直直接提交 main —— 用户单人开发仓库,已确立的模式,继续即可)。
-- **工作区**:干净(无未提交改动)。唯一 untracked:`model-ref-paper.pdf`(用户的,别动)。
-- **测试**:`py -3.12 -m pytest tests/ -q` → **34 passed**。
-- **最近提交**(新→旧):
-  - `f178cda` test(gen): YQ3 生成器输出金标准 ← **驱动规则外置 Task 1**
-  - `b91bdae` docs(plan): 驱动规则外置实施计划
-  - `83b83b9` docs(spec): 驱动规则外置设计稿
-  - `85779b1`/`ecedc29`/`e9da42d` 画布清理(阶段 B 完成)
-  - 更早:OPC DI 写 fallback 修复、工程目录化、模型库独立(见 §4)
-- **驱动规则外置文件进度**:
-  - ✅ 有:`tests/fixtures/yq3_generated_golden.txt`(129 行/6201 字节,YQ3 金标准)、`tests/test_generator_golden.py`
-  - ⬜ 待建:`config/drivers/{vocab,devices}.yaml`、`src/viewer/gen/{rules,generator,gateway}.py`、`ProjectPaths.drivers_dir`、相关测试
-- **TaskList 工具里的任务**:Task #11–#18 对应计划 Task 1–8;#11 应标 completed,#12 起 pending。
+1. 本 handoff 记录的驱动规则外置任务已经完成,不再需要从 Task 2 继续施工。
+2. 当前规则文件:`config/drivers/{vocab,devices}.yaml`。
+3. 当前生成器实现:`src/viewer/gen/{rules,generator,gateway}.py`。
+4. 当前薄壳入口:`src/viewer/runtime.py::generate_script_from_tagmap()`。
+5. 已验证:`py -3.12 -m pytest tests/test_generator_golden.py tests/test_driver_rules.py tests/test_gateway_section.py tests/test_project.py -q` → 13 passed;全量测试在 YQ3 660MW 适配后为 57 passed。
 
 ---
 
-## 2. 剩余 task(都在计划文件里,带完整代码)
+## 1. 当前精确状态(完成快照)
+
+- **分支**:`main`。
+- **驱动规则文件**:
+  - ✅ `config/drivers/vocab.yaml`
+  - ✅ `config/drivers/devices.yaml`
+- **生成器模块**:
+  - ✅ `src/viewer/gen/__init__.py`
+  - ✅ `src/viewer/gen/rules.py`
+  - ✅ `src/viewer/gen/gateway.py`
+  - ✅ `src/viewer/gen/generator.py`
+- **工程上下文**:
+  - ✅ `ProjectPaths.drivers_dir`:工程级 `projects/<name>/drivers/` 优先,否则 `config/drivers/` 兜底。
+- **回归测试**:
+  - ✅ `tests/test_generator_golden.py`
+  - ✅ `tests/test_driver_rules.py`
+  - ✅ `tests/test_gateway_section.py`
+  - ✅ `tests/test_project.py`
+
+---
+
+## 2. Task 完成表
 
 | # | task | 关键点 |
 |---|---|---|
-| 2 | `ProjectPaths.drivers_dir` | 工程优先 `projects/<name>/drivers/`,兜底 `config/drivers/`。TDD 加在 `tests/test_project.py` |
-| 3 | `config/drivers/{vocab,devices}.yaml` | **逐字转录** `runtime.py` 当前常量(行范围在计划里)。**坑**:尾空格词 `"开 "/"关 "/"停 "` 和 `"RB-"` 必须加引号,否则 yaml 丢字 → 金标准会挂 |
-| 4 | `gen/rules.py` `DriverRules` | 设备匹配 **valve 类先于 motor 类**(保持原行为);motor 排除 = `motor_exclude_common` |
-| 5 | `gen/gateway.py` | 柜间段接口:`gateway.csv` 驱动(列 `目标信号,来源,描述`),不存在返 `[]`。**本轮不解析 Excel**,只留接口 |
-| 6 | `gen/generator.py` | **把 `runtime.py:2179-2527` 机制整体搬入**,常量引用换成 `rules.vocab[...]`/`rules.match_device(...)`(计划给了逐处映射表)。**金标准逐字一致是唯一正确性闸门** |
-| 7 | `runtime.py` 改薄壳 | `generate_script_from_tagmap` 委托 `gen.generate()`,删已搬走的 ~530 行常量/helper(删前 grep 确认无外部引用) |
-| 8 | CLAUDE.md | 第 7 节"新功能去哪里"表加生成器位置 |
+| 1 | 金标准 fixture + 回归测试 | ✅ 完成 |
+| 2 | `ProjectPaths.drivers_dir` | ✅ 完成 |
+| 3 | `config/drivers/{vocab,devices}.yaml` | ✅ 完成 |
+| 4 | `gen/rules.py` `DriverRules` | ✅ 完成 |
+| 5 | `gen/gateway.py` | ✅ 完成 |
+| 6 | `gen/generator.py` | ✅ 完成 |
+| 7 | `runtime.py` 改薄壳 | ✅ 完成 |
+| 8 | 项目指令文档更新 | ✅ 完成,当前项目指令为 `AGENTS.md` |
 
-**安全网**:Task 4–7 全程 `tests/test_generator_golden.py` 必须绿(新引擎/薄壳对 YQ3 输出与金标准逐字一致)。Task 6 若 diff,计划里给了"首处差异定位"命令。
+**安全网**:`tests/test_generator_golden.py` 保证新生成器和薄壳入口对 YQ3 输出与金标准逐字一致。
 
 ---
 
@@ -71,16 +75,16 @@ prompt 模板在 `C:\Users\lienz\.claude\plugins\cache\claude-plugins-official\s
    - 模型库独立:`src/models/`(`ccs_usc_otbt.py`/`steam.py`/`dsl_registry.py` 工厂注册表)。加容量 preset = 注册表加一条。
    - 工程目录化:工程 = `projects/<name>/`,`src/project.py` 唯一真相源,viewer 顶栏 `工程 ▾` 切换器。
 2. **OPC DI 写 fallback 修复**(`c7223b0`):NTVDPU 的 DI 写类型 schema 会随通道状态翻转,fallback 改双向 + `_FORCE_FLOAT_NODES` 缓存可逆。
-3. **画布清理(CLAUDE.md 阶段 B)**:删 `src/web/`、旧 `src/sim_engine/` 画布模块、画布 config、`CLAUDE-ref.md`,共 ~30700 行。`src/sim_engine/` 仅留 `recorder.py` + `io_pairing_gen.py`(升格工具)。
-4. **驱动规则外置(需求 4)**= 当前进行中。
+3. **画布清理(阶段 B)**:删 `src/web/`、旧 `src/sim_engine/` 画布模块、画布 config、`CLAUDE-ref.md`,共 ~30700 行。`src/sim_engine/` 仅留 `recorder.py` + `io_pairing_gen.py`(升格工具)。
+4. **驱动规则外置(需求 4)**= 已完成。
 
-**需求全景**(用户 6 项):1/2(多工程切换+点表隔离)✅、5(模型模块化)✅、画布清理 ✅、**4(驱动自动化)进行中**、3(容量模板)= 下一轮、6(控制优化空间)留好不建框架。
+**需求全景**(用户 6 项):1/2(多工程切换+点表隔离)✅、5(模型模块化)✅、画布清理 ✅、4(驱动自动化)✅、3(容量模板)= 下一轮、6(控制优化空间)留好不建框架。
 
 ---
 
 ## 5. 关键约定与坑(务必遵守)
 
-**项目硬约束**(CLAUDE.md):
+**项目硬约束**(AGENTS.md):
 - Python **3.12**(`py -3.12`),严禁 3.14(asyncua 不兼容)。
 - 中文注释(面向热控工程师),物理量标单位。
 - viewer 端口 5002(别用 5000,Windows/Hyper-V 占用)。
@@ -107,12 +111,14 @@ prompt 模板在 `C:\Users\lienz\.claude\plugins\cache\claude-plugins-official\s
 |---|---|
 | 本次施工计划 | `docs/superpowers/plans/2026-06-13-driver-rules-externalization.md` |
 | 设计依据 | `docs/superpowers/specs/2026-06-13-driver-rules-externalization-design.md` |
-| 待重构的生成器 | `src/viewer/runtime.py:1994-2527`(`generate_script_from_tagmap` 及其常量/helper) |
-| 工程上下文 | `src/project.py`(加 `drivers_dir`) |
+| 生成器薄壳入口 | `src/viewer/runtime.py::generate_script_from_tagmap` |
+| 生成器实现 | `src/viewer/gen/`(`rules.py` / `generator.py` / `gateway.py`) |
+| 驱动规则 | 默认 `config/drivers/`;工程级覆盖 `projects/<name>/drivers/` |
+| 工程上下文 | `src/project.py`(`drivers_dir` 已完成) |
 | OPC 客户端 | `src/opc_client/client.py`(写 fallback 在此) |
 | 模型库 | `src/models/`(`dsl_registry.py` 工厂注册表) |
 | 配对算法(依赖) | `src/sim_engine/io_pairing_gen.py` |
-| 项目指令 | `CLAUDE.md`(权威,每会话自动加载) |
+| 项目指令 | `AGENTS.md`(权威,每会话自动加载) |
 | 用户记忆 | `C:\Users\lienz\.claude\projects\C--Users-lienz-MyPlanet-ClaudeCode-LeDCSsim-LeDCSSIM\memory\`(MEMORY.md 是索引) |
 
 ---

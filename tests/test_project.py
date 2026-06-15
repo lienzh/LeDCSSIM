@@ -28,20 +28,42 @@ def test_paths_layout_and_meta(tmp_path, monkeypatch):
     assert p.snapshot_backups == root / "state" / "snapshot_backups"
     assert p.script_backups == root / "script_backups"
     assert p.generated_dir == root / "generated"
+    assert p.io_root == root / "io"
+    assert p.io_raw_dir == root / "io" / "raw"
+    assert p.io_filtered_dir == root / "io" / "filtered"
+    assert p.io_simple_dir == root / "io" / "simple"
     assert p.io_dir == Path("SOME/IO")
     assert p.io_full_dir == Path("FULL/IO")
     assert p.io_fallback_globs == ["OLD/DPU*.csv"]
     assert p.display == "演示工程"
 
 
-def test_io_dir_defaults_to_project_io(tmp_path, monkeypatch):
+def test_io_dirs_default_to_three_stage_layout(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     (tmp_path / "projects" / "bare").mkdir(parents=True)   # 无 project.yaml
     p = prj.paths("bare")
-    assert p.io_dir == tmp_path / "projects" / "bare" / "io"
-    assert p.io_full_dir == p.io_dir     # 未配置时 io_full_dir 跟随 io_dir
+    root = tmp_path / "projects" / "bare"
+    assert p.io_root == root / "io"
+    assert p.io_raw_dir == root / "io" / "raw"
+    assert p.io_filtered_dir == root / "io" / "filtered"
+    assert p.io_simple_dir == root / "io" / "simple"
+    assert p.io_dir == root / "io" / "simple"
+    assert p.io_full_dir == root / "io" / "filtered"
     assert p.io_glob == prj.DEFAULT_IO_GLOB
     assert p.display == "bare"
+
+
+def test_legacy_io_dir_only_keeps_full_dir_on_io_dir(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    root = tmp_path / "projects" / "legacy"
+    root.mkdir(parents=True)
+    (root / "project.yaml").write_text(
+        "display: 旧工程\nio_dir: LEGACY/SIMPLE\n",
+        encoding="utf-8",
+    )
+    p = prj.paths("legacy")
+    assert p.io_dir == Path("LEGACY/SIMPLE")
+    assert p.io_full_dir == p.io_dir
 
 
 def test_set_active_and_underscore_excluded(tmp_path, monkeypatch):

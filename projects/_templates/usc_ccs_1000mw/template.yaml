@@ -1,0 +1,14 @@
+display: USC CCS 1000MW
+description: 1000MW 超超临界直流炉协调控制仿真工程模板
+
+defaults:
+  display: LH3
+  capacity_mw: 1000
+  model_factory: CCS_1000
+  local_url: opc.tcp://127.0.0.1:9440
+  vm_url: opc.tcp://192.168.135.142:9440
+
+script:
+  # 模板脚本采用“工程接口变量 + 可复用模型 + 输出绑定”结构。
+  # 新工程优先复用模型公式，只替换本工程测点接口。
+  source: script.txt

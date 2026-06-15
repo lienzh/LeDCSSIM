@@ -1,0 +1,15 @@
+# 1000MW 模板设备白名单。
+motor_exclude_common: [动叶, 调节阀, 调门, 风门, 出口, 进口, 气动门, 电动门, 插板,
+                       出口风门, 进口风门, 润滑油, 液压油, 油泵, 油箱, 油站,
+                       电加热, 加热器, 冷却风, 循环冷却, 失速, 联络]
+devices:
+  - { name: 除氧器主调节阀, type: valve, include: [除氧器主调节阀, 除氧主调节阀, 除氧器主调阀, 除氧主调阀] }
+  - { name: 除氧器副调节阀, type: valve, include: [除氧器副调节阀, 除氧副调节阀, 除氧器副调阀, 除氧副调阀] }
+  - { name: 送风机动叶,     type: valve, include: [送风机动叶] }
+  - { name: 引风机动叶,     type: valve, include: [引风机动叶] }
+  - { name: 一次风机动叶,   type: valve, include: [一次风机动叶] }
+  - { name: 送风机,         type: motor, include: [送风机] }
+  - { name: 引风机,         type: motor, include: [引风机] }
+  - { name: 一次风机,       type: motor, include: [一次风机] }
+  - { name: 给煤机,         type: motor, include: [给煤机] }
+  - { name: 磨煤机,         type: motor, include: [磨煤机] }

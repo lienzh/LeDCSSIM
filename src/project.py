@@ -53,8 +53,27 @@ class ProjectPaths:
         # 工程显示名, 默认用目录名
         self.display = str(meta.get("display") or name)
 
-        # 点表目录: 默认 projects/<name>/io, 可用 io_dir 指到仓库其它位置 (如 YQ3SIM-IO)
-        self.io_dir = Path(meta.get("io_dir")) if meta.get("io_dir") else (self.root / "io")
+        # 点表目录三层约定:
+        #   io/raw      原始点表归档
+        #   io/filtered 粗筛点表, 供配对/生成工具使用
+        #   io/simple   最终精简点表, 供 viewer @ 补全 / 脚本生成使用
+        self.io_root = Path(meta.get("io_root")) if meta.get("io_root") else (self.root / "io")
+        self.io_raw_dir = (
+            Path(meta.get("io_raw_dir")) if meta.get("io_raw_dir") else (self.io_root / "raw")
+        )
+        self.io_filtered_dir = (
+            Path(meta.get("io_filtered_dir"))
+            if meta.get("io_filtered_dir")
+            else (self.io_root / "filtered")
+        )
+        self.io_simple_dir = (
+            Path(meta.get("io_simple_dir"))
+            if meta.get("io_simple_dir")
+            else (self.io_root / "simple")
+        )
+
+        # 最终点表目录: 默认 projects/<name>/io/simple, 可用 io_dir 指到仓库其它位置
+        self.io_dir = Path(meta.get("io_dir")) if meta.get("io_dir") else self.io_simple_dir
 
         # 点表文件 glob 模式, 默认匹配 *_S.csv / *-S.csv (简化版点表)
         self.io_glob = str(meta.get("io_glob") or DEFAULT_IO_GLOB)
@@ -62,10 +81,14 @@ class ProjectPaths:
         # 找不到简化点表时的回退 glob 列表 (仓库根相对), 如老命名 YQ3SIM-IO/DPU*.csv
         self.io_fallback_globs = [str(g) for g in (meta.get("io_fallback_globs") or [])]
 
-        # 全量点表目录 (tools/generate_yaml_from_pairs 用), 默认与 io_dir 相同
-        self.io_full_dir = (
-            Path(meta.get("io_full_dir")) if meta.get("io_full_dir") else self.io_dir
-        )
+        # 全量/粗筛点表目录 (tools/generate_yaml_from_pairs 用).
+        # 老工程若显式配置 io_dir 但没配 io_full_dir, 继续沿用 io_dir, 避免改变既有语义.
+        if meta.get("io_full_dir"):
+            self.io_full_dir = Path(meta.get("io_full_dir"))
+        elif meta.get("io_dir"):
+            self.io_full_dir = self.io_dir
+        else:
+            self.io_full_dir = self.io_filtered_dir
 
         # 驱动规则目录: 工程级 projects/<name>/drivers/ 优先, 否则仓库默认 config/drivers/
         _proj_drivers = self.root / "drivers"
