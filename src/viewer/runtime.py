@@ -14,8 +14,7 @@ DSL 语法 (一行一对赋值):
 
 执行语义:
     - 读所有"右边引用的点" → 取值 → 写到"左边目标点"
-    - 左边是 AI 点 (HW.AI....) → 自动走 HR/LR 双写(NTVDPU 硬约束)
-    - 左边是 DI 点 → 普通 write_value (NTVDPU 实际不接受,日志告警)
+    - 左边是 AI/DI 点 → 直接写 PV; OPCClient 负责 NTVDPU 类型兜底
     - 周期默认 1s
 """
 import asyncio
@@ -35,6 +34,25 @@ from src.opc_client.client import OPCClient
 from src.models.dsl_registry import MODEL_FACTORIES, get_factory_params
 from src.models.steam import steam_T_from_ph, steam_h_from_Tp
 from src import project as proj
+
+
+# 写后未生效判定: NTVDPU 写入有延迟,模拟量还会有工程量舍入/量化误差。
+WRITE_INEFFECTIVE_GRACE_CYCLES = 5
+WRITE_INEFFECTIVE_ABS_TOL = 0.1
+WRITE_INEFFECTIVE_REL_TOL = 0.001
+
+
+def _write_effectively_equal(want, actual) -> bool:
+    """判断 DCS 实际值是否已足够接近本周期写入目标。"""
+    try:
+        w = 1.0 if want is True else 0.0 if want is False else float(want)
+        a = 1.0 if actual is True else 0.0 if actual is False else float(actual)
+    except (TypeError, ValueError):
+        return want == actual
+    if isinstance(want, bool) or isinstance(actual, bool):
+        return abs(w - a) < 0.5
+    tol = max(WRITE_INEFFECTIVE_ABS_TOL, abs(w) * WRITE_INEFFECTIVE_REL_TOL)
+    return abs(w - a) <= tol
 
 
 # ---------- 显式事件日志 (用户视角时间线: 启停/重连/镜像/清状态等) ----------
@@ -1034,11 +1052,9 @@ def reset_persistent_state() -> dict:
 def get_debug() -> dict:
     """完整 debug 包: 状态 + 摘要 + 失败 + 写后未生效 + 日志"""
     s = _STATE
-    # 写后未生效: 持续 >= 5 周期不一致 (1 秒, 避开 NTVDPU 写入延迟)
-    GRACE_CYCLES = 5
     ineffective = []
     for k, streak in s.ineffective_streak.items():
-        if streak < GRACE_CYCLES:
+        if streak < WRITE_INEFFECTIVE_GRACE_CYCLES:
             continue
         if isinstance(k, str) and k.startswith("$"): continue
         actual = s.last_read.get(k)
@@ -2167,10 +2183,10 @@ def get_status() -> dict:
     avg_cycle = avg(s.recent_cycle_ms)
     dt_ms = s.dt * 1000
     load_pct = (avg_cycle / dt_ms * 100) if dt_ms > 0 else 0.0
-    # 写后未生效统计 — 必须持续 >= 5 周期 (1秒) 不一致才算
-    # (NTVDPU 写入有内部刷新延迟, 立即对比会误报)
-    GRACE_CYCLES = 5
-    n_write_ineffective = sum(1 for n in s.ineffective_streak.values() if n >= GRACE_CYCLES)
+    n_write_ineffective = sum(
+        1 for n in s.ineffective_streak.values()
+        if n >= WRITE_INEFFECTIVE_GRACE_CYCLES
+    )
     return {
         "running": s.running,
         "cycle_count": s.cycle_count,
@@ -2378,7 +2394,7 @@ async def _opc_loop(initial_pairs: List[Tuple[str, Union[str, float]]], dt: floa
                             s.node_write_fail[lhs] = s.node_write_fail.get(lhs, 0) + 1
                     s.write_count += n_ok
 
-                # 4. 写后未生效持续判定 (NTVDPU ~1s 延迟, 持续 5 周期不一致才算)
+                # 4. 写后未生效持续判定: 连续多周期且超出模拟量容差才算
                 for lhs_n, want in s.last_values.items():
                     if isinstance(lhs_n, str) and lhs_n.startswith("$"):
                         continue
@@ -2386,15 +2402,10 @@ async def _opc_loop(initial_pairs: List[Tuple[str, Union[str, float]]], dt: floa
                     if actual is None:
                         s.ineffective_streak[lhs_n] = 0
                         continue
-                    try:
-                        w = 1 if want is True else 0 if want is False else float(want)
-                        a = 1 if actual is True else 0 if actual is False else float(actual)
-                        if abs(w - a) > 0.01:
-                            s.ineffective_streak[lhs_n] = s.ineffective_streak.get(lhs_n, 0) + 1
-                        else:
-                            s.ineffective_streak[lhs_n] = 0
-                    except (TypeError, ValueError):
+                    if _write_effectively_equal(want, actual):
                         s.ineffective_streak[lhs_n] = 0
+                    else:
+                        s.ineffective_streak[lhs_n] = s.ineffective_streak.get(lhs_n, 0) + 1
 
                 s.cycle_count += 1
                 s.last_error = None

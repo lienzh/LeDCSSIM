@@ -25,6 +25,12 @@ projects/lh3/io/simple/    # 精简版本,后续细筛后的最终点表,/script
 
 `projects/lh3/project.yaml` 中 `io_dir` 指向 `projects/lh3/io/simple`,`io_full_dir` 指向 `projects/lh3/io/filtered`。不再使用 `simple/简化/`。
 
+编码约束:
+- `projects/lh3/io/raw|filtered|simple/*.csv` 是项目内普通 UTF-8 CSV,不保留 NT6000 `tag.csv` 的二进制/签名头。
+- 从 `%NT6000_HOME%\...\DPUxxxx\tag.csv` 复制到 `projects/lh3/io/raw/DPUxxxx.csv` 时,只保留 `#VERSION`、`~索引` 表头和后续数据行;文件首行不能是 `NT60` 签名头。
+- 如果 raw 表格中文描述乱码,先检查是否把带签名头的 `tag.csv` 直接复制进了项目目录。
+- viewer 里添加/删除 OPC 通讯点时,后端会同步更新 `projects/lh3/io/filtered`、`projects/lh3/io/simple` 以及 NT6000 `project/temp/target` 三份 `tag.csv`;集成开发环境需要重载点表并下装对应 DPU 后才能看到运行侧生效。
+
 ## 粗筛表
 
 | DPU | 硬件 IO 点数 | 总体系统/对象 | 判断依据/典型测点 |

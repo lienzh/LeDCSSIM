@@ -93,3 +93,9 @@ def test_merge_manual_model_blocks_preserves_marked_section():
     assert "$m = CCS_1000" in merged
     assert merged.count(rt.MANUAL_MODEL_BEGIN) == 1
     assert merged2.count(rt.MANUAL_MODEL_BEGIN) == 1
+
+
+def test_write_ineffective_tolerance_allows_small_analog_deviation():
+    assert rt._write_effectively_equal(25.79, 25.76) is True
+    assert rt._write_effectively_equal(25.79, 24.9) is False
+    assert rt._write_effectively_equal(True, 0) is False

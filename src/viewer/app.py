@@ -12,6 +12,7 @@ from flask import Flask, jsonify, render_template_string, request
 
 from src.engine import GraphRunner, TagMap, DataRecorder
 from . import runtime as rt
+from . import io_table_manager as io_mgr
 from src import project as proj
 from src import project_wizard
 from src.models.dsl_registry import (
@@ -1543,7 +1544,18 @@ def api_script_symbols_from_opc():
     if err:
         return jsonify({"ok": False, "error": err}), 502
 
-    # merge 进 _SYMBOLS_CACHE — 已有的(CSV 已扫到)保留描述/KKS, 新点用 OPC 名
+    added = _merge_opc_points_into_symbols(pts)
+    return jsonify({
+        "ok": True,
+        "msg": f"OPC 浏览 {len(dpus)} 个 DPU, 共 {len(pts)} 个 HW 点, 新增 {added} 个",
+        "count": len(_SYMBOLS_CACHE),
+        "added": added,
+        "dpus": dpus,
+    })
+
+
+def _merge_opc_points_into_symbols(pts: list) -> int:
+    """把 OPC Browse 结果合并到原 symbols 缓存; CSV 已有描述/KKS 优先保留。"""
     global _SYMBOLS_CACHE
     if _SYMBOLS_CACHE is None:
         api_script_symbols()  # 触发首次加载
@@ -1559,12 +1571,229 @@ def api_script_symbols_from_opc():
             }
             added += 1
     _SYMBOLS_CACHE = list(by_label.values())
+    return added
+
+
+async def _browse_dpus_from_opc(dpus: list[str], opc_url: str) -> tuple[list[dict], Optional[str]]:
+    from src.opc_client.client import OPCClient
+
+    client = OPCClient(opc_url)
+    try:
+        await client.connect(retry_count=2, retry_interval=2.0)
+    except Exception as e:
+        return [], f"OPC 连接失败: {e}"
+    try:
+        all_pts = []
+        for dpu in dpus:
+            pts = await client.browse_hw_points(dpu)
+            for p in pts:
+                p["dpu"] = dpu
+            all_pts.extend(pts)
+        return all_pts, None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+def _opc_parent_node(node_id: str) -> tuple[Optional[str], str]:
+    """把 ns=0;s=DPU.SH0098.X.PV 拆成父节点和叶子名。"""
+    node = str(node_id or "").strip()
+    if not node:
+        return None, ""
+    prefix = "ns=0;s="
+    if node.lower().startswith(prefix):
+        body = node[len(prefix):]
+    else:
+        body = node
+        prefix = ""
+    if "." not in body:
+        return None, body
+    parent, leaf = body.rsplit(".", 1)
+    return f"{prefix}{parent}", leaf
+
+
+async def _opc_node_exists(client, node_id: str) -> bool:
+    """通过父节点 Browse 校验节点存在; Browse 不可用时退化为读值探测。"""
+    parent, leaf = _opc_parent_node(node_id)
+    if parent and leaf:
+        try:
+            children = await client.browse_children(parent)
+            leaf_up = leaf.upper()
+            node_up = str(node_id).upper()
+            if any(name.upper() == leaf_up or child_id.upper() == node_up for name, child_id in children):
+                return True
+        except Exception:
+            pass
+    try:
+        await client.read_data_value(node_id)
+        return True
+    except Exception:
+        return False
+
+
+async def _probe_points_from_opc(points: list[dict], opc_url: str) -> tuple[list[dict], Optional[str]]:
+    """校验指定点是否已被 OPC 浏览到。
+
+    HW 点沿用 DPU.HW 批量浏览; SH/软点按完整节点路径确认存在。
+    """
+    from src.opc_client.client import OPCClient
+
+    client = OPCClient(opc_url)
+    try:
+        await client.connect(retry_count=2, retry_interval=2.0)
+    except Exception as e:
+        return [], f"OPC 连接失败: {e}"
+    try:
+        all_pts: list[dict] = []
+        hw_dpus = set()
+        node_items: list[tuple[dict, str, str, str]] = []
+        for item in points:
+            node = io_mgr.opc_node_from_item(item)
+            if not node:
+                continue
+            dpu, point = io_mgr.split_dpu_point(item.get("dpu", ""), item.get("name", ""))
+            up = point.upper()
+            if io_mgr.HW_POINT_RE.match(up):
+                hw_dpus.add(dpu)
+            else:
+                node_items.append((item, dpu, point, node))
+
+        for dpu in sorted(hw_dpus):
+            pts = await client.browse_hw_points(dpu)
+            for p in pts:
+                p["dpu"] = dpu
+            all_pts.extend(pts)
+
+        seen_nodes = {str(p.get("node", "")).upper() for p in all_pts if p.get("node")}
+        for _item, dpu, point, node in node_items:
+            node_up = node.upper()
+            if node_up in seen_nodes:
+                continue
+            if await _opc_node_exists(client, node):
+                all_pts.append({
+                    "dpu": dpu,
+                    "name": point.upper(),
+                    "code": io_mgr.point_code(point),
+                    "node": node,
+                })
+                seen_nodes.add(node_up)
+        return all_pts, None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+@app.route("/api/io/points/search")
+def api_io_points_search():
+    """从当前工程原始备份点表搜索可加入 OPC 通讯的点。"""
+    try:
+        d = io_mgr.search_raw_points(
+            proj.paths(),
+            query=request.args.get("q", ""),
+            dpu=request.args.get("dpu", ""),
+            limit=int(request.args.get("limit", 300)),
+        )
+        return jsonify({"ok": True, **d})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/io/points/selected")
+def api_io_points_selected():
+    """列出当前 simple 点表中已经选入的硬件 IO 点。"""
+    try:
+        d = io_mgr.selected_points(
+            proj.paths(),
+            query=request.args.get("q", ""),
+            dpu=request.args.get("dpu", ""),
+            limit=int(request.args.get("limit", 500)),
+        )
+        return jsonify({"ok": True, **d})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/io/points/add", methods=["POST"])
+def api_io_points_add():
+    """把 raw 中选中的点加入 filtered/simple。"""
+    global _SYMBOLS_CACHE
+    if rt.get_status().get("running"):
+        return jsonify({"ok": False, "error": "OPC 循环运行中, 先点【■ 停止】再改点表"}), 409
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        result = io_mgr.add_points(proj.paths(), body.get("points") or [], sync_nt6000=True)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    _SYMBOLS_CACHE = None
+    rt.log_event("save",
+                 f"🧩 添加 OPC 通讯点 {len(result['added'])} 个, DPU: {', '.join(result['touched_dpus']) or '-'}",
+                 {"added": result["added"], "skipped": result["skipped"], "nt6000": result.get("nt6000")})
+    return jsonify(result)
+
+
+@app.route("/api/io/points/remove", methods=["POST"])
+def api_io_points_remove():
+    """从 filtered/simple 删除点; raw 原始归档不动。"""
+    global _SYMBOLS_CACHE
+    if rt.get_status().get("running"):
+        return jsonify({"ok": False, "error": "OPC 循环运行中, 先点【■ 停止】再改点表"}), 409
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        result = io_mgr.remove_points(proj.paths(), body.get("points") or [], sync_nt6000=True)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    _SYMBOLS_CACHE = None
+    rt.log_event("save",
+                 f"🧩 删除 OPC 通讯点 {len(result['removed'])} 个, DPU: {', '.join(result['touched_dpus']) or '-'}",
+                 {"removed": result["removed"], "skipped": result["skipped"], "nt6000": result.get("nt6000")})
+    return jsonify(result)
+
+
+@app.route("/api/io/points/probe", methods=["POST"])
+def api_io_points_probe():
+    """OPC Browse 校验: 能浏览到即说明 DPU 侧已重载/下装生效。"""
+    import asyncio
+
+    body = request.get_json(force=True, silent=True) or {}
+    points = body.get("points") or []
+    dpus = body.get("dpus") or []
+    if points:
+        dpus = sorted({io_mgr.normalize_dpu(p.get("dpu", "")) for p in points if p.get("dpu")})
+    else:
+        dpus = sorted({io_mgr.normalize_dpu(d) for d in dpus if d})
+    if not dpus:
+        return jsonify({"ok": False, "error": "缺少 DPU 或点列表"}), 400
+
+    url = rt.get_endpoint_config().get("url") or "opc.tcp://127.0.0.1:9440"
+    try:
+        if points:
+            pts, err = asyncio.run(_probe_points_from_opc(points, url))
+        else:
+            pts, err = asyncio.run(_browse_dpus_from_opc(dpus, url))
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"浏览异常: {e}"}), 500
+    if err:
+        return jsonify({"ok": False, "error": err, "dpus": dpus, "url": url}), 502
+
+    added = _merge_opc_points_into_symbols(pts)
+    checked = points
+    if not checked:
+        checked = io_mgr.selected_points(proj.paths(), dpu=dpus[0] if len(dpus) == 1 else "", limit=2000)["items"]
+    marked = io_mgr.mark_opc_visible(checked, pts)
+    rt.log_event("opc",
+                 f"🔎 OPC 浏览校验 {len(dpus)} 个 DPU: 已生效 {marked['visible']} / 未见 {marked['missing']}",
+                 {"dpus": dpus, "url": url, "visible": marked["visible"], "missing": marked["missing"]})
     return jsonify({
         "ok": True,
-        "msg": f"OPC 浏览 {len(dpus)} 个 DPU, 共 {len(pts)} 个 HW 点, 新增 {added} 个",
-        "count": len(_SYMBOLS_CACHE),
-        "added": added,
+        "url": url,
         "dpus": dpus,
+        "opc_points": len(pts),
+        "symbols_added": added,
+        **marked,
     })
 
 
@@ -1637,15 +1866,16 @@ header a:hover { text-decoration: underline; }
              white-space: pre; overflow: hidden; min-width: 36px; flex-shrink: 0; }
 /* editor 容器 — textarea 在上(透明文字 + 真光标), highlight 层在下 */
 .ed-stack { position: relative; flex: 1; height: 100%; overflow: hidden; }
-.hl-layer, #editor {
+.hl-layer, .hl-measure, #editor {
   position: absolute; inset: 0; margin: 0; padding: 10px 12px;
   font-family: "Consolas", monospace; font-size: 12px;
   line-height: 1.5; tab-size: 2;
   border: 0; outline: none; resize: none;
-  white-space: pre-wrap; word-wrap: break-word;
+  white-space: pre; word-wrap: normal; overflow-wrap: normal;
   overflow: auto;
 }
-.hl-layer { pointer-events: none; color: #222; background: transparent; }
+.hl-measure { pointer-events: none; color: transparent; background: transparent; z-index: 0; }
+.hl-layer { pointer-events: none; color: #222; background: transparent; z-index: 1; }
 /* token 区域 (hl-tag/hl-var, 都带 data-token) 启用 pointer-events, 让悬停 elementFromPoint 拿得到 */
 .hl-layer [data-token] { pointer-events: auto; cursor: help; }
 #editor { background: transparent; color: transparent; caret-color: #000; z-index: 2; }
@@ -1790,6 +2020,8 @@ mark      { background: #ff8; padding: 0; }
               title="点表 CSV 改了后重新加载 (无需重启)">🔄 刷新点表</button>
       <button onclick="syncFromOPC(); closeDropdown('engDrop')"
               title="从 NTVDPU 浏览实际点表 (兜底, CSV 没同步时用)">🔌 OPC 浏览</button>
+      <button onclick="openIoManager(); closeDropdown('engDrop')"
+              title="从原始备份表搜索并增删 filtered/simple OPC 通讯点, 可用 OPC 浏览校验是否已生效">🧩 OPC 点表增减</button>
     </div>
   </div>
   <span class="sep"></span>
@@ -1820,8 +2052,9 @@ mark      { background: #ff8; padding: 0; }
     <div class="ed-wrap">
       <div class="line-nums" id="lineNums">1</div>
       <div class="ed-stack">
+        <pre id="hlMeasure" class="hl-measure"></pre>
         <pre id="hl" class="hl-layer"></pre>
-        <textarea id="editor" spellcheck="false"
+        <textarea id="editor" spellcheck="false" wrap="off"
                   placeholder="# 一行一对赋值,例如:&#10;# DPU3013.AI010502 = DPU3013.AQ010101&#10;# DPU3013.AI010503 = 50.0"></textarea>
       </div>
     </div>
@@ -1958,6 +2191,45 @@ mark      { background: #ff8; padding: 0; }
     </div>
     <div id="modelParamBody" style="overflow-y:auto; padding:0; font-size:11px;
          line-height:1.45; color:#222; font-family:'Consolas',monospace;"></div>
+  </div>
+</div>
+
+<!-- OPC 点表增减模态框 -->
+<div id="iomodal" style="display:none; position:fixed; inset:0; z-index:2270;
+     background:rgba(0,0,0,.4);" onclick="if(event.target===this) closeIoManager()">
+  <div style="background:#fff; max-width:1120px; margin:28px auto; padding:0;
+       box-shadow:0 8px 32px rgba(0,0,0,.3); max-height:90vh; display:flex; flex-direction:column;">
+    <div style="background:#111; color:#eee; padding:8px 14px; display:flex;
+         justify-content:space-between; align-items:center;">
+      <b>🧩 OPC 通讯点增减 — 原始备份搜索 / filtered+simple 写入 / OPC 生效校验</b>
+      <span>
+        <button onclick="probeIoChecked()" style="font-size:11px;padding:3px 10px;background:#06a;color:#fff;border:0;cursor:pointer;">🔎 OPC 校验选中</button>
+        <span style="cursor:pointer;font-size:18px;margin-left:10px" onclick="closeIoManager()">×</span>
+      </span>
+    </div>
+    <div style="padding:8px 14px; background:#fffce0; color:#666; font-size:11px; border-bottom:1px solid #eec">
+      原始备份表只用于搜索, 不修改。添加/删除会同步当前工程 <code>io/filtered</code> / <code>io/simple</code>,
+      并写回 NT6000 <code>project/temp/target</code> 三份 <code>tag.csv</code>。
+      OPC 浏览能看到的点标为“已生效”; 看不到时请重载并下装对应 DPU。
+    </div>
+    <div style="padding:8px 14px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #eee; font-size:11px;">
+      <label>来源
+        <select id="ioMode" onchange="searchIoPoints()" style="font-size:11px;padding:2px 6px">
+          <option value="raw">原始备份搜索</option>
+          <option value="selected">已选 simple</option>
+        </select>
+      </label>
+      <input id="ioDpu" placeholder="DPU3001" oninput="debouncedIoSearch()"
+             style="font-size:11px;padding:3px 6px;width:95px">
+      <input id="ioKw" placeholder="点名 / 描述 / KKS..." oninput="debouncedIoSearch()"
+             style="font-size:11px;padding:3px 6px;flex:1">
+      <button onclick="searchIoPoints()" style="font-size:11px;padding:4px 10px">搜索</button>
+      <button onclick="addIoChecked()" style="background:#0a0;color:#fff;border:0;padding:5px 14px;cursor:pointer;font-size:12px">添加选中</button>
+      <button onclick="removeIoChecked()" style="background:#c33;color:#fff;border:0;padding:5px 14px;cursor:pointer;font-size:12px">删除选中</button>
+    </div>
+    <div id="ioSummary" style="padding:5px 14px;background:#fafafa;border-bottom:1px solid #eee;color:#666;font-size:11px"></div>
+    <div id="ioBody" style="overflow-y:auto; padding:0; font-size:11px;
+         line-height:1.45; color:#222; font-family:'Consolas',monospace;">载入中...</div>
   </div>
 </div>
 
@@ -2272,7 +2544,12 @@ function colorPart(s) {
 
 // debounce 高亮 / 行号 / 补全 — 输入连续时合并到最后一次
 let _hlTimer = null, _acTimer = null, _lnTimer = null;
-let _lastHlText = null;
+const HIGHLIGHT_FULL_LIMIT = 40000;
+const HIGHLIGHT_WINDOW_BUFFER = 45;
+const HIGHLIGHT_WINDOW_GUARD = 12;
+let _hlCache = { text: null, mode: '', start: 0, end: 0 };
+let _hlLinesText = null;
+let _hlLines = [];
 function scheduleHighlight() {
   if (_hlTimer) clearTimeout(_hlTimer);
   _hlTimer = setTimeout(() => { _hlTimer = null; runHighlight(); }, 180);
@@ -2290,38 +2567,171 @@ function scheduleLineNums() {
 let _errLines = new Map();
 let _warnLines = new Map();
 
+function _invalidateHighlight() {
+  _hlCache = { text: null, mode: '', start: 0, end: 0 };
+  _hlLinesText = null;
+  _hlLines = [];
+}
+
+function _getHighlightLines(val) {
+  if (val !== _hlLinesText) {
+    _hlLinesText = val;
+    _hlLines = val.split('\n');
+  }
+  return _hlLines;
+}
+
+function _highlightLine(raw, lineNo) {
+  let lineHtml = hlLine(raw);
+  if (_errLines.has(lineNo)) {
+    const msg = _errLines.get(lineNo).replace(/"/g, '&quot;');
+    return `<span class="hl-bad" title="✗ ${msg}">${lineHtml}</span>`;
+  }
+  if (_warnLines.has(lineNo)) {
+    // 字符级: 每个全角字符单独 hl-warn-char (描述括号 hl-desc 跨度内的全角不标 — 那里允许中文)
+    lineHtml = markFullwidthChars(lineHtml);
+  }
+  return lineHtml;
+}
+
+function _syncHighlightScroll(ed) {
+  const hl = document.getElementById('hl');
+  const ms = document.getElementById('hlMeasure');
+  if (hl) { hl.scrollTop = ed.scrollTop; hl.scrollLeft = ed.scrollLeft; }
+  if (ms) { ms.scrollTop = ed.scrollTop; ms.scrollLeft = ed.scrollLeft; }
+}
+
+function _textOffsetIn(root, node, offset) {
+  if (!root || !node || !root.contains(node)) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let pos = 0, n;
+  while ((n = walker.nextNode())) {
+    if (n === node) return pos + offset;
+    pos += n.nodeValue.length;
+  }
+  return null;
+}
+
+function _caretOffsetFromPoint(ed, x, y) {
+  const hl = document.getElementById('hl');
+  const ms = document.getElementById('hlMeasure');
+  if (!ms) return null;
+  const origEd = ed.style.pointerEvents;
+  const origHl = hl ? hl.style.pointerEvents : '';
+  const origMs = ms.style.pointerEvents;
+  ed.style.pointerEvents = 'none';
+  if (hl) hl.style.pointerEvents = 'none';
+  ms.style.pointerEvents = 'auto';
+  let range = null;
+  try {
+    if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(x, y);
+      if (range) {
+        const off = _textOffsetIn(ms, range.startContainer, range.startOffset);
+        if (off !== null) return off;
+      }
+    }
+    if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(x, y);
+      if (pos) {
+        const off = _textOffsetIn(ms, pos.offsetNode, pos.offset);
+        if (off !== null) return off;
+      }
+    }
+  } finally {
+    ed.style.pointerEvents = origEd;
+    if (hl) hl.style.pointerEvents = origHl;
+    ms.style.pointerEvents = origMs;
+  }
+  return null;
+}
+
+function _lineIndexAtOffset(lines, offset) {
+  if (offset === null || offset === undefined || Number.isNaN(offset)) return null;
+  let pos = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const next = pos + lines[i].length;
+    if (offset <= next) return i;
+    pos = next + 1;  // \n
+  }
+  return Math.max(0, lines.length - 1);
+}
+
+function _estimatedVisibleLineWindow(ed, totalLines) {
+  const cs = window.getComputedStyle(ed);
+  const fontSize = parseFloat(cs.fontSize) || 12;
+  const lineHeight = parseFloat(cs.lineHeight) || fontSize * 1.5;
+  const first = Math.max(0, Math.floor(ed.scrollTop / lineHeight));
+  const visible = Math.ceil(ed.clientHeight / lineHeight) + 1;
+  const start = Math.max(0, first - HIGHLIGHT_WINDOW_BUFFER);
+  const end = Math.min(totalLines, first + visible + HIGHLIGHT_WINDOW_BUFFER);
+  return { first, last: first + visible, start, end };
+}
+
+function _visibleLineWindow(ed, lines) {
+  const ms = document.getElementById('hlMeasure');
+  if (ms && ms.textContent !== ed.value) ms.textContent = ed.value || '';
+  _syncHighlightScroll(ed);
+
+  const rect = ed.getBoundingClientRect();
+  const x = Math.min(rect.right - 12, rect.left + 24);
+  const topY = Math.min(rect.bottom - 8, rect.top + 12);
+  const botY = Math.max(rect.top + 8, rect.bottom - 12);
+  const topOffset = _caretOffsetFromPoint(ed, x, topY);
+  const botOffset = _caretOffsetFromPoint(ed, x, botY);
+  const firstLine = _lineIndexAtOffset(lines, topOffset);
+  const lastLine = _lineIndexAtOffset(lines, botOffset);
+  if (firstLine === null || lastLine === null) {
+    return _estimatedVisibleLineWindow(ed, lines.length);
+  }
+  const first = Math.max(0, Math.min(firstLine, lastLine));
+  const last = Math.min(lines.length, Math.max(firstLine, lastLine) + 1);
+  const start = Math.max(0, first - HIGHLIGHT_WINDOW_BUFFER);
+  const end = Math.min(lines.length, last + HIGHLIGHT_WINDOW_BUFFER);
+  return { first, last, start, end };
+}
+
+function _renderHighlightedWindow(lines, start, end) {
+  const prefix = start > 0 ? escHtml2(lines.slice(0, start).join('\n')) + '\n' : '';
+  const body = lines.slice(start, end)
+    .map((raw, idx) => _highlightLine(raw, start + idx + 1))
+    .join('\n');
+  const suffix = end < lines.length ? '\n' + escHtml2(lines.slice(end).join('\n')) : '';
+  return prefix + body + suffix;
+}
+
 function runHighlight() {
   const ed = document.getElementById('editor');
   const hl = document.getElementById('hl');
   if (!ed || !hl) return;
   const val = ed.value || '';
-  if (val === _lastHlText) {
+  if (val.length <= HIGHLIGHT_FULL_LIMIT && val === _hlCache.text && _hlCache.mode === 'full') {
     // 文本没变, 只同步滚动
-    hl.scrollTop = ed.scrollTop; hl.scrollLeft = ed.scrollLeft;
+    _syncHighlightScroll(ed);
     return;
   }
-  _lastHlText = val;
-  // 性能闸门: 超大文本(>40KB)时关闭高亮, 防止卡顿
-  if (val.length > 40000) {
-    hl.textContent = val;
-    hl.scrollTop = ed.scrollTop; hl.scrollLeft = ed.scrollLeft;
+  const lines = _getHighlightLines(val);
+  if (val.length <= HIGHLIGHT_FULL_LIMIT) {
+    hl.innerHTML = lines.map((raw, i) => _highlightLine(raw, i + 1)).join('\n');
+    _hlCache = { text: val, mode: 'full', start: 0, end: lines.length };
+    const ms = document.getElementById('hlMeasure');
+    if (ms) ms.textContent = '';
+    _syncHighlightScroll(ed);
     return;
   }
-  const lines = val.split('\n');
-  hl.innerHTML = lines.map((raw, i) => {
-    let lineHtml = hlLine(raw);
-    const lineNo = i + 1;
-    if (_errLines.has(lineNo)) {
-      const msg = _errLines.get(lineNo).replace(/"/g, '&quot;');
-      return `<span class="hl-bad" title="✗ ${msg}">${lineHtml}</span>`;
-    }
-    if (_warnLines.has(lineNo)) {
-      // 字符级: 每个全角字符单独 hl-warn-char (描述括号 hl-desc 跨度内的全角不标 — 那里允许中文)
-      lineHtml = markFullwidthChars(lineHtml);
-    }
-    return lineHtml;
-  }).join('\n');
-  hl.scrollTop = ed.scrollTop; hl.scrollLeft = ed.scrollLeft;
+
+  // 大脚本只 token 化当前视窗附近的行。前后未进入窗口的文本保留为纯文本,
+  // 用来维持 textarea 与高亮层的换行/滚动布局一致。
+  const win = _visibleLineWindow(ed, lines);
+  if (val === _hlCache.text && _hlCache.mode === 'window' &&
+      win.first >= _hlCache.start + HIGHLIGHT_WINDOW_GUARD &&
+      win.last <= _hlCache.end - HIGHLIGHT_WINDOW_GUARD) {
+    _syncHighlightScroll(ed);
+    return;
+  }
+  hl.innerHTML = _renderHighlightedWindow(lines, win.start, win.end);
+  _hlCache = { text: val, mode: 'window', start: win.start, end: win.end };
+  _syncHighlightScroll(ed);
 }
 
 // 把行 HTML 里的全角字符单独标 (避开 hl-desc 描述跨度 — 描述里允许中文)
@@ -2364,7 +2774,7 @@ async function validateScript() {
     if (!same) {
       _errLines = em;
       _warnLines = wm;
-      _lastHlText = null;   // 强制下一次 runHighlight 重渲
+      _invalidateHighlight();   // 强制下一次 runHighlight 重渲
       runHighlight();
     }
     // 错误 + 警告 badge (不打扰: 都 0 就清掉)
@@ -2654,7 +3064,7 @@ DPU3013.AI010502 = $tmp * 0.5                  # 中间变量参与计算</pre>
   <tr><td><code>+</code> <code>-</code></td><td>4</td><td>左</td><td>ADD / SUB</td></tr>
 </table>
 <p>逻辑运算继续用 <code>AND/OR/NOT</code> 函数(没引入 <code>&&</code> / <code>||</code>)。</p>
-<p>短码 <code>DPU3013.AI010502</code> 自动展开为 <code>ns=0;s=DPU3013.HW.AI010502.PV</code>。左边是 <code>AI</code> 时自动走 HR/LR 双写。</p>
+<p>短码 <code>DPU3013.AI010502</code> 自动展开为 <code>ns=0;s=DPU3013.HW.AI010502.PV</code>。左边是 <code>AI/DI</code> 时直接写 <code>PV</code>。</p>
 
 <h3>1.05 多目标赋值(批量同值)</h3>
 <p>左边用 <b>逗号</b> 分隔多个目标,共享同一个右边表达式:</p>
@@ -2932,7 +3342,7 @@ DPU3013.AI_用 = SEL(DPU3013.DI_A正常, DPU3013.AI_A测量, DPU3013.AI_B测量)
 <p>状态栏会出现的 badge(直接点开打开诊断):</p>
 <ul>
 <li><b style="background:#a0c;color:#fff;padding:0 4px">⛔ N 对跳过</b> — 右边某节点持续读不到 → 整对赋值无效(常见:SH 段端子 NTVDPU 没暴露读权限)</li>
-<li><b style="background:#c00;color:#fff;padding:0 4px">⚠ 写后未生效</b> — 写了但 DCS 端持续 ≥ 1 秒不一致(常见:DI 上游被组态强驱动)</li>
+<li><b style="background:#c00;color:#fff;padding:0 4px">⚠ 写后未生效</b> — 写了但 DCS 端持续多周期明显不一致(常见:DI 上游被组态强驱动)</li>
 <li><b style="background:#c60;color:#fff;padding:0 4px">写失败 N 节点</b> — OPC server 拒绝写(BadTypeMismatch 等)</li>
 <li><b style="background:#888;color:#fff;padding:0 4px">读失败 N 节点</b> — OPC 节点不存在 / 卡件未连</li>
 </ul>
@@ -3649,6 +4059,183 @@ async function deleteSnapshot() {
   await refreshSnapInfo();
 }
 
+// ===== OPC 点表增减 =====
+let _ioItems = [];
+let _ioProbe = {};
+let _ioSearchTimer = null;
+
+function _ioKey(it) {
+  return `${(it.dpu||'').toUpperCase()}|${(it.name||'').toUpperCase()}`;
+}
+function debouncedIoSearch() {
+  clearTimeout(_ioSearchTimer);
+  _ioSearchTimer = setTimeout(searchIoPoints, 250);
+}
+function openIoManager() {
+  document.getElementById('iomodal').style.display = 'block';
+  searchIoPoints();
+}
+function closeIoManager() {
+  document.getElementById('iomodal').style.display = 'none';
+}
+async function searchIoPoints() {
+  const mode = document.getElementById('ioMode').value;
+  const kw = document.getElementById('ioKw').value || '';
+  const dpu = document.getElementById('ioDpu').value || '';
+  const url = mode === 'selected' ? '/api/io/points/selected' : '/api/io/points/search';
+  const qs = new URLSearchParams({q: kw, dpu, limit: mode === 'selected' ? '500' : '300'});
+  const body = document.getElementById('ioBody');
+  const sum = document.getElementById('ioSummary');
+  body.innerHTML = '<div style="padding:18px;color:#888">搜索中...</div>';
+  try {
+    const r = await fetch(`${url}?${qs.toString()}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || '搜索失败');
+    _ioItems = d.items || [];
+    sum.textContent = `${mode === 'selected' ? '已选 simple' : '原始备份'}: ${d.count || 0} 项${d.truncated ? ' (已截断, 请缩小筛选)' : ''}`;
+    renderIoRows();
+  } catch(e) {
+    body.innerHTML = `<div style="padding:18px;color:#c00">搜索失败: ${escHtml(String(e))}</div>`;
+  }
+}
+function renderIoRows() {
+  const body = document.getElementById('ioBody');
+  if (!_ioItems.length) {
+    body.innerHTML = '<div style="padding:18px;color:#999">无匹配点</div>';
+    return;
+  }
+  const rows = _ioItems.map((it, i) => {
+    const key = _ioKey(it);
+    const visible = (_ioProbe[key] !== undefined) ? _ioProbe[key] : it.opc_visible;
+    const opc = visible === true ? '<span style="color:#080;font-weight:bold">已生效</span>'
+      : visible === false ? '<span style="color:#c60;font-weight:bold">OPC未见</span>'
+      : '<span style="color:#999">未校验</span>';
+    const status = [
+      it.in_simple ? '<span style="color:#080">simple</span>' : '<span style="color:#999">simple-</span>',
+      it.in_filtered ? '<span style="color:#080">filtered</span>' : '<span style="color:#999">filtered-</span>',
+    ].join(' / ');
+    return `<tr style="border-bottom:1px dotted #eee">
+      <td style="padding:3px 6px;text-align:center"><input type="checkbox" data-io-idx="${i}"></td>
+      <td style="padding:3px 6px;color:#048;font-weight:bold">${escHtml(it.dpu||'')}</td>
+      <td style="padding:3px 6px"><code>${escHtml(it.name||'')}</code></td>
+      <td style="padding:3px 6px">${escHtml(it.desc||'')}</td>
+      <td style="padding:3px 6px;color:#888">${escHtml(it.kks||'')}</td>
+      <td style="padding:3px 6px;color:#888">${escHtml(it.dtype||'')}</td>
+      <td style="padding:3px 6px">${status}</td>
+      <td style="padding:3px 6px">${opc}</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML =
+    `<table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:#222;color:#eee;position:sticky;top:0;">
+        <th style="width:34px;padding:4px 6px"><input type="checkbox" onchange="toggleIoAll(this.checked)"></th>
+        <th style="width:78px;padding:4px 6px;text-align:left">DPU</th>
+        <th style="width:155px;padding:4px 6px;text-align:left">测点名称</th>
+        <th style="padding:4px 6px;text-align:left">描述</th>
+        <th style="width:145px;padding:4px 6px;text-align:left">KKS</th>
+        <th style="width:70px;padding:4px 6px;text-align:left">类型</th>
+        <th style="width:125px;padding:4px 6px;text-align:left">点表状态</th>
+        <th style="width:88px;padding:4px 6px;text-align:left">OPC</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+}
+function toggleIoAll(checked) {
+  document.querySelectorAll('#ioBody input[data-io-idx]').forEach(cb => cb.checked = checked);
+}
+function getIoChecked() {
+  return Array.from(document.querySelectorAll('#ioBody input[data-io-idx]:checked'))
+    .map(cb => _ioItems[Number(cb.dataset.ioIdx)])
+    .filter(Boolean);
+}
+async function addIoChecked() {
+  const points = getIoChecked();
+  if (!points.length) { setStatus('请先勾选要添加的点', 'err'); return; }
+  const dpus = Array.from(new Set(points.map(p => p.dpu))).join(', ');
+  if (!confirm(`添加 ${points.length} 个 OPC 通讯点到 filtered/simple?\n\n涉及 DPU: ${dpus}\n原始备份表不会被修改。`)) return;
+  const d = await postIoChange('/api/io/points/add', points, '添加');
+  if (d && d.ok) await afterIoChange(d, d.added || [], '添加');
+}
+async function removeIoChecked() {
+  const points = getIoChecked();
+  if (!points.length) { setStatus('请先勾选要删除的点', 'err'); return; }
+  const dpus = Array.from(new Set(points.map(p => p.dpu))).join(', ');
+  if (!confirm(`从 filtered/simple 删除 ${points.length} 个 OPC 通讯点?\n\n涉及 DPU: ${dpus}\n原始备份表不会被修改。`)) return;
+  const d = await postIoChange('/api/io/points/remove', points, '删除');
+  if (d && d.ok) await afterIoChange(d, d.removed || [], '删除');
+}
+async function postIoChange(url, points, verb) {
+  setStatus(`${verb} OPC 通讯点中...`, 'run');
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({points}),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      setStatus(`✗ ${verb}失败: ${d.error || '未知错误'}`, 'err');
+      return null;
+    }
+    setStatus(`✓ ${verb}完成, 已改 DPU: ${(d.touched_dpus||[]).join(', ') || '-'}`, 'ok');
+    return d;
+  } catch(e) {
+    setStatus(`✗ ${verb}请求失败: ${e}`, 'err');
+    return null;
+  }
+}
+async function afterIoChange(result, changedPoints, verb) {
+  await searchIoPoints();
+  let probeMsg = '未执行 OPC 校验';
+  if (changedPoints.length) {
+    const p = await probeIoPoints(changedPoints);
+    if (p && p.ok) {
+      probeMsg = `OPC 浏览校验: 已生效 ${p.visible}, 未见 ${p.missing}`;
+    }
+  }
+  const dpus = (result.touched_dpus || []).join(', ') || '-';
+  const nt = result.nt6000 || {};
+  const ntChanged = (nt.changed || []).filter(x => x.changed || x.removed).length;
+  const ntSkipped = (nt.skipped || []).length;
+  const ntMsg = `NT6000 工程点表: 写入 ${ntChanged} 份, 问题 ${ntSkipped} 项`;
+  const ntWarn = ntSkipped
+    ? `\n\nNT6000 未完全写入:\n${(nt.skipped || []).slice(0, 5).map(x => `- ${x.dpu || ''} ${x.reason || ''}`).join('\n')}`
+    : '';
+  alert(`${verb}完成。\n\n涉及 DPU: ${dpus}\n${ntMsg}\n${probeMsg}\n\n请在集成开发环境中重载点表, 并下装相应 DPU。OPC 浏览能看到才说明 DPU 侧已生效。${ntWarn}`);
+}
+async function probeIoChecked() {
+  const points = getIoChecked();
+  if (!points.length) { setStatus('请先勾选要校验的点', 'err'); return; }
+  await probeIoPoints(points, true);
+}
+async function probeIoPoints(points, showAlert=false) {
+  setStatus('OPC 浏览校验中...', 'run');
+  try {
+    const r = await fetch('/api/io/points/probe', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({points}),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      setStatus(`✗ OPC 校验失败: ${d.error || '未知错误'}`, 'err');
+      return d;
+    }
+    _ioProbe = {};
+    for (const it of d.items || []) _ioProbe[_ioKey(it)] = !!it.opc_visible;
+    renderIoRows();
+    setStatus(`✓ OPC 校验完成: 已生效 ${d.visible}, 未见 ${d.missing}`, d.missing ? 'err' : 'ok');
+    if (showAlert) {
+      alert(`OPC 浏览校验完成。\n\n端点: ${d.url}\nDPU: ${(d.dpus||[]).join(', ')}\n已生效: ${d.visible}\n未见: ${d.missing}\n\n未见的点需要重载并下装对应 DPU。`);
+    }
+    if (d.symbols_added) {
+      await loadSymbols();
+    }
+    return d;
+  } catch(e) {
+    setStatus(`✗ OPC 校验请求失败: ${e}`, 'err');
+    return null;
+  }
+}
+
 function renderDebug(d) {
   function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function tag(level) {
@@ -3690,9 +4277,9 @@ function renderDebug(d) {
   }
   // 写后未生效 (跟 DCS 实际值对比)
   if (d.write_ineffective && d.write_ineffective.length) {
-    html += `<h3 style="margin:14px 0 8px;border-bottom:2px solid #c00;padding-bottom:4px;font-family:sans-serif;color:#c00">⚠ 写后未生效 (${d.write_ineffective.length}) — 持续 ≥ 1 秒不一致</h3>`;
+    html += `<h3 style="margin:14px 0 8px;border-bottom:2px solid #c00;padding-bottom:4px;font-family:sans-serif;color:#c00">⚠ 写后未生效 (${d.write_ineffective.length}) — 持续多周期明显不一致</h3>`;
     html += `<div style="background:#fef0f0;padding:8px;font-size:11px">`;
-    html += `<div style="color:#666;margin-bottom:6px;font-size:10px">已扣除 NTVDPU 内部 1 秒写入延迟。这里列出的是<b>真的没写进</b>的. 常见原因: ① AI HR/LR 没暴露 · ② DI 上游被组态驱动 · ③ SH 端子被组态覆盖</div>`;
+    html += `<div style="color:#666;margin-bottom:6px;font-size:10px">已扣除 NTVDPU 内部写入延迟和模拟量小偏差。常见原因: ① DI 上游被组态驱动 · ② SH 端子被组态覆盖 · ③ 点表类型或量程配置不匹配</div>`;
     html += `<table style="width:100%;border-collapse:collapse;">`;
     html += `<tr style="background:#fdd"><th style="text-align:left;padding:2px 6px">节点</th><th style="text-align:right;padding:2px 6px;width:60px">我们写</th><th style="text-align:right;padding:2px 6px;width:60px">DCS 实际</th><th style="text-align:right;padding:2px 6px;width:60px">持续</th></tr>`;
     for (const it of d.write_ineffective) {
@@ -3787,6 +4374,7 @@ document.addEventListener('keydown', (e) => {
     if (document.getElementById('bkmodal').style.display === 'block') closeBackups();
     if (document.getElementById('dbgmodal').style.display === 'block') closeDebug();
     if (document.getElementById('modelmodal').style.display === 'block') closeModelParams();
+    if (document.getElementById('iomodal').style.display === 'block') closeIoManager();
     if (document.getElementById('snapmodal').style.display === 'block') closeSnapshot();
   }
   // Ctrl/Shift 按下 — popup hdr 切"连选 ON"
@@ -4562,11 +5150,10 @@ function _bindHover() {
     // 不再 scheduleValidate() — 整脚本逐行 parse + HTTP 在大脚本上明显卡顿,
     // 改为 [保存] / [运行] 时统一校验 (用户主动触发, 类似编译)
   });
-  // scroll 事件高频, 只同步行号 + 高亮层 scrollTop, 不做任何重算
+  // scroll 事件高频: 行号同步; 大脚本高亮按当前窗口换片, 窗口内滚动只同步 scrollTop
   ed.addEventListener('scroll', () => {
     syncLineNumsScroll();
-    const hl = document.getElementById('hl');
-    if (hl) { hl.scrollTop = ed.scrollTop; hl.scrollLeft = ed.scrollLeft; }
+    runHighlight();
   }, { passive: true });
   ed.addEventListener('click',  () => { setTimeout(updateAC, 0); updateCursorPos(); });
   ed.addEventListener('keyup',  (e) => {

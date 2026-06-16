@@ -382,6 +382,13 @@ await client.write_value("ns=0;s=DPU3044.HW.DI010204.PV", True)
 - `project` / `temp` / `target` 三份可能分别对应工程源、工作区和目标区。批量处理时通常三份一起改,改后校验哈希一致。
 - `dcsdev` 可能已缓存点表;文件改完后 GUI 未立即变化时,关闭并重新打开该 DPU 的“点表管理”,必要时重新加载工程。
 
+**编码/签名头红线(2026-06-15 再次踩坑,必须遵守)**:
+- **NT6000 工程目录里的 `tag.csv`**:`%NT6000_HOME%\project|temp|target\...\DPUxxxx\tag.csv` 必须保留第 1 行二进制/签名头,只解析和重写后续 UTF-8 CSV 数据区。写回 NT6000 工程时不要生成“纯 CSV”覆盖它。
+- **本项目内 `projects/<name>/io/raw|filtered|simple/*.csv`** 必须是普通 UTF-8 文本 CSV,文件开头应直接是 `#VERSION...` 或 `~索引...`,**不能带 NT6000 二进制/签名头**。否则 Excel/编辑器/PowerShell 容易误判编码,中文 `描述` 会乱码。
+- 从 NT6000 备份 `DPUxxxx/tag.csv` 复制到项目 `io/raw/DPUxxxx.csv` 时,必须先剥离签名头,只保留 `#VERSION` 行、`~索引` 表头和数据行,再用 `encoding="utf-8"` 写入。
+- 处理编码时不要看到签名头里的非法 UTF-8 字节就整体退到 GBK。正确做法是定位 `#VERSION` / `~索引` 后面的 UTF-8 CSV 数据区;项目内文件统一 UTF-8。
+- 快速校验:打开 `projects/<name>/io/raw/DPUxxxx.csv`,首字节不应是 `EF BB BF 00 4E 54 36 30...` 这类 `NT60` 签名;中文描述如“燃油吹扫蒸汽压力”应能直接正常显示。
+
 **项目内三版本点表落点**:
 ```text
 projects/<name>/io/raw/       # 原始版本:从 NT6000 tag.csv 导出的普通 CSV,只作备份/追溯
@@ -389,6 +396,13 @@ projects/<name>/io/filtered/  # 筛选版本:空描述/备用/非 HW 清理 + DP
 projects/<name>/io/simple/    # 精简版本:点级细筛后的最终点表,viewer /script 读取这里
 ```
 `project.yaml` 中 `io_dir` 指向 `io/simple`,`io_full_dir` 指向 `io/filtered`。`raw` 不参与运行。
+
+**viewer OPC 通讯点增减后端行为**:
+- `/script` 页面“OPC 点表增减”添加/删除点时,后端必须同时更新两类位置:
+  1. 本项目 `projects/<name>/io/filtered` 与 `projects/<name>/io/simple`
+  2. NT6000 实际工程三份 `tag.csv`: `%NT6000_HOME%\project\<工程>\network\<network>\DPU\DPUxxxx\tag.csv`、`%NT6000_HOME%\temp\network\<network>\DPU\DPUxxxx\tag.csv`、`%NT6000_HOME%\target\network\<network>\DPU\DPUxxxx\tag.csv`
+- 写 NT6000 `tag.csv` 时必须保留二进制/签名头,只改 CSV 数据区;写本项目 CSV 时必须保持普通 UTF-8。
+- 后端应按 `NT6000_HOME` 环境变量或已存在的 NT6000 安装目录定位工程,修改前自动备份。只改本项目点表而不写回 NT6000,集成开发环境里看不到新增点。
 
 **推荐的新工程 OPC IO 准备流程**:
 1. 按 DPU 逐个备份三份 `tag.csv` 到 `%NT6000_HOME%\backups\codex_<任务>_<时间>\...`。
